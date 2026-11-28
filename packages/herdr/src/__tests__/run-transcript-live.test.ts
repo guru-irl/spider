@@ -4,13 +4,17 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { openDbAt } from '@spider/db-core';
+import { openDbAt, paths } from '@spider/db-core';
+import { execFileSync } from 'node:child_process';
+import { rgbColor, stripTerminalSequences, type TUI } from '@earendil-works/pi-tui';
 import { scratchDbPath, cleanupScratch } from '@spider/db-core/testutil';
 import { RunStore } from '../../../subagents/src/run-store.js';
 import { emitToolResult } from '../../../subagents/src/run-events.js';
 import { publishLiveRunEvent } from '../../../subagents/src/live-events.js';
 import { createRunTranscriptSource, type RunTranscriptSourceOptions } from '../../../host/src/herdr/run-transcript.js';
 import type { Owner, RunId, RunViewFrame } from '../contracts.js';
+import { createPiRunView } from '../viewers/pi-app.js';
+import * as mount from '../../../host/src/herdr/mount.js';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); vi.useRealTimers(); cleanupScratch(); });
@@ -81,6 +85,45 @@ test('viewer snapshots follow changed input-band and icon settings', async () =>
   band = true; icons = 'nerd';
   await vi.advanceTimersByTimeAsync(50);
   expect(frames.at(-1)).toMatchObject({ kind: 'snapshot', data: { view: { inputBand: true, iconStyle: 'nerd' } } });
+});
+
+test('owner config updates flow through snapshots to the editor without losing the draft', async () => {
+  const makeAppearance = (mount as unknown as { viewerAppearance?: (ctx: unknown) => Pick<RunTranscriptSourceOptions, 'accent' | 'iconStyle' | 'inputBand'> }).viewerAppearance;
+  expect(typeof makeAppearance).toBe('function');
+  const root = resolve('.spider/scratch/hl', randomUUID()); mkdirSync(root, { recursive: true });
+  execFileSync('git', ['init', '-q', root]);
+  const global = resolve(root, 'global'); mkdirSync(global);
+  const previous = paths.globalRoot; paths.globalRoot = global;
+  cleanups.push(() => { paths.globalRoot = previous; rmSync(root, { recursive: true, force: true }); });
+  const config = resolve(global, 'config.json');
+  writeFileSync(config, JSON.stringify({ 'ui.inputBand': false, 'ui.icons': 'text', 'ui.accent': 'green' }));
+  const appearance = makeAppearance!({ cwd: root, mode: 'rpc', hasUI: false });
+  vi.useFakeTimers();
+  const f = fixture(undefined, appearance);
+  const view = createPiRunView({ ui: { requestRender() {}, setFocus() {}, terminal: { columns: 80, rows: 24 } } as unknown as TUI,
+    runName: 'run', ownerName: 'owner', cwd: root, themeName: 'dark' });
+  cleanups.push(() => view.dispose());
+  view.setState({ status: 'running', steerable: true, reachable: true, readOnlyReason: null });
+  const frames: RunViewFrame[] = [];
+  f.source.subscribe(f.id, null, frame => { frames.push(frame); if (frame.kind === 'snapshot' && frame.data.view) view.setRunInfo(frame.data.view); }, { view: 2 });
+  view.editor!.setText('Unsent draft');
+  expect(view.render(40).map(stripTerminalSequences).some(row => row.startsWith('─'))).toBe(true);
+  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { inputBand: false, iconStyle: 'text', accent: 'green' } } });
+  writeFileSync(config, JSON.stringify({ 'ui.inputBand': true, 'ui.icons': 'nerd', 'ui.accent': 'pink' }));
+  await vi.advanceTimersByTimeAsync(50);
+  expect(frames.at(-1)).toMatchObject({ kind: 'snapshot', data: { view: { inputBand: true, iconStyle: 'nerd', accent: 'pink' } } });
+  expect(view.editor!.getText()).toBe('Unsent draft');
+  expect(view.render(40).map(stripTerminalSequences).some(row => row.startsWith('▖'))).toBe(true);
+});
+
+test('owner theme palette colors map to accent names and unknown colors use the base theme', () => {
+  const makeAppearance = (mount as unknown as { viewerAppearance?: (ctx: unknown) => { accent(): string | undefined } }).viewerAppearance;
+  expect(typeof makeAppearance).toBe('function');
+  const ctx = { cwd: '.', mode: 'tui', hasUI: true, ui: { theme: { colors: { accent: rgbColor(80, 250, 123) } } } };
+  const appearance = makeAppearance!(ctx);
+  expect(appearance.accent()).toBe('green');
+  ctx.ui.theme.colors.accent = rgbColor(1, 2, 3);
+  expect(appearance.accent()).toBeUndefined();
 });
 
 test.each(['accent', 'modelName', 'modelContextWindow', 'creditFactor'] as const)('a failed %s lookup leaves the snapshot and other metadata available', field => {

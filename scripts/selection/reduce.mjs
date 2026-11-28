@@ -13,8 +13,13 @@ function inside(root, file) {
   return name && !isAbsolute(name) && name !== '..' && !name.startsWith(`..${sep}`) ? name.split(sep).join('/') : null;
 }
 
+function modulePath(url) {
+  // Vitest can encode a module's query as part of the URL pathname.
+  return (url.startsWith('file:') ? fileURLToPath(url) : url).split(/[?#]/, 1)[0];
+}
+
 function unresolvedPath(root, tmpRoot, url) {
-  const file = url.startsWith('file:') ? fileURLToPath(url) : url.split(/[?#]/, 1)[0];
+  const file = modulePath(url);
   const temporary = inside(tmpRoot, file);
   if (temporary) return { group: 'temporary', path: `<tmp>/${temporary}` };
   const checkout = inside(root, file);
@@ -39,7 +44,7 @@ function bundleSources(root, compiled, map) {
   return map.sources.flatMap(source => {
     if (!source) return [];
     const url = new URL(source, sourceRoot);
-    const path = url.protocol === 'file:' && repoPath(root, fileURLToPath(url));
+    const path = url.protocol === 'file:' && repoPath(root, modulePath(url.href));
     return path ? [path] : [];
   });
 }
@@ -148,8 +153,7 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
           stats.unresolvedGroups[unresolved.group]++;
         }
       } else {
-        const file = script.url.startsWith('file:') ? fileURLToPath(script.url) : script.url.split(/[?#]/, 1)[0];
-        const source = repoPath(root, file);
+        const source = repoPath(root, modulePath(script.url));
         if (source) entry.reads.add(source);
       }
     }

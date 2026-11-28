@@ -189,7 +189,8 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
       if (toolchain) {
         fallback = `toolchain changed: ${toolchain.file}`;
       } else {
-        const readers = new Map(map.files.map(file => [file, []]));
+        const inputs = map.files.map(file => file.split(/[?#]/, 1)[0]);
+        const readers = new Map(inputs.map(file => [file, []]));
         const unresolved = new Map(), bundleExecutors = [];
         let blobs;
         for (const file of inventory) {
@@ -199,11 +200,11 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
           if (record.incomplete) add(file, 'incomplete recording');
           if (record.unresolved.length) {
             blobs ??= fixtureBlobs(map.commit);
-            const scope = fixtureScope(record.unresolved, new Set(record.reads.map(index => map.files[index])), blobs);
+            const scope = fixtureScope(record.unresolved, new Set(record.reads.map(index => inputs[index])), blobs);
             if (scope === null || scope.size) unresolved.set(file, scope);
           }
           if (record.ranBundle || record.unresolved.length) bundleExecutors.push(file);
-          for (const index of record.reads) readers.get(map.files[index]).push(file);
+          for (const index of record.reads) readers.get(inputs[index]).push(file);
         }
         const graphSeeds = new Set(), bundleSeeds = new Set(), fixtureSeeds = new Set();
         let buildChanged = false;

@@ -103,7 +103,7 @@ if (dir) {
   }
 
   function scriptPath(url) {
-    if (url.startsWith('file:')) return fileURLToPath(url);
+    if (url.startsWith('file:')) return fileURLToPath(url).split(/[?#]/, 1)[0];
     return isAbsolute(url) ? url.split(/[?#]/, 1)[0] : null;
   }
 

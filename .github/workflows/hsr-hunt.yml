@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [1, 2, 3, 4, profile-base, profile-after]
+        lane: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -36,46 +36,20 @@ jobs:
           mkdir -p "$PWD/.spider/scratch/tmp" hsr-results
           lscpu
           node --version
-      - name: Run the first paired trials
-        if: ${{ !startsWith(matrix.lane, 'profile-') }}
+      - name: Run the first candidate trial
         env:
           LANE: ${{ matrix.lane }}
-        run: bash scripts/hsr-trials.sh "$LANE" first
+        run: bash scripts/hsr-trials.sh "$LANE" after-first
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && !startsWith(matrix.lane, 'profile-') }}
+        if: always()
         with:
           name: hsr-preview-${{ matrix.lane }}
           path: hsr-results
           if-no-files-found: warn
       - name: Run the remaining trials
-        if: ${{ !startsWith(matrix.lane, 'profile-') }}
         env:
           LANE: ${{ matrix.lane }}
-        run: bash scripts/hsr-trials.sh "$LANE" rest
-      - name: Trace native-key setup calls
-        if: startsWith(matrix.lane, 'profile-')
-        env:
-          LANE: ${{ matrix.lane }}
-        run: |
-          export TMPDIR="$PWD/.spider/scratch/tmp"
-          export HSR_PROCESS_TRACE="$PWD/hsr-results/process.jsonl"
-          export NODE_OPTIONS="--require=$PWD/scripts/hsr-process-clock.cjs ${NODE_OPTIONS:-}"
-          unset XDG_RUNTIME_DIR
-          file=packages/host/src/__tests__/herdr-setup-releases.test.ts
-          if [ "$LANE" = profile-base ]; then
-            git show 9df6bb7ce:"$file" > "$file"
-            fixture=packages/host/src/__tests__/herdr-setup-fixture.ts
-            git show 9df6bb7ce:"$fixture" > "$fixture"
-            filter='0.1.16 native keys are an offer'
-          else
-            filter='0.1.16 (offers native keys without|can decline and then merge|re-accepts native keys|rejects conflicting)'
-          fi
-          python3 scripts/hsr-profile.py "$file" full-sequence
-          set -o pipefail
-          node node_modules/vitest/vitest.mjs run --maxWorkers=1 \
-            --reporter=verbose --reporter=json --outputFile=hsr-results/profile.json \
-            "$file" -t "$filter" \
-            2>&1 | tee hsr-results/profile.log
+        run: bash scripts/hsr-trials.sh "$LANE" after-rest
       - uses: actions/upload-artifact@v4
         if: always()
         with:

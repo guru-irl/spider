@@ -13,14 +13,14 @@ vi.mock('node:child_process', async importOriginal => {
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 
 test('setup accepts the complete unmodified built-in sources', async () => {
-  const f = await fixture();
+  const f = await fixture('fake', false, { coreTransport: 'socket' });
   const result = await setupHerdr(f.request, f.parts);
   expect(result.doctor.failures).toEqual([]);
   expect(await readFile(join(f.h.directories.app, 'mods/spider-pane/close.svg'))).toEqual(await readFile(join(f.h.directories.app, 'mods/pane/close.svg')));
 }, 60000);
 
 test('doctor asks for setup again when installed panel, sidebar or shared feed files are older than the package', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fixture('fake', false, { coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const doctor = await f.ports.doctorParts(f.request);
   for (const [item, source, installed] of [
     ['mods', 'mods/spider/data.js', 'mods/spider-panel/data.js'],
@@ -37,7 +37,7 @@ test('doctor asks for setup again when installed panel, sidebar or shared feed f
 }, 60000);
 
 test.each(['main', 'manifest', 'icon', 'added', 'missing'] as const)('setup refuses %s changes to built-in files before installing anything', async change => {
-  const f = await fixture(), base = join(f.h.directories.app, 'mods/pane');
+  const f = await fixture('fake', false, { coreTransport: 'socket' }), base = join(f.h.directories.app, 'mods/pane');
   const file = join(base, change === 'main' ? 'main.js' : change === 'manifest' ? 'mod.json' : change === 'added' ? 'unexpected.js' : 'close.svg');
   if (change === 'missing') await unlink(file);
   else if (change === 'added') await writeFile(file, 'export default 1;\n');

@@ -27,7 +27,7 @@ afterEach(async () => {
 });
 
 async function fixture(mode: ExtensionContext['mode'], install = false) {
-  const f = await setupFixture();
+  const f = await setupFixture('fake', false, { coreTransport: 'socket' });
   if (install) {
     await setupHerdr(f.request, { ...f.parts,
       preflight: async () => ({ fingerprint: 'mode-test', coreIdentity: f.h.owner!.terminal,

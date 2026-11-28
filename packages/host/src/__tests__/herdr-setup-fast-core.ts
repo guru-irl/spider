@@ -14,7 +14,9 @@ type Reply = { result?: unknown; raw?: string; bytesBase64?: string; stderr?: un
 // Keep the real fake-core daemons, routing, filesystem and clients. Only the
 // per-request fake hc CLI process is replaced; streaming and special transport
 // options continue through the production process transport.
-export function installFastCoreTransport(h: HerdrHarness): () => void {
+export function installFastCoreTransport(h: Pick<HerdrHarness, 'root' | 'hcBinary' | 'localSocket' | 'remoteSocket'> & {
+  directories: Pick<HerdrHarness['directories'], 'local' | 'remote'>;
+}): () => void {
   const original = transport.invokeCli;
   const spy = vi.spyOn(transport, 'invokeCli').mockImplementation(async (binary, argv, env, maxBytes, input, options = {}) => {
     const root = env.HERDR_FAKE_ROOT;

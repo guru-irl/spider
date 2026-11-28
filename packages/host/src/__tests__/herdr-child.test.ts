@@ -7,6 +7,7 @@ import { paths } from '@spider/db-core';
 import { globalConfigForTest } from '../../../db-core/src/__tests__/global-config.testutil.js';
 import { fileURLToPath } from 'node:url';
 import { createHostHerdrHarness } from './herdr-fixture-inventory.testutil.js';
+import { installFastCoreTransport } from './herdr-setup-fast-core.js';
 import { mountHerdr } from '../herdr/mount.js';
 import { runExec, runExecFile, runBatch } from '../../../context/src/actions/exec.js';
 import { execFileSync } from 'node:child_process';
@@ -18,10 +19,10 @@ import { readRetainedAgentConsole, type AgentConsoleLaunch } from '../../../herd
 import { openRetainedConsole } from '../../../herdr/src/__tests__/console-view-fixture.js';
 import { sha256 } from '../../../herdr/src/remote/runtime.js';
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 async function childFixture(location: 'standard' | 'relative' = 'standard') {
   const globalConfig = globalConfigForTest(paths.globalRoot);
-  const h = await createHostHerdrHarness('fake'); await h.start();
+  const h = await createHostHerdrHarness('fake'); installFastCoreTransport(h); await h.start();
   for (const [key, value] of Object.entries(h.localEnv)) if (value !== undefined && /^(HC_|XDG_|HERDR_)/.test(key)) vi.stubEnv(key, value);
   vi.stubEnv('PI_SPIDER_TOP_SESSION_ID', h.owner!.sessionId); vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global);
   const config = { enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: ['managed.invalid', 'box.invalid', 'MyBox.invalid'], runtime: { cwd: h.directories.remote, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };

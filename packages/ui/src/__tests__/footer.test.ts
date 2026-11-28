@@ -68,8 +68,9 @@ describe("AgentFooter", () => {
     const footer = new AgentFooter(store, id, { now: () => 5000 });
     const normal = footer.render(72);
     expect(normal[0]).toMatch(/agent-4 † · 3 turns · 5s +model · high$/);
-    expect(normal[2]).toContain("4 running · +2 more");
-    expect(stripTerminalSequences(normal[2])).toMatch(/^◇ 4 running · \+2 more$/);
+    expect(normal[2]).toContain("+2 more");
+    expect(normal[2]).not.toContain("running");
+    expect(stripTerminalSequences(normal[2])).toMatch(/^◇ \+2 more$/);
     expect(normal.slice(0, 2).every(line => visibleWidth(line) === 72 && line.endsWith("model · high"))).toBe(true);
     store.beginSelect();
     const selected = footer.render(72);
@@ -86,8 +87,8 @@ describe("AgentFooter", () => {
     expect(f.hasVisibleChange(60)).toBe(false);  // no change
   });
 
-  it("includes queued and paused in footer overflow counts", () => {
-    // Create more than maxVisible agents with various statuses including queued and paused
+  it("summarizes hidden agents of every status as +N more only", () => {
+    // More than maxVisible agents across every status; the summary row names only the hidden count.
     const src = new Src();
     src.rows.set("r1", row({ id: "r1", status: "running", name: "runner" }));
     src.rows.set("r2", row({ id: "r2", status: "queued", name: "queued1" }));
@@ -98,15 +99,8 @@ describe("AgentFooter", () => {
     const store = new AgentStore(src); store.start();
     const f = new AgentFooter(store, id, { maxVisible: 2, now: () => 5000 });
     const lines = f.render(100);
-    const overflowLine = lines[lines.length - 1];
-    // The overflow line should mention queued and paused
-    expect(overflowLine).toContain("queued");
-    expect(overflowLine).toContain("paused");
-    // And the traditional statuses
-    expect(overflowLine).toContain("running");
-    expect(overflowLine).toContain("done");
-    expect(overflowLine).toContain("failed");
-    expect(overflowLine).toContain("cancelled");
+    expect(lines).toHaveLength(2);
+    expect(stripTerminalSequences(lines[1]!)).toBe("◇ +5 more");
   });
 });
 
@@ -137,7 +131,8 @@ describe("AgentFooter selection cursor", () => {
     for (let i = 1; i <= 4; i++) src.rows.set(`r${i}`, row({ id: `r${i}`, name: `agent-${i}`, started_at: i }));
     const store = new AgentStore(src); store.start();
     const footer = new AgentFooter(store, { ...id, iconStyle }, { now: () => 5000 });
-    expect(footer.render(40)[2]).toContain("4 running · +2 more");
+    expect(footer.render(40)[2]).toContain("+2 more");
+    expect(footer.render(40)[2]).not.toContain("running");
     store.beginSelect();
     let lines = footer.render(40);
     expect(lines[0]).toContain("agent-4");
@@ -159,7 +154,8 @@ describe("AgentFooter selection cursor", () => {
       expect(footer.render(width).every(line => visibleWidth(line) <= width), `${width} columns`).toBe(true);
     }
     store.endSelect();
-    expect(footer.render(40)[2]).toContain("4 running · +2 more");
+    expect(footer.render(40)[2]).toContain("+2 more");
+    expect(footer.render(40)[2]).not.toContain("running");
   });
 
   it("changes the summary direction when the wheel scrolls the window to the end", () => {

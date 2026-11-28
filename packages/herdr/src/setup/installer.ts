@@ -576,11 +576,6 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       journal.retiredTerminals = retiredTerminals;
       await prepareBackups(request.journalRoot, files, journal);
       if (checkpoint) await recordCheckpointIntents(request.journalRoot, checkpoint, files, journal);
-      await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal, recordWrites);
-      const writes = [...endpointWrites, ...await applyFiles(request.journalRoot, files.filter(file => !file.updateAfterCutover), journal, recordWrites)];
-      for (const file of appFiles)
-        if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
-      for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);
       for (const { runtime, before } of runtimePlans) await onMachine(runtime.machine, async () => {
         const installed = await readRuntime(parts, runtime);
         const current = installed === null ? null : digest(installed);
@@ -593,7 +588,13 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           throw new HerdrError('runtime-digest-mismatch', `Runtime verification failed on ${runtime.machine}`);
       });
       await bootstrap();
-      recordRuntimes();
+      // Persist completed runtime work before local publication so recovery can reuse its probes.
+      if (recordRuntimes()) await saveSetupJournal();
+      await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal, recordWrites);
+      const writes = [...endpointWrites, ...await applyFiles(request.journalRoot, files.filter(file => !file.updateAfterCutover), journal, recordWrites)];
+      for (const file of appFiles)
+        if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
+      for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);
       let cutover = journal.cutover;
       try {
         if (cutoverNeeded || selectionReplacement) {

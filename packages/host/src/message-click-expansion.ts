@@ -3,16 +3,17 @@ import * as tui from "@earendil-works/pi-tui";
 
 /** Opt in custom messages with a distinct expanded view. Pi still owns tool clicks. */
 export function withClickExpansion(render: MessageRenderer): MessageRenderer {
+  const { Container, MouseRegion } = tui;
+  if (typeof MouseRegion !== "function") return render;
+
   // Store the global flag at the time of a local override. A change to that
   // flag (Ctrl+O) discards the override; an invalidate with the same flag doesn't.
   const overrides = new WeakMap<object, boolean>();
   return (message, options, theme) => {
-    const { Container, MouseRegion } = tui;
-    if (typeof MouseRegion !== "function") return render(message, options, theme);
-
     const globalExpanded = options.expanded === true;
-    if (overrides.get(message) !== globalExpanded) overrides.delete(message);
-    let expanded = overrides.has(message) ? !globalExpanded : globalExpanded;
+    const hasOverride = overrides.get(message) === globalExpanded;
+    if (!hasOverride) overrides.delete(message);
+    let expanded = hasOverride ? !globalExpanded : globalExpanded;
     const build = (expanded: boolean) => render(message, { ...options, expanded }, theme);
     const initial = build(expanded);
     if (!initial) return undefined;

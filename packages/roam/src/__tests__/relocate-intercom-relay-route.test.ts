@@ -1,7 +1,7 @@
 import { EventEmitter, once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { openDbAt } from "@spider/db-core";
 import * as hc from "@spider/herdr/client/hc";
 import { HerdrError } from "@spider/herdr/client/parse";
@@ -107,8 +107,12 @@ async function startTool(m: Machine, intercom: ReturnType<typeof createV0Interco
   cleanups.push(() => emit("session_shutdown"));
   await emit("session_start");
   const tool = tools.find(item => item.name === "intercom")!;
-  return (to: string, action: "send" | "ask" = "send") => tool.execute("route-fixture", { action, to, message: "fixture message" },
-    undefined, undefined, ctx as unknown as ExtensionContext);
+  return async (to: string, action: "send" | "ask" = "send") => {
+    const { content, details } = await tool.execute("route-fixture", { action, to, message: "fixture message" },
+      undefined, undefined, ctx as unknown as ExtensionToolContext);
+    if (content[0]?.type !== "text" || !details || typeof details !== "object") throw new Error("Missing intercom tool result");
+    return { content: [content[0]], details: details as Record<string, unknown> };
+  };
 }
 
 async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer[]; link?: boolean; targetGrant?: boolean } = {}) {

@@ -55,7 +55,8 @@ function pollError(error: unknown): string {
 }
 
 /** A successful read of the selected core's route table, not a destination identity check. */
-export async function observeV0HerdrRoutes(connection: { binary: string; env: NodeJS.ProcessEnv }, peers: readonly Peer[], signal?: AbortSignal) {
+export async function observeV0HerdrRoutes(connection: { binary: string; env: NodeJS.ProcessEnv }, peers: readonly Peer[],
+  signal?: AbortSignal): Promise<ReadonlyMap<string, "connected" | "disconnected" | "missing" | "unknown">> {
   const raw = object(await invokeCli(connection.binary, ["machine", "ls", "--json"], connection.env, DEFAULT_LIMITS.replyBytes,
     undefined, { timeoutMs: DEFAULT_LIMITS.controlMs, signal }));
   if (!Array.isArray(raw.machines)) throw new HerdrError("invalid-reply", "Expected a machine list");
@@ -67,8 +68,8 @@ export async function observeV0HerdrRoutes(connection: { binary: string; env: No
   return new Map(peers.map(peer => {
     const exact = rows.filter(row => row.name === peer.alias);
     const matches = exact.length ? exact : rows.filter(row => row.aliases.includes(peer.alias.toLowerCase().replace(/\.$/, "")));
-    const state = matches.length === 0 ? "missing" : matches.length > 1 ? "unknown" : matches[0].state;
-    return [peer.machineId, state] as const;
+    const state = matches.length === 1 ? matches[0].state : undefined;
+    return [peer.machineId, !matches.length ? "missing" : state === "connected" || state === "disconnected" ? state : "unknown"] as const;
   }));
 }
 

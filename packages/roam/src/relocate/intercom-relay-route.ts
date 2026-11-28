@@ -29,11 +29,13 @@ export async function routeV0Relay(routes: V0Routes, targetLabel: string, submit
     const { outcome } = await submitV0Relay(routes.agentDir, id, submit, signal);
     if (outcome.kind === "refused" && outcome.code === "relay-busy") {
       relaySkips.push({ relay: alias, reason: "busy" });
-      return { ...outcome, ...details };
+      return { kind: "refused", code: "relay-busy", ...details };
     }
     // Do not retry a submission here. In particular, unknown is final.
-    return { ...(outcome.kind === "refused" && outcome.code === "relay-stopping"
-      ? { kind: "refused", code: "unreachable" } as const : outcome), ...details, path: `relay ${alias}` };
+    const routed = { ...details, path: `relay ${alias}` as const };
+    if (outcome.kind === "refused")
+      return { kind: "refused", code: outcome.code === "relay-stopping" ? "unreachable" : outcome.code, ...routed };
+    return { ...outcome, ...routed };
   }
   return { kind: "refused", code: anyUp ? "relay-unreachable" : "no-relay", ...details };
 }

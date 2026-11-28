@@ -514,7 +514,7 @@ export function localPendingMoveDiagnostics(root: string): Diagnostic[] {
 }
 
 /** Relay diagnostics use only local, private observations. They never dial a peer. */
-export function localRelayDiagnostics(root: string, config: RoamConfig, nowMs = Date.now()): Diagnostic[] {
+export function localRelayDiagnostics(root: string, config: RoamConfig, nowMs: number = Date.now()): Diagnostic[] {
   if (!config.enabled || config.intercom.enabled) return [];
   let routes: V0Routes;
   try { routes = readV0Routes(root, config); }

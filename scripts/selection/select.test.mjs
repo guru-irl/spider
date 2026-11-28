@@ -149,6 +149,19 @@ test('runs the complete inventory on toolchain changes', async () => {
   }
 });
 
+test('runs the complete inventory for Vite config and Vitest setup changes', async t => {
+  for (const file of ['vite.config.mjs', 'vite.dashboard.config.mjs', 'packages/one/viteExtra.config.ts',
+    'vitest.setup.ts', 'vitest.herdr-global-setup.ts', 'packages/herdr/e2e/setup.ts', 'scripts/vitest-sequencer.ts']) {
+    await t.test(file, async () => {
+      for (const status of ['A', 'M', 'D']) {
+        const result = await fixture({ changes: [changed(file, status), changed('packages/one/src/product.ts')] });
+        assert.equal(result.mode, 'full');
+        assertSelected(result, ...inventory);
+      }
+    });
+  }
+});
+
 test('runs the complete inventory when selection infrastructure or workflows change', async () => {
   for (const file of ['scripts/selection/select.mjs', 'scripts/selection/subdir/helper.mjs',
     'scripts/test-resources.json', 'scripts/test-shards.ts', 'scripts/selection/known-flakes.json',
@@ -300,7 +313,7 @@ test('runs the bundle reader inventory guard when a test adds a literal consumer
 });
 
 test('runs bundle executors and readers for build config', async () => {
-  assertSelected(await fixture({ changes: [changed('vite.config.mjs')],
+  assertSelected(await fixture({ changes: [changed('scripts/build-herdr.mjs')],
     records: { [b]: row({ ranBundle: true }) } }), b, bundleReader);
 });
 
@@ -358,7 +371,7 @@ test('a recorded standalone pane fixture needs its writer, not unrelated source'
   const options = { files: [paneWriter], records: { [b]: row({ reads: [0], unresolved: [paneStub], ranBundle: true }) } };
   assertSelected(await fixture({ ...options, changes: [changed(unrelatedInput)] }));
   assertSelected(await fixture({ ...options, changes: [changed(paneWriter, 'D')] }), b);
-  assertSelected(await fixture({ ...options, changes: [changed('vite.config.mjs')] }), b, bundleReader);
+  assertSelected(await fixture({ ...options, changes: [changed('scripts/build-herdr.mjs')] }), b, bundleReader);
 });
 
 test('a verified fixture chunk selects its transitive inputs instead of unrelated packages', async () => {

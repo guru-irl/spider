@@ -10,18 +10,24 @@ import { processToolContent } from '../../../host/src/routing/safety.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { acceptanceC, createRemoteTestFixture } from './acceptance/c.js';
 import { createExpiredRemoteFixture } from './herdr-expired-fixture.js';
+import { installFastCoreTransport } from '../../../host/src/__tests__/herdr-setup-fast-core.js';
 import type { RemoteExecuteRequest, RemoteResult, Owner, MachineName, JobHandle, JobId } from '../contracts.js';
-const harnesses: HerdrHarness[] = [];
+const harnesses: { h: HerdrHarness; restore?: () => void }[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
-  for (const h of harnesses.splice(0)) {
-    await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
-    await mkdir(resolve('.spider/scratch/h/logs'), { recursive: true });
-    await writeFile(resolve(`.spider/scratch/h/logs/c3-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
+  for (const { h, restore } of harnesses.splice(0)) {
+    try {
+      await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
+      await mkdir(resolve('.spider/scratch/h/logs'), { recursive: true });
+      await writeFile(resolve(`.spider/scratch/h/logs/c3-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
+    } finally { restore?.(); }
   }
 });
-async function fixture(mode: 'fake' | 'hc' = 'fake') {
-  const h = await createHerdrHarness(mode); harnesses.push(h); await h.start();
+async function fixture(mode: 'fake' | 'hc' = 'fake', coreTransport: 'process' | 'socket' = 'process') {
+  if (mode !== 'fake' && coreTransport === 'socket') throw new Error('Socket transport requires fake cores');
+  const h = await createHerdrHarness(mode);
+  const restore = coreTransport === 'socket' ? installFastCoreTransport(h) : undefined;
+  harnesses.push({ h, restore }); await h.start();
   const f = await createRemoteTestFixture(h);
   const request = (code: string, options: Partial<RemoteExecuteRequest> = {}): RemoteExecuteRequest => ({ source: { kind: 'code', language: 'javascript', code }, on: 'remote.invalid' as MachineName, owner: h.owner!, ...options });
   const ctx = { cwd: h.owner!.cwd, owner: h.owner!, remote: createRemoteExecutor(f.ports) };
@@ -55,7 +61,7 @@ describe('remote result adapter', () => {
     expect(result.isError).toBe(true);
   }, 20000);
   it.each(['timeout', 'abort'] as const)('retains a trapped exit when each post-%s read takes 1200 ms', async reason => {
-    const { f, ctx } = await fixture(), stop = new AbortController();
+    const { f, ctx } = await fixture('fake', 'socket'), stop = new AbortController();
     const sink = f.ports.logSink;
     f.ports.logSink = async (job, options) => {
       const reader = await sink(job, options);
@@ -99,7 +105,7 @@ describe('remote result adapter', () => {
     expect(result.isError).toBe(false);
   }, 20000);
   it('lets abort win when it races a timeout cancellation', async () => {
-    const { f, ctx } = await fixture(); const abort = new AbortController();
+    const { f, ctx } = await fixture('fake', 'socket'); const abort = new AbortController();
     const start = f.ports.jobs.start;
     f.ports.jobs.start = async (...args) => {
       const job = await start(...args); const cancel = job.cancel;
@@ -145,7 +151,7 @@ describe('remote result adapter', () => {
     expect(result.isError).toBe(false);
   }, 20000);
   it('a child uses the same executor and receives its own output and exit code', async () => {
-    const { f, request } = await fixture(); vi.stubEnv('PI_SUBAGENT_CHILD', '1');
+    const { f, request } = await fixture('fake', 'socket'); vi.stubEnv('PI_SUBAGENT_CHILD', '1');
     const result = await executeRemote(request("console.log('child output');process.exitCode=23"), f.ports);
     expect(result).toMatchObject({ stdout: 'child output\n', exitCode: 23, outcome: 'exited' });
   }, 20000);
@@ -224,6 +230,6 @@ describe('remote result adapter', () => {
     expect(safeText).not.toContain(token); expect(safeText).toContain('visible'); expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(10000); expect(f.consumed).toHaveLength(1);
   }, 20000);
   it('exports the same injected-port registered exec, exec_file and batch acceptance scenario', async () => {
-    const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start(); await acceptanceC(h);
+    const h = await createHerdrHarness('fake'); harnesses.push({ h }); await h.start(); await acceptanceC(h);
   }, 30000);
 });

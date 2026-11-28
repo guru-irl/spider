@@ -40,6 +40,17 @@ test('viewer input uses the shared band and keeps a draft across reconnect', () 
   expect(view.editor!.getText()).toBe('Keep the retry limit at three.');
 });
 
+test('viewer respects the owning session input-band preference without losing its draft', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, inputBand: false } as never);
+  view.setState(running);
+  view.editor!.setText('Keep this draft');
+  expect(view.render(40).map(stripTerminalSequences).some(row => row.startsWith('─'))).toBe(true);
+  view.setRunInfo({ protocol: 2, inputBand: true } as never);
+  expect(view.editor!.getText()).toBe('Keep this draft');
+  expect(view.render(40).map(stripTerminalSequences).some(row => row.startsWith('▖'))).toBe(true);
+});
+
 test('viewer footer shows calibrated run credits, context, cache and the model display name', () => {
   const view = make();
   view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', modelName: 'GPT-6.1 Sol',
@@ -57,6 +68,9 @@ test('viewer footer shows calibrated run credits, context, cache and the model d
   expect(footer).toContain('R40k W0');
   expect(footer).toContain('GPT-6.1 Sol · xhigh');
   expect(footer).not.toMatch(/↑|↓|\$|month|R80k|running/);
+  view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', modelName: 'GPT-6.1 Sol',
+    thinking: 'xhigh', contextWindow: 200000, creditFactor: 1 } as never);
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('1.0 AIC');
   for (let width = 1; width <= 160; width++) {
     expect(view.footerLines(width).every(row => visibleWidth(row) <= width), `width ${width}`).toBe(true);
   }

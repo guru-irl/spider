@@ -35,11 +35,13 @@ export function bindHalfBox(component: Component, enabled: () => boolean): void 
   Object.defineProperty(shell, HALF_BOX, { value: binding });
   const render = shell.render;
   const mouse = shell.handleMouse;
-  let layout: MouseLayout | undefined;
+  let cache: { rows: string[]; output: string[]; layout: MouseLayout } | undefined;
   shell.render = function (width) {
     const rows = render.call(this, width);
-    layout = undefined;
-    if (!binding.enabled()) return rows;
+    const enabled = binding.enabled();
+    if (enabled && cache?.rows === rows && cache.layout.width === width) return cache.output;
+    cache = undefined;
+    if (!enabled) return rows;
     const colors = rows.length >= 3 && edgeInk(rows[0], width);
     if (!colors || rows.at(-1) !== rows[0] || rows.some(isImageRow)) return rows;
     const blank = (row: string) => stripTerminalSequences(row).trim() === "";
@@ -48,10 +50,11 @@ export function bindHalfBox(component: Component, enabled: () => boolean): void 
     while (first < end && blank(rows[end - 1])) end--;
     const next = [halfEdge(colors.ink, width, "top"), ...rows.slice(first, end).map(row => stripRow(row, colors.bg, width)),
       halfEdge(colors.ink, width, "bottom")];
-    layout = { width, height: next.length, originalHeight: rows.length, skipped: first - 1 };
+    cache = { rows, output: next, layout: { width, height: next.length, originalHeight: rows.length, skipped: first - 1 } };
     return next;
   };
   if (mouse) shell.handleMouse = function (event) {
+    const layout = cache?.layout;
     if (!layout || !binding.enabled() || layout.width !== event.width || layout.height !== event.height) return mouse.call(this, event);
     const y = event.y === 0 ? 0 : event.y === layout.height - 1 ? layout.originalHeight - 1 : event.y + layout.skipped;
     return mouse.call(this, { ...event, y, height: layout.originalHeight });
@@ -62,6 +65,13 @@ export function createHalfBox(paddingX: number, bg: (text: string) => string): B
   const box = new Box(paddingX, 1, bg);
   bindHalfBox(box, () => true);
   const render = box.render;
-  box.render = width => render.call(box, width).map(row => isImageRow(row) ? row : truncateToWidth(row, width, ""));
+  let cache: { rows: string[]; width: number; output: string[] } | undefined;
+  box.render = width => {
+    const rows = render.call(box, width);
+    if (cache?.rows === rows && cache.width === width) return cache.output;
+    const output = rows.map(row => isImageRow(row) ? row : truncateToWidth(row, width, ""));
+    cache = { rows, width, output };
+    return output;
+  };
   return box;
 }

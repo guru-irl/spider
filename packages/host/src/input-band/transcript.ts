@@ -65,6 +65,7 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
     if (padded(shell)) bindHalfBox(shell, () => active(tool) && field(shell, "paddingY") === 1);
     return render.call(this, width);
   }));
+  const sentCache = new WeakMap<Container, { rows: string[]; width: number; caret: string; output: string[] }>();
   off.push(patch(host.UserMessageComponent?.prototype, options, function (render, width, opts) {
     const markdown = this.children?.[0];
     const padding = field(markdown, "paddingX");
@@ -73,6 +74,12 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
     const stock = () => render.call(this, width);
     if (width < 2 * padding + 4) return stock().map(row => isImageRow(row) ? row : truncateToWidth(row, width, ""));
     const inner = width - 2;
+    // Pi's UserMessageComponent allocates an array for the OSC markers on every
+    // render; the underlying Markdown returns a stable array until invalidated.
+    const markdownRows = markdown.render(inner);
+    const caret = opts.theme().fg("accent", icon(opts.iconStyle(), "prompt"));
+    const cached = sentCache.get(this);
+    if (cached?.rows === markdownRows && cached.width === width && cached.caret === caret) return cached.output;
     const rows = render.call(this, inner);
     if (rows.length === 0) return rows;
     if (rows.length < 3 || !rows[0].startsWith(OSC_START) || !rows.at(-1)?.startsWith(OSC_END) || rows.some(isImageRow)) return stock();
@@ -81,10 +88,11 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
     if (!colors || rows.at(-1)?.slice(OSC_END.length) !== top) return stock();
     const text = rows.slice(1, -1);
     const first = text.findIndex(row => stripTerminalSequences(row).trim() !== "");
-    const caret = opts.theme().fg("accent", icon(opts.iconStyle(), "prompt"));
-    return [OSC_START + halfEdge(colors.ink, width, "top"),
+    const output = [OSC_START + halfEdge(colors.ink, width, "top"),
       ...text.map((row, i) => stripRow(row, colors.bg, inner, i === first ? ` ${caret}` : "  ")),
       OSC_END + halfEdge(colors.ink, width, "bottom")];
+    sentCache.set(this, { rows: markdownRows, width, caret, output });
+    return output;
   }));
   return () => { for (const dispose of off) dispose(); };
 }

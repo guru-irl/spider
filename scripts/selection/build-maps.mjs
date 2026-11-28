@@ -2,6 +2,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
+import { archiveArtifactInputs } from './artifact-build.mjs';
 
 export const fixtureMaps = Boolean(process.env.SPIDER_SELECTION_DIR);
 export const recordMaps = process.env.SPIDER_BUILD_SOURCEMAP === '1' || fixtureMaps;
@@ -22,7 +23,7 @@ export function archiveMaps(bucket = '') {
         renameSync(join(dir, name), path);
       }
     },
-  }];
+  }, archiveArtifactInputs(bucket, dest)];
 }
 
 export function registerFixtureMap(compiled, text, payload) {

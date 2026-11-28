@@ -69,7 +69,7 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
   const run = (script, env = {}) => execFileSync(process.execPath, ['--input-type=module', '-e', script],
     { cwd: root, env: { ...process.env, NODE_OPTIONS: '', ...env }, encoding: 'utf8' });
   const entry = 'packages/one/src/main.mjs', testFile = 'packages/one/src/build.test.ts';
-  const aliasTest = 'packages/one/src/alias.test.ts';
+  const aliasTest = 'packages/one/src/alias.test.ts', inventoryTest = 'packages/one/src/inventory.test.ts';
   const removed = 'packages/one/src/shaken.js';
   for (const [file, text] of Object.entries({
     [entry]: 'import { unused } from "./shaken.js"; export const marker = "main";',
@@ -108,14 +108,19 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
   run(`
     globalThis[Symbol.for('spider.selection.tag')](${JSON.stringify(aliasTest)});
     await import('./.spider/scratch/renamed.mjs');`, recorded);
+  run(`
+    globalThis[Symbol.for('spider.selection.tag')](${JSON.stringify(inventoryTest)});
+    const fs = await import('node:fs');
+    fs.readdirSync('dist');`, recorded);
+  const inventory = [testFile, aliasTest, inventoryTest];
   const reportFile = join(root, 'report.json'), output = join(root, 'shard.json');
-  writeFileSync(reportFile, JSON.stringify({ testResults: [testFile, aliasTest].map(file => (
+  writeFileSync(reportFile, JSON.stringify({ testResults: inventory.map(file => (
     { name: resolve(root, file), status: 'passed', startTime: 0, endTime: 1 })) }));
   writeFileSync(output, JSON.stringify(reduce({ root, rawDir: raw, mapsDir: maps, reportFile })));
   execFileSync(process.execPath, [bundleTools('./bundle-observations.mjs'), raw, maps, output],
     { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
   const { map, problems } = buildSelectionMap({ shards: [JSON.parse(readFileSync(output, 'utf8'))],
-    expectedFiles: [testFile, aliasTest], commit: 'a'.repeat(40), runId: '4', createdAt: new Date().toISOString() });
+    expectedFiles: inventory, commit: 'a'.repeat(40), runId: '4', createdAt: new Date().toISOString() });
   assert.deepEqual(problems, []);
   const artifacts = map.bundleRouting.artifacts;
   const main = artifacts.find(artifact => artifact.path === 'dist/main.mjs');
@@ -128,6 +133,7 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
   assert.deepEqual(map.bundleRouting.tests[aliasTest], {
     ambiguous: false, hashes: [artifacts.find(artifact => artifact.path === 'dist/other.mjs').sha256],
   });
+  assert.deepEqual(map.bundleRouting.tests[inventoryTest], { ambiguous: true, hashes });
 });
 
 test('all test code and fixtures use recorder-aware bundle helpers', () => {

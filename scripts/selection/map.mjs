@@ -2,6 +2,7 @@
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mergeArtifactEvidence } from './bundle-observations.mjs';
 import { isolationProblems } from './check-isolation.mjs';
 
 const read = file => JSON.parse(readFileSync(file, 'utf8'));
@@ -80,7 +81,8 @@ export function buildSelectionMap({ shards, expectedFiles, commit, runId, create
       return [file, { reads: [...new Set(reads)].map(path => index.get(path)).sort((a, b) => a - b),
         unresolved, ranBundle, incomplete, ms, result, processes, cpuMs, knownCpuMs, unknownCpu, missingCpu }];
     }));
-    map = { version: 2, commit, runId, createdAt, files, tests };
+    const bundleRouting = mergeArtifactEvidence(shards.map(shard => shard.bundleRouting));
+    map = { version: 2, commit, runId, createdAt, files, tests, ...(bundleRouting ? { bundleRouting } : {}) };
   }
   return { map, problems, recordedFiles: records.size, reportedFiles: reported.size,
     sourceFiles: files.length, hookErrors, unresolvedGroups, failedFiles: [...failed].sort() };

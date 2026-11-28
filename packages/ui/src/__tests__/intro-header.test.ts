@@ -138,6 +138,16 @@ describe("Hinge startup header", () => {
 });
 
 describe("Docked receipt", () => {
+  it("shows cached usage beside credits and retains the unpriced warning", () => {
+    const text = plain(ui.renderDocked(120, theme, {
+      changes: { added: 0, removed: 0, partial: false }, timeMs: 920_000, compactions: 0,
+      usage: { credits: 7.29, calls: 5, unpricedCalls: 1, input: 20, cacheRead: 30, cacheWrite: 10, output: 9, reasoning: null },
+    })).join("\n");
+    expect(text).toMatch(/AI credits\s+~7\.29 \(15m 20s, cached\)/);
+    expect(text).toMatch(/some calls unpriced/i);
+    expect(text).not.toContain("Cached usage");
+  });
+
   it.each([120, 80, 60, 34])("shows visit numbers without duplicating Pi's resume hint at %i columns", width => {
     expect(ui.renderDocked).toBeTypeOf("function");
     const rows = ui.renderDocked(width, theme, {

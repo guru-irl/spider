@@ -127,7 +127,9 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
   const local = await register(sender, "local-recipient", "local", 2);
   const remote = await register(receiver, "remote-recipient", "recipient", 3);
 
-  const faults = { lost: false, lostRoute: false, routeMissing: false, disconnected: false, badPin: false, resolveFailed: false };
+  const faults = { lost: false, lostRoute: false, routeMissing: false, disconnected: false, badPin: false, resolveFailed: false,
+    lookupFailureMachineId: "" };
+  const lookupPeers: string[] = [];
   const transport = (): Pick<Transport, "resolve" | "exec"> => ({
     async resolve(p) {
       if (faults.routeMissing) throw new HerdrError("machine-not-found", "fixture has no direct route");
@@ -136,6 +138,10 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
       return p;
     },
     async exec(p, argv, request) {
+      if (request.stdin) {
+        lookupPeers.push(p.machineId);
+        if (p.machineId === faults.lookupFailureMachineId) throw new Error("Fixture lookup failed");
+      }
       expect(p).toEqual(receiver.peer);
       expect(argv).toEqual(["roam", "agent", "--v0", "intercom"]);
       request.onConnected?.(!faults.disconnected);
@@ -165,7 +171,7 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
   const held = options.link === false ? null : poll(20_000);
   cleanups.push(async () => { abort.abort(); await held; });
   if (held) await vi.waitFor(async () => expect(await listV0RelayLinks(sender.agentDir)).toMatchObject([{ state: "up" }]));
-  return { sender, receiver, local, remote, intercom, tool, roster, faults, poll, held, abort,
+  return { sender, receiver, local, remote, intercom, tool, roster, faults, lookupPeers, poll, held, abort,
     forward: createV0RelayForwarder(carrier.root, { transport }) };
 }
 
@@ -299,6 +305,24 @@ it("refuses an alias conflict instead of choosing the configured or advertised m
 it("refuses a bare name without complete live lookups", async () => {
   const f = await fixture();
   expect((await f.tool("recipient")).details).toMatchObject({ code: "incomplete" });
+});
+
+it("refuses a bare name when one live peer matches and another lookup fails", async () => {
+  const f = await fixture({ direct: true });
+  const otherId = "44444444-4444-4444-8444-444444444444";
+  const other = machine({ machineId: otherId, alias: "other.invalid" });
+  const db = openDbAt(join(f.sender.root, "spider.db"), "global");
+  try {
+    db.prepare("INSERT INTO session_homes (session_id,machine_id,epoch,updated_at,state) VALUES (?,?,?,1,'running')")
+      .run("other-recipient", otherId, 4);
+  } finally { db.close(); }
+  f.sender.configure({ sendTo: [f.receiver.peer, other.peer] });
+  f.faults.lookupFailureMachineId = otherId;
+  const result = await f.intercom.prepare({ to: "recipient", ...await f.roster() });
+  expect(f.lookupPeers.sort()).toEqual([TARGET, otherId].sort());
+  expect(result).toEqual({ kind: "refused", code: "incomplete" });
+  f.abort.abort();
+  expect((await f.held!).submissions).toEqual([]);
 });
 
 it.each(["peer-pin", "trust"] as const)("does not relay on a failed %s check", async cause => {

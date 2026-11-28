@@ -52,7 +52,8 @@ function fixture(mismatch = false) {
 it("survives Pi's full extension UI reset before the reload box is installed", async () => {
   const { view, before, complete } = fixture();
   delete view.resetExtensionUI;
-  const editor = { getText: () => "draft", setText() {}, render: () => ["editor"], invalidate() {} };
+  let editorRenders = 0;
+  const editor = { getText: () => "draft", setText() {}, render: () => { editorRenders++; return ["editor"]; }, invalidate() {} };
   Object.assign(view, {
     editor, defaultEditor: editor, extensionDialogs: [], extensionOverlays: new Map(),
     clearExtensionTerminalInputListeners() {}, setExtensionHeader() {}, clearExtensionWidgets() {},
@@ -60,6 +61,7 @@ it("survives Pi's full extension UI reset before the reload box is installed", a
     updateTerminalTitle() {}, chatContainer: new Container(), statusContainer: new Container(),
   });
   const pending = view.handleReloadCommand();
+  expect(editorRenders).toBe(0);
   expect(plain(view.editorContainer.render(100))[1]).toContain("Reloading keybindings");
   expect(plain(view.footerContainer.render(100))).toEqual(plain(before));
   await new Promise(resolve => process.nextTick(resolve));
@@ -75,7 +77,7 @@ it("shows a static reload band and keeps a dim frozen Spider footer until its re
   expect(plain(rows)[2]).toBe(`▘${"▀".repeat(99)}`);
   const frozen = view.footerContainer.render(100) as string[];
   expect(plain(frozen)).toEqual(plain(before));
-  expect(frozen.join("\n")).toContain(theme.fg("dim", "◐"));
+  expect(frozen.join("\n")).toContain(theme.fg("dim", plain(before)[1][0]));
   stop?.(); stop = undefined;
   expect(view.footerContainer.render(100)).toEqual(frozen);
   for (const width of [1, 8, 24, 100]) expect((view.editorContainer.render(width) as string[]).every(row => visibleWidth(row) <= width)).toBe(true);
@@ -91,7 +93,7 @@ it("freezes the last rendered Spider footer while Pi replaces the runtime", asyn
   const pending = view.handleReloadCommand();
   const frozen = view.footerContainer.render(100) as string[];
   expect(plain(frozen)).toEqual(plain(before));
-  expect(frozen.join("\n")).toContain(theme.fg("dim", "◐"));
+  expect(frozen.join("\n")).toContain(theme.fg("dim", plain(before)[1][0]));
   await new Promise(resolve => process.nextTick(resolve));
   complete(); await pending;
   expect(view.footerContainer.render(100)).toEqual(["stock footer"]);

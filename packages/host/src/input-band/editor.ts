@@ -17,6 +17,7 @@ export function createBandEditor(Base: typeof CustomEditor): new (
     private edges?: { top?: Edge; bottom?: Edge };
     private renderWidth = 0;
     private inset = 0;
+    private menuRows?: { start: number; end: number };
     private requestedPadding = 0;
     private unsupportedBorders = false;
 
@@ -57,6 +58,7 @@ export function createBandEditor(Base: typeof CustomEditor): new (
       const fg = foregroundFromBackground(bg);
       const stock = () => {
         this.inset = 0;
+        this.menuRows = undefined;
         // Pi reserves a cursor cell. Give its wrap routine room for a wide grapheme.
         this.renderWidth = Math.max(3, width);
         super.setPaddingX(Math.min(this.requestedPadding, Math.floor((this.renderWidth - 2) / 2)));
@@ -78,6 +80,7 @@ export function createBandEditor(Base: typeof CustomEditor): new (
       }
       this.inset = INSET;
       this.renderWidth = inner;
+      this.menuRows = bottom + 1 < rows.length ? { start: bottom + 1, end: rows.length } : undefined;
 
       const color = this.getText().trimStart().startsWith("!") ? "bashMode" : "accent";
       const bar = theme.fg(color, BAND_GLYPHS.bar);
@@ -95,7 +98,8 @@ export function createBandEditor(Base: typeof CustomEditor): new (
     }
 
     override handleMouse(event: TuiMouseEvent) {
-      if (event.x < this.inset && this.isShowingAutocomplete()) return undefined;
+      const menu = this.menuRows;
+      if (event.type === "click" && event.x < this.inset && menu && event.y >= menu.start && event.y < menu.end) return undefined;
       return super.handleMouse({ ...event, x: Math.max(0, event.x - this.inset), width: this.renderWidth || event.width });
     }
   };

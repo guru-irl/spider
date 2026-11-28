@@ -1,5 +1,5 @@
 import { CustomMessageComponent, initTheme, type MessageRenderer } from "@earendil-works/pi-coding-agent";
-import { Container, Text, stripTerminalSequences, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Container, Text, TuiAltScreen, stripTerminalSequences, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import spiderExtension from "../extension.js";
 import { withIntercomCards } from "../intercom-cards.js";
@@ -46,6 +46,45 @@ it.each([
   expect(output(message)).toContain(extra);
   expect(click(message, 2)).toMatchObject({ handled: true });
   expect(output(message)).toBe(collapsed);
+});
+
+it("expands a message on a fullscreen press and release but not a drag", () => {
+  let input: (data: string) => void = () => { throw new Error("terminal not started"); };
+  const terminal: Terminal = {
+    columns: width, rows: 24, kittyProtocolActive: false,
+    start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {},
+    moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {},
+    clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+  };
+  const screen = new TuiAltScreen(terminal, false, undefined, { copyOnSelect: false });
+  screen.addChild(card("intercom_message", incoming));
+  const screenText = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
+  const mouse = (button: number, x: number, y: number, release = false) =>
+    input(`\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`);
+  screen.start();
+  try {
+    screen.renderNow();
+    const y = screen.getScreenLines().findIndex(line => stripTerminalSequences(line).includes("First line Second line"));
+    expect(y).toBeGreaterThanOrEqual(0);
+    expect(screenText()).not.toContain("Attachment: note.txt");
+    mouse(0, 5, y);
+    screen.renderNow();
+    expect(screenText()).not.toContain("Attachment: note.txt");
+    mouse(0, 5, y, true);
+    screen.renderNow();
+    expect(screenText()).toContain("Attachment: note.txt");
+    mouse(0, 5, y);
+    mouse(32, 9, y);
+    mouse(0, 9, y, true);
+    screen.renderNow();
+    expect(screenText()).toContain("Attachment: note.txt");
+    mouse(0, 5, y);
+    mouse(0, 5, y, true);
+    screen.renderNow();
+    expect(screenText()).not.toContain("Attachment: note.txt");
+  } finally {
+    screen.stop();
+  }
 });
 
 describe("incoming intercom clicks", () => {

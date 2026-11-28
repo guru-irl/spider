@@ -147,9 +147,9 @@ async function startTool(m: Machine, intercom: ReturnType<typeof createV0Interco
   cleanups.push(() => emit("session_shutdown"));
   await emit("session_start");
   const tool = tools.find(item => item.name === "intercom")!;
-  return async (to: string, action: "send" | "ask" | "reply" = "send", message = "fixture message") => {
-    const { content, details } = await tool.execute("route-fixture", { action, ...(action === "reply" ? { replyTo: to } : { to }), message },
-      undefined, undefined, ctx as unknown as ExtensionToolContext);
+  return async (to: string, action: "send" | "ask" | "reply" | "pending" = "send", message = "fixture message") => {
+    const args = action === "pending" ? { action } : { action, ...(action === "reply" ? { replyTo: to } : { to }), message };
+    const { content, details } = await tool.execute("route-fixture", args, undefined, undefined, ctx as unknown as ExtensionToolContext);
     if (content[0]?.type !== "text" || !details || typeof details !== "object") throw new Error("Missing intercom tool result");
     return { content: [content[0]], details: details as Record<string, unknown> };
   };
@@ -820,6 +820,38 @@ it("the broker refuses an ask submission without its own waiter", async () => {
     .toMatchObject({ attempted: false, outcome: { kind: "refused", code: "unauthorized" } });
   f.abort.abort();
   expect((await f.held!).submissions).toEqual([]);
+});
+
+it("dismisses a routed ask when the asker has stopped waiting", async () => {
+  const f = await fixture();
+  await f.remote.client.disconnect();
+  const replyTool = await startTool(f.receiver, f.targetIntercom, { id: "remote-recipient", epoch: 3, idle: true });
+  await vi.waitFor(() => liveEndpoint(f.receiver, "remote-recipient"));
+  vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+  const reverse = openLink(f.receiver, relay, [relay, origin]);
+  expect((await reverse.poll(0)).ready.ok).toBe(true);
+  const replyHeld = reverse.poll(20_000);
+
+  const abort = new AbortController();
+  const ask = await askPlan(f);
+  const pending = ask(marker("ask-cancelled"), 60_000, abort.signal);
+  const question = await takeOffer(f.held!, pending, "ask-cancelled", "ask");
+  const delivered = await f.forward(question);
+  expect(delivered).toMatchObject({ attempted: true, outcome: { kind: "socket_delivered", id: "ask-cancelled" } });
+  await f.poll(0, [delivered]);
+  await vi.waitFor(async () => expect((await replyTool("", "pending")).content[0].text).toContain("ask-cancelled"));
+  abort.abort();
+  expect(await pending).toMatchObject({ kind: "unknown", id: "ask-cancelled" });
+
+  const reply = replyTool("ask-cancelled", "reply", "late answer");
+  const offered = await Promise.race([replyHeld, reply]);
+  if (!("submissions" in offered)) throw new Error("Relay did not receive the routed reply");
+  expect(offered.submissions).toMatchObject([{ kind: "reply", replyTo: "ask-cancelled" }]);
+  await reverse.poll(0, [await f.forward(offered.submissions[0])]);
+  const result = await reply;
+  expect(result.content[0].text.split("\n")[0]).toBe("The asker is no longer waiting.");
+  expect(result.details).toMatchObject({ error: true, code: "asker-no-longer-waiting", path: "relay relay-1.invalid" });
+  expect((await replyTool("", "pending")).content[0].text).toBe("No unresolved inbound asks.");
 });
 
 it("uses the routed reply for a busy non-interactive recipient", async () => {

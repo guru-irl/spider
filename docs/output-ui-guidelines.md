@@ -25,6 +25,11 @@ their copy actions at the right of the bottom edge. Sent messages have no copy
 buttons. Keep the copy label's one-space pad and let Pi handle clicks outside
 the actions.
 
+In fullscreen, mouse selection uses a blue background (`#3a4764`) while keeping
+text foregrounds. Hide selected block and bar glyphs so the highlight stays
+rectangular. Keep the original characters for Pi's clipboard copy. If the
+host selection method is not recognized, leave Pi's selection unchanged.
+
 ## Card layout
 
 1. Pi owns the transcript spacer and the default tool box. Notification renderers

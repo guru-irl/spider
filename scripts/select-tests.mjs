@@ -123,12 +123,12 @@ export async function testPriorities({ root, files, changedPaths }) {
 }
 
 // The unbudgeted selector remains available for full-inventory safety audits.
-export async function deferSlowTests({ root, files, changedPaths, durations = JSON.parse(readFileSync(timingPath)) }) {
+export async function deferSlowTests({ root, files, changedPaths, requiredFiles = new Set(), durations = JSON.parse(readFileSync(timingPath)) }) {
   const changed = new Set(changedPaths);
   const sourceDirectories = new Set(changedPaths.filter(file => /^packages\/[^/]+\/src\//.test(file)
     && code.test(file) && !rootTest.test(file) && !file.includes('/__tests__/')).map(dirname));
   const candidates = files.filter(file => (durations[file] ?? 0) > 5000
-    && !changed.has(file) && !sourceDirectories.has(dirname(file)));
+    && !requiredFiles.has(file) && !changed.has(file) && !sourceDirectories.has(dirname(file)));
   if (!candidates.length) return { files: sorted(files), deferred: [] };
   const direct = await directImportMatcher(root, changed);
   const deferred = sorted(candidates).filter(file => !direct(file)).map(file => ({
@@ -143,6 +143,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
   const started = performance.now();
   const inventory = testInventory(root);
   const reasons = new Map();
+  const requiredFiles = new Set();
   const add = (file, reason) => {
     if (!inventory.includes(file)) return;
     if (!reasons.has(file)) reasons.set(file, new Set());
@@ -175,6 +176,20 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
     }
     result.changedPaths = sorted(changes.map(change => change.file));
     if (policyFailure) throw new Error(policyFailure);
+    // Collect rule tests for every changed path before any full fallback can
+    // interrupt classification. They remain required in the budgeted fallback.
+    for (const { file } of changes) {
+      const owner = file.match(/^packages\/([^/]+)\//)?.[1];
+      for (const rule of policy.rules.filter(rule => matches(file, rule.inputs))) {
+        // Tests are graph inputs, not production source-text changes.
+        if (rule.id === 'source-text' && (rootTest.test(file) || file.includes('/__tests__/'))) continue;
+        const patterns = rule.tests.filter(pattern => owner || !pattern.includes('$package')).map(pattern => pattern.replaceAll('$package', owner));
+        for (const test of inventory) if (matches(test, patterns)) {
+          add(test, `${rule.id}: ${rule.reason}`);
+          requiredFiles.add(test);
+        }
+      }
+    }
     if (changes.some(change => change.status === 'D')) throw new Error('deleted input requires the full inventory until base-graph support');
     const seeds = new Set();
     for (const { file } of changes) {
@@ -185,12 +200,9 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
       if (!rules.length && !isCode) throw new Error(`unclassified changed path: ${file}`);
       if (isCode) seeds.add(file);
       if (rootTest.test(file)) add(file, 'changed test');
-      const owner = file.match(/^packages\/([^/]+)\//)?.[1];
       for (const rule of rules) {
         // Tests are graph inputs, not production source-text changes.
         if (rule.id === 'source-text' && (rootTest.test(file) || file.includes('/__tests__/'))) continue;
-        const patterns = rule.tests.filter(pattern => owner || !pattern.includes('$package')).map(pattern => pattern.replaceAll('$package', owner));
-        for (const test of inventory) if (matches(test, patterns)) add(test, `${rule.id}: ${rule.reason}`);
         for (const seed of rule.related) seeds.add(seed);
       }
     }
@@ -209,7 +221,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
     }
     if (changes.length && !reasons.size) throw new Error('changed inputs have no classified test consumer');
     if (budgetMs === undefined) {
-      const scoped = await deferSlowTests({ root, files: sorted(reasons.keys()), changedPaths: result.changedPaths });
+      const scoped = await deferSlowTests({ root, files: sorted(reasons.keys()), changedPaths: result.changedPaths, requiredFiles });
       result.deferred = scoped.deferred.map(entry => ({ ...entry, reasons: sorted(reasons.get(entry.file)) }));
     }
   } catch (error) {
@@ -234,7 +246,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
     const { cutToBudget, PR_IMPORT_MS } = await import('./test-shard-budget.mjs');
     const files = sorted(reasons.keys());
     const priorities = await testPriorities({ root, files, changedPaths: result.changedPaths });
-    const cut = cutToBudget({ files, durations: JSON.parse(readFileSync(timingPath)), priorities, limitMs: budgetMs, importMs: PR_IMPORT_MS });
+    const cut = cutToBudget({ files, durations: JSON.parse(readFileSync(timingPath)), priorities, requiredFiles, limitMs: budgetMs, importMs: PR_IMPORT_MS });
     result.budget = { candidateMode: result.mode, ...cut.budget };
     result.mode = 'scoped';
     result.deferred = cut.deferred.map(entry => ({ ...entry, reasons: sorted(reasons.get(entry.file)) }));

@@ -7,6 +7,14 @@ import { isDeepStrictEqual } from "node:util";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+const lockSync = vi.hoisted(() => ({ enabled: false }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const { fixtureLockOpen } = await import("./fixture-lock-sync");
+  return { ...real, open: fixtureLockOpen(real.open, () => lockSync.enabled) };
+});
+
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -53,7 +61,9 @@ const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-80
 const REPO = "repo:fixture-repo" as StoreKey;
 const SESSION = "session-a", WT = "worktree:fixture-repo:fixture-workspace" as StoreKey;
 const roots: string[] = [], closes: Array<() => void | Promise<void>> = [];
-afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const appAbsenceCase = "app absence records pending presentation but does not delay ownership handoff";
+beforeEach(context => { lockSync.enabled = context.task.name === appAbsenceCase; });
+afterEach(async () => { lockSync.enabled = false; for (const close of closes.splice(0).reverse()) await close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const unused = async (): Promise<never> => { throw new Error("Unexpected external call"); };
 let gitCalls = 0;
 function git(cwd: string, argv: readonly string[], options?: { env?: Readonly<NodeJS.ProcessEnv>; stdin?: Buffer }): Buffer {
@@ -744,7 +754,7 @@ it("real Git artifacts prepare and transfer into the exact installed manifest fi
   await expect(f.ports.verifySource(ack, final.workspace.snapshot)).rejects.toThrow();
 }, 5000);
 
-it("app absence records pending presentation but does not delay ownership handoff", async () => {
+it(appAbsenceCase, async () => {
   const { f, operation } = interruptedFixture;
   const freeze = f.journal.read(operation.id).find(row => row.action === "move-action-complete" && row.result.action === "freeze")?.result.value as unknown as FreezeAck;
   expect(freeze.file).toBe(f.file);

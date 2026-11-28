@@ -192,26 +192,32 @@ describe("relocate", () => {
     expect(s.effects.slice(before)).toEqual(["locate-destination", "publish-destination-running", "activate-destination", "start-destination", "confirm-destination"]);
   });
 
-  it("stopped source can move and stopped local copy can resume", async () => {
+  it("refuses a stopped move without stopped placement ports but reports cached Stop at home", async () => {
     const remote = state(); remote.home = { ...running(), state: "stopped" }; remote.processes.clear();
-    expect(await relocate(request, ports(remote))).toMatchObject({ ok: true, value: {
-      disposition: "relocated", home: { machineId: destination, epoch: 3, state: "running" },
+    expect(await relocate(request, ports(remote))).toMatchObject({ ok: false, step: "check", moveId: null,
+      home: { machineId: source, epoch: 1, state: "stopped" }, refusal: { code: "home-unavailable" },
+    });
+    expect(remote.snapshots.size).toBe(0); expect(remote.segments.size).toBe(0);
+    const local = state(), home = { ...running(), state: "stopped" } as const;
+    local.home = home; local.processes.clear();
+    const stop = { sessionId, machineId: source, homeEpoch: 1, homeState: "stopped", status: "stopped", reason: null, observedAt: 123 } as const;
+    expect(await relocate({ sessionId, destinationMachine: source }, { ...ports(local), stoppedStatus: () => stop })).toEqual({ ok: true, value: {
+      disposition: "already-home", moveId: null, home, stop,
     } });
-    expect(remote.snapshots.size).toBe(1); expect(remote.segments.size).toBe(1);
-    const local = state(); local.home = { ...running(), state: "stopped" }; local.processes.clear();
-    expect(await relocate({ sessionId, destinationMachine: source }, ports(local))).toMatchObject({ ok: true, value: {
-      disposition: "already-home", moveId: null, home: { machineId: source, epoch: 2, state: "running" },
-    } });
-    expect(local.effects).toEqual(["locate-source", "activate-source", "cas-running", "publish-source-running", "start-source", "confirm-source"]);
+    expect(local.effects).toEqual([]);
+    expect(local.homesWritten).toEqual([]);
     expect(local.ids).toBe(0); expect(local.snapshots.size).toBe(0); expect(local.segments.size).toBe(0);
-    expect(local.processes).toEqual(new Set([source]));
+    expect(local.processes).toEqual(new Set());
   });
 
-  it("missing stopped local copy leaves home stopped", async () => {
+  it("reports a stopped home even without a verified local copy", async () => {
     const s = state(); s.home = { ...running(), state: "stopped" }; s.processes.clear();
     const home = structuredClone(s.home); s.refuse = { effect: "locate-source", code: "destination-copy-missing" };
-    expect(await relocate({ sessionId, destinationMachine: source }, ports(s))).toMatchObject({ ok: false, refusal: { code: "destination-copy-missing" } });
-    expect(s.home).toEqual(home); expect(s.effects).toEqual([]); expect(s.ids).toBe(0);
+    expect(await relocate({ sessionId, destinationMachine: source }, ports(s))).toEqual({ ok: true, value: {
+      disposition: "already-home", moveId: null, home, stop: { sessionId, machineId: source, homeEpoch: 1, homeState: "stopped",
+        status: "stop-pending", reason: "Exit has not been confirmed.", observedAt: null },
+    } });
+    expect(s.home).toEqual(home); expect(s.attempts).toEqual(["read"]); expect(s.effects).toEqual([]); expect(s.ids).toBe(0);
   });
 
   it.each(["missing", "unreadable", "malformed", "wrong-source", "wrong-destination", "wrong-id", "wrong-epoch", "missing-capture", "missing-install"])("missing journal never guesses a source: %s", async mode => {
@@ -321,16 +327,6 @@ describe("relocate", () => {
     expect(protocol(s.effects.slice(before))).toEqual(["publish-source-running", "activate-source", "start-source", "confirm-source"]);
     expect(s.home).toMatchObject({ machineId: source, state: "running", epoch: 3 });
     expect(s.processes).toEqual(new Set([source])); expect(s.snapshots.size).toBe(1);
-  });
-
-  it("stopped-home resume recovers after the CAS reply is lost", async () => {
-    const s = state(); s.home = { ...running(), state: "stopped" }; s.processes.clear();
-    s.failAfter = "cas-running";
-    const resume = { sessionId, destinationMachine: source };
-    expect((await relocate(resume, ports(s))).ok).toBe(false);
-    expect(await relocate(resume, ports(s))).toMatchObject({ ok: true, value: { disposition: "already-home", home: { epoch: 2 } } });
-    expect(s.replicaHomes.get(source)).toEqual(s.home);
-    expect(s.ids).toBe(0); expect(s.snapshots.size).toBe(0);
   });
 
   it.each(["cas-moving", "cas-running"])("lost %s reply reports the durable home", async boundary => {

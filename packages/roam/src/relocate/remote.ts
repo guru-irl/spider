@@ -1,10 +1,13 @@
-import type { JsonObject, StoreKey } from "@spider/db-core/roam/types";
+import type { JsonObject, MachineId, StoreKey } from "@spider/db-core/roam/types";
+import { validUnicode } from "@spider/db-core/roam/hlc";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { createAgentPorts, handleAgentOperation, handleAgentArtifactRequest } from "../agent";
 import { createStorePort } from "../stores";
 import { resolveParticipantPi } from "../launcher";
-import { createLocalRuntime, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, exactHome, SessionSeedBusy, seedBusyRefusal } from "./local";
+import { createLocalRuntime, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, requestLocalStop, SessionSeedBusy, seedBusyRefusal } from "./local";
+import { decodeManagedHome, sameManagedHome } from "./home";
+import type { StopBlocker, StopMode, StopObservation } from "./session-stop-types";
 import { beginLocalMove, captureLocalSession, installLocalSession, stagingRoot } from "./transfer";
 import { json, parseCaptured, parseHome, parsePlan, parsePlacement } from "./journal";
 import type { Operation, Outcome, Peer, Transport } from "../contracts";
@@ -12,7 +15,7 @@ import { artifactId } from "../staging";
 import { object, text } from "./journal";
 import { isMachineId } from "../machine-id";
 import { withV0HomeLifecycle } from "./home-lifecycle";
-import type { V0RefusalCode, V0Result, RelocateAdapterOptions, RelocatePlan, SessionId, SessionPlacement, RunningHome, MovingHome } from "./types";
+import type { V0RefusalCode, V0Result, RelocateAdapterOptions, RelocatePlan, SessionId, SessionPlacement, RunningHome, MovingHome, SettledHome, StoppedHome } from "./types";
 
 export const dataKinds: ReadonlySet<string> = new Set(["stores", "inventory", "enable-capture", "export", "release-export", "split", "assemble", "cursor", "receipt", "import", "recheck-store"]);
 export function refusal<T = never>(code: V0RefusalCode, message: string, nextStep = "Retry spider roam relocate with the same session and target."): V0Result<T> {
@@ -37,6 +40,63 @@ export async function callV0(transport: Transport, peer: Peer, input: unknown, l
   if (value.version !== 1) throw new Error("Peer does not support v0 version 1");
   return {ok:true,value};
 }
+function exactFields(value: unknown, ...keys: string[]): Record<string, unknown> {
+  const row = object(value);
+  if (Object.keys(row).length !== keys.length || keys.some(key => !Object.hasOwn(row, key))) throw new Error("Invalid v0 Stop fields");
+  return row;
+}
+function stopText(value: unknown): string {
+  text(value);
+  if (!value.trim() || !validUnicode(value)) throw new Error("Invalid v0 Stop text");
+  return value;
+}
+function stopWireHome(value: unknown) {
+  const home = exactFields(value, "sessionId", "machineId", "epoch", "state", "destination", "moveId", "updatedAt");
+  stopText(home.sessionId);
+  return decodeManagedHome(home);
+}
+export function decodeStopObservation(value: unknown, machineId: MachineId, expected: StoppedHome): StopObservation {
+  const o = exactFields(value, "sessionId", "machineId", "home", "bootId", "observedAt", "evidence");
+  const home = o.home === null ? null : stopWireHome(o.home);
+  if (o.machineId !== machineId || o.sessionId !== expected.sessionId || home && home.sessionId !== expected.sessionId)
+    throw new Error("Mismatched v0 Stop observation identity");
+  const bootId = o.bootId === null ? null : stopText(o.bootId), observedAt = o.observedAt;
+  if (observedAt !== null && (typeof observedAt !== "number" || !Number.isSafeInteger(observedAt) || observedAt < 0))
+    throw new Error("Invalid v0 Stop observation time");
+  const fields = { sessionId: expected.sessionId, machineId, home, bootId, observedAt };
+  const e = object(o.evidence);
+  if (e.kind === "pending") {
+    exactFields(e, "kind", "reason", "blockers");
+    if (!Array.isArray(e.blockers)) throw new Error("Invalid v0 Stop blockers");
+    const blockers = e.blockers.map((value: unknown): StopBlocker => {
+      const blocker = object(value);
+      if (blocker.kind === "check") {
+        exactFields(blocker, "kind", "reason");
+        return { kind: "check", reason: stopText(blocker.reason) };
+      }
+      if (blocker.kind === "job" && typeof blocker.cancelFromOwner === "boolean") {
+        exactFields(blocker, "kind", "id", "cancelFromOwner");
+        return { kind: "job", id: stopText(blocker.id), cancelFromOwner: blocker.cancelFromOwner };
+      }
+      throw new Error("Invalid v0 Stop blocker");
+    });
+    return { ...fields, evidence: { kind: "pending", reason: stopText(e.reason), blockers } };
+  }
+  if (!sameManagedHome(home, expected) || bootId === null || observedAt === null) throw new Error("Unbound v0 Stop evidence");
+  if (e.kind === "checking") {
+    exactFields(e, "kind");
+    return { ...fields, evidence: { kind: "checking" } };
+  }
+  if (e.kind === "confirmed") {
+    exactFields(e, "kind", "owner");
+    const p = e.owner === null ? null : exactFields(e.owner, "pid", "startIdentity", "bootId");
+    if (p === null) return { ...fields, evidence: { kind: "confirmed", owner: null } };
+    if (typeof p.pid !== "number" || !Number.isSafeInteger(p.pid) || p.pid <= 1 || p.pid > 0x7fff_ffff || p.bootId !== bootId)
+      throw new Error("Invalid v0 Stop owner generation");
+    return { ...fields, evidence: { kind: "confirmed", owner: { pid: p.pid, startIdentity: stopText(p.startIdentity), bootId } } };
+  }
+  throw new Error("Invalid v0 Stop evidence");
+}
 export type RelocateAgentRequest =
   | {version:1;kind:"data";operation:Operation}
   | {version:1;kind:"hello"}
@@ -45,10 +105,12 @@ export type RelocateAgentRequest =
   | {version:1;kind:"seed";placement:SessionPlacement;epoch:number;allowStopped?:boolean}
   | {version:1;kind:"prerequisite";sessionId:SessionId;candidate:string;allowStopped?:boolean}
   | {version:1;kind:"authorize"|"capture";plan:RelocatePlan}
-  | {version:1;kind:"install";plan:RelocatePlan;captured:NonNullable<import("./types").RelocateCheckpoint["captured"]>;home:RunningHome}
+  | {version:1;kind:"install";plan:RelocatePlan;captured:NonNullable<import("./types").RelocateCheckpoint["captured"]>;home:SettledHome}
   | {version:1;kind:"activate"|"start";home:RunningHome;placement:SessionPlacement}
-  | {version:1;kind:"confirm";home:RunningHome;placement:SessionPlacement;exact?:true}
+  | {version:1;kind:"confirm";home:RunningHome;placement:SessionPlacement;exact?:true;admitted?:true}
   | {version:1;kind:"stop";sessionId:SessionId;moving:MovingHome|null}
+  | {version:1;kind:"ensure-stopped";sourceMachine:MachineId;home:StoppedHome;mode:StopMode}
+  | {version:1;kind:"session-observation";sourceMachine:MachineId;sessionId:SessionId;home:StoppedHome}
   | {version:1;kind:"artifact";sourceMachine:string;input:unknown;bytes:string|null};
 export function parseAgentRequest(input: unknown): RelocateAgentRequest {
   const r=object(input);if(r.version!==1)throw new Error("Unsupported private protocol");
@@ -61,9 +123,27 @@ export function parseAgentRequest(input: unknown): RelocateAgentRequest {
     case "seed":parsePlacement(r.placement);if(!Number.isSafeInteger(r.epoch)||(r.epoch as number)<1 || r.allowStopped!==undefined && typeof r.allowStopped!=="boolean")throw new Error("Invalid seed epoch");break;
     case "prerequisite":text(r.sessionId);if(typeof r.candidate!=="string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(r.candidate))throw new Error("Invalid prerequisite");break;
     case "authorize":case "capture":parsePlan(r.plan);break;
-    case "install":parsePlan(r.plan);parseCaptured(r.captured);if(parseHome(r.home).state!=="running")throw new Error("Invalid install home");break;
-    case "activate":case "start":case "confirm":if(parseHome(r.home).state!=="running")throw new Error("Invalid launch home");parsePlacement(r.placement);if(r.kind==="confirm" && r.exact!==undefined && r.exact!==true)throw new Error("Invalid exact confirmation flag");break;
+    case "install": {
+      const plan=parsePlan(r.plan);parseCaptured(r.captured);
+      if(parseHome(r.home).state!==plan.source.state)throw new Error("Invalid install home");
+      break;
+    }
+    case "activate":case "start":case "confirm":
+      if (parseHome(r.home).state !== "running") throw new Error("Invalid launch home");
+      parsePlacement(r.placement);
+      if (r.kind === "confirm" && (r.exact !== undefined && r.exact !== true ||
+          r.admitted !== undefined && (r.admitted !== true || r.exact !== true))) throw new Error("Invalid confirmation flags");
+      break;
     case "stop":text(r.sessionId);if(r.moving!==null && parseHome(r.moving).state!=="moving")throw new Error("Invalid stop home");break;
+    case "ensure-stopped":
+    case "session-observation": {
+      exactFields(r, "version", "kind", "sourceMachine", "home", r.kind === "ensure-stopped" ? "mode" : "sessionId");
+      const home = stopWireHome(r.home);
+      if (!isMachineId(r.sourceMachine) || home.state !== "stopped" ||
+          (r.kind === "ensure-stopped" ? r.mode !== "graceful" && r.mode !== "hard" : r.sessionId !== home.sessionId))
+        throw new Error("Invalid v0 Stop request");
+      break;
+    }
     case "artifact":if(!isMachineId(r.sourceMachine))throw new Error("Invalid artifact sender");object(r.input);if(!(r.bytes===null || typeof r.bytes==="string"))throw new Error("Invalid artifact bytes");break;
     default:throw new Error("Unsupported v0 operation");
   }
@@ -97,7 +177,19 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
       : refusal("replication-disabled", "The destination box has disabled roaming.", "Run spider roam enable on the destination box, then retry relocate from the Mac."));
   try {
     switch(r.kind) {
-      case "hello":return {ok:true,value:{version:1,machineId:options.config.machineId,pi:!!resolveParticipantPi(),spider:true}};
+      case "hello":return {ok:true,value:{version:1,machineId:options.config.machineId,pi:!!resolveParticipantPi(),spider:true,sessionStopVersion:1}};
+      case "ensure-stopped":
+      case "session-observation": {
+        if (options.config.role !== "box" || !enrolledSender(r.sourceMachine))
+          return refusal("invalid-arguments", "Only the enrolled hub can send Stop requests to this box.", "Run spider roam session stop on the Mac.");
+        if (boxReplicationDisabled())
+          return refusal("replication-disabled", "The box has disabled roaming replication.", "Run spider roam enable on the box, then retry Stop.");
+        if (r.kind === "session-observation") {
+          return { ok: true, value: { version: 1, observation: await createLocalRuntime(options).observeStopped(r.home) } };
+        }
+        const queued = requestLocalStop(r.home, r.mode, options);
+        return queued.ok ? { ok: true, value: { version: 1, pending: true } } : queued;
+      }
       case "home":return {ok:true,value:{version:1,home:await options.homes.read(r.sessionId)}};
       case "source":{
         const home=r.allowStopped?await options.homes.read(r.sessionId):null;
@@ -113,15 +205,11 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         return {ok:true,value:{version:1,available}};
       }
       case "seed":{
-        const home=r.allowStopped?await options.homes.read(r.placement.sessionId):null;
-        const stopped=!!r.allowStopped && home?.state==="stopped" && home.machineId===options.config.machineId && home.epoch===r.epoch;
-        const source=await inspectLocalSource(r.placement.sessionId,options,stopped);
+        if(r.allowStopped || (await options.homes.read(r.placement.sessionId))?.state==="stopped")
+          return refusal("home-conflict","A stopped source cannot be seeded.");
+        const source=await inspectLocalSource(r.placement.sessionId,options);
         if(!source.ok)return source;
         if(source.value.epoch!==r.epoch || JSON.stringify(source.value.placement)!==JSON.stringify(r.placement))return refusal("home-conflict","The active source placement changed before seeding.");
-        if(stopped && source.value.state==="frozen") {
-          const stores=createStorePort(options.config,options.globalDb);
-          try{for(const key of r.placement.stores)if(key.startsWith("worktree:"))stores.openStore(key).db.prepare("UPDATE roam_sessions SET state='active' WHERE session_id=? AND epoch=? AND state='frozen'").run(r.placement.sessionId,r.epoch);}finally{stores.close();}
-        }
         await seedLocalPlacement(r.placement,r.epoch,options);return {ok:true,value:{version:1}};
       }
       case "authorize":return await receive(async () => {
@@ -193,8 +281,8 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
           case "activate":return wrap(await local.activate(r.home,r.placement));
           case "start":return wrap(await local.start(r.home,r.placement));
           case "confirm":{
-            const result=await local.confirm(r.home,r.placement,r.exact);
-            return result.ok && r.exact ? wrap({ok:true,value:{...result.value,exact:true}}) : wrap(result);
+            const result = await local.confirm(r.home, r.placement, r.exact, r.admitted);
+            return result.ok && r.exact ? wrap({ ok: true, value: { ...result.value, exact: true, ...(r.admitted && { admitted: true }) } }) : wrap(result);
           }
         }
       }

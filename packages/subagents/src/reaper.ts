@@ -71,3 +71,59 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
 
   return { reaped };
 }
+
+/** Unlike started_at, the end of a terminal run bounds when its child must already have started. */
+export function birthlessTerminalEnd(row: Readonly<RunRow>): number | null {
+  if (typeof row.pid_start_time === "string" && row.pid_start_time.trim()) return null;
+  if (row.status !== "done" && row.status !== "failed" && row.status !== "cancelled") return null;
+  return row.ended_at !== null && Number.isSafeInteger(row.ended_at) && row.ended_at > 0 ? row.ended_at : null;
+}
+
+function sameRunIdentity(before: Readonly<RunRow>, current: Readonly<RunRow>): boolean {
+  const end = birthlessTerminalEnd(before);
+  return before.session_id === current.session_id && before.origin_machine === current.origin_machine &&
+    before.host_pid === current.host_pid && before.pid === current.pid && before.pid_start_time === current.pid_start_time &&
+    before.started_at === current.started_at && before.parent_run_id === current.parent_run_id &&
+    (end === null || end === birthlessTerminalEnd(current));
+}
+
+/** Stop owns the session fence and the absence proof. This path never signals. */
+export async function reapStoppedSessionRuns(deps: {
+  db: Db;
+  globalDb?: Db;
+  sessionId: string;
+  proveAbsent(row: Readonly<RunRow>): Promise<boolean>;
+}): Promise<{ reaped: readonly string[]; blockers: readonly string[] }> {
+  const { db, sessionId } = deps;
+  const store = new RunStore(db, deps.globalDb);
+  const scoped = `SELECT r.* FROM runs r WHERE r.session_id = ? AND ${localRunPredicate(db)}`;
+  // Startup or a manual cancellation may already have marked a surviving
+  // child terminal. Keep probing its recorded identity until it is gone.
+  const candidates = db.prepare(`${scoped} AND (r.pid IS NOT NULL OR r.status IN ('queued','running','paused')) ORDER BY r.id`);
+  const reread = db.prepare(`${scoped} AND r.id = ?`);
+  const rows = candidates.all(sessionId) as RunRow[];
+  const absent = new Map<string, Readonly<RunRow>>();
+  const reaped: string[] = [], blockers = new Set<string>();
+  for (const row of rows) {
+    try {
+      if (await deps.proveAbsent(Object.freeze(row)) !== true) { blockers.add(row.id); continue; }
+      const settled = db.transaction(() => {
+        const current = reread.get(sessionId, row.id) as RunRow | undefined;
+        if (!current || !sameRunIdentity(row, current)) return null;
+        return store.cancel(row.id, "Stopped session: child absence verified.");
+      })();
+      if (settled === null) blockers.add(row.id);
+      else {
+        absent.set(row.id, row);
+        if (settled) reaped.push(row.id);
+      }
+    } catch { blockers.add(row.id); }
+  }
+  // A row published or changed while another proof was in flight had no
+  // matching probe in this pass. It must not be hidden by that earlier proof.
+  for (const current of candidates.all(sessionId) as RunRow[]) {
+    const proved = absent.get(current.id);
+    if (!proved || !sameRunIdentity(proved, current)) blockers.add(current.id);
+  }
+  return { reaped, blockers: [...blockers] };
+}

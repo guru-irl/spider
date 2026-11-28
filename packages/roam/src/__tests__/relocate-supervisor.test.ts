@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@spider/db-core/roam/types";
 import type { Clock } from "../contracts";
-import type { HomeSupervisorPorts, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SupervisorEntry } from "../relocate/types";
-import { createHomeSupervisor } from "../relocate/supervisor";
+import type { RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SupervisorEntry } from "../relocate/types";
+import { createHomeSupervisor, type StopSupervisorPorts } from "../relocate/supervisor";
 
 const local = "box-a" as MachineId;
 const foreign = "box-b" as MachineId;
@@ -15,9 +15,11 @@ function fixture() {
   let owner: SessionOwner = { kind: "free" };
   const effects: string[] = [];
   const clock: Clock = { now: Date.now, later: (ms, fn) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
-  const ports: HomeSupervisorPorts = {
+  const ports: StopSupervisorPorts = {
     machineId: local, clock, entries: vi.fn(async () => entries), owner: vi.fn(async () => owner),
     stop: vi.fn(async (session) => { effects.push(`stop:${session}`); return ok; }),
+    stopStopped: vi.fn(async home => ({ sessionId: home.sessionId, machineId: local, home, bootId: "boot",
+      observedAt: 1, evidence: { kind: "confirmed" as const, owner: null } })),
     activate: vi.fn(async (home) => { effects.push(`activate:${home.epoch}`); return ok; }),
     start: vi.fn(async (home) => { effects.push(`start:${home.epoch}`); return { ok: true as const, value: { terminal: "core:term" } }; }),
     report: vi.fn(),
@@ -37,16 +39,18 @@ describe("v0 home supervisor", () => {
     for (const home of denied) { f.setEntries([{ sessionId: id, home, placement }]); await loop.tick(); }
     expect(f.ports.start).toHaveBeenCalledTimes(1);
   });
-  it("missing managed home stops the runner", async () => {
+  it("routes stopped homes separately from other non-running entries", async () => {
     const f = fixture(); const loop = createHomeSupervisor(f.ports);
     f.setOwner({ kind: "live", pid: 42, terminal: null }); await loop.tick();
-    for (const home of [null, { ...running(), machineId: foreign }, { ...running(), state: "stopped" as const }, { ...running(), state: "moving" as const, moveId: "v0-move" as never, destination: foreign }]) {
+    const stopped = { ...running(2), state: "stopped" as const };
+    for (const home of [null, { ...running(), machineId: foreign }, stopped, { ...running(), state: "moving" as const, moveId: "v0-move" as never, destination: foreign }]) {
       f.setEntries([{ sessionId: id, home, placement }]); await loop.tick();
     }
     f.setEntries([]); await loop.tick();
-    expect(f.ports.stop).toHaveBeenCalledWith(id);
+    expect(vi.mocked(f.ports.stop).mock.calls).toEqual([[id], [id], [id], [id]]);
+    expect(f.ports.stopStopped).toHaveBeenCalledExactlyOnceWith(stopped);
     expect(f.ports.start).not.toHaveBeenCalled();
-    expect(f.effects.every(e => !e.includes("ordinary-session"))).toBe(true);
+    expect(f.effects.every(effect => !effect.includes("ordinary-session"))).toBe(true);
   });
   it.each([true, false])("crashed pi restarts within one minute while hub is offline (sync enabled=%s)", async (enabled) => {
     vi.useFakeTimers(); const f = fixture();

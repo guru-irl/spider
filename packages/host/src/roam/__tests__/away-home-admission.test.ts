@@ -14,7 +14,8 @@ import { openJournal } from "@spider/roam/journal";
 import { createHomeStore } from "@spider/roam/relocate/home";
 import * as awayHome from "@spider/roam/relocate/away-home";
 import { relocate } from "@spider/roam/relocate/relocate";
-import { setHome } from "@spider/roam/relocate/set-home";
+import { createSessionStopStore, displacedByForce } from "@spider/roam/relocate/session-stop-store";
+import { setHome, type ForceHomePorts } from "@spider/roam/relocate/set-home";
 import type { RelocateId, RelocatePorts, RunningHome, SessionId, SetHomePorts, V0Result } from "@spider/roam/relocate/types";
 import { afterEach, expect, it, vi } from "vitest";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
@@ -510,7 +511,12 @@ it("a durably published fence still refuses after a fault before the away CAS co
   expect(await store.read(sid)).toEqual(moving);
   expect(await loadRelocateAdmission(sid, f.root)).toEqual({ kind: "unavailable", awayMachine: box });
 
-  const forcePorts = { ...f.forcePorts(), newMoveId: () => "v0-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" as RelocateId };
+  const stopStore = createSessionStopStore(f.db());
+  const forcePorts: ForceHomePorts = { ...f.forcePorts(), newMoveId: () => "v0-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" as RelocateId,
+    commitStopped: (expected, home) => store.compareAndSwap(expected, home, async () => ({ ok: true, value: undefined }),
+      () => stopStore.write({ action: "force", operationId: "fixture-force", expected, committed: home, mode: "graceful",
+        displaced: displacedByForce(expected, home, stopStore.current(sid)), observations: [], contactReason: null })),
+  };
   const sourcePlacement = await forcePorts.locate(hub, sid), destinationPlacement = await forcePorts.locate(box, sid);
   if (!sourcePlacement.ok || !destinationPlacement.ok) throw new Error("Fixture placement is missing");
   const unexpected = async () => { throw new Error("Undo must not prepare or transfer a new move"); };

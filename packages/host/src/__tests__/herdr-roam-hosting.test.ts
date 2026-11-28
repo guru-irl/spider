@@ -118,7 +118,7 @@ it("a hub-authorized launch records the actual launch operation receipt", async 
   expect(readLocal(global.db, "participant-ready", input.sessionId)).toEqual(readReadiness(journal, "launch-1"));
 }, 5000);
 
-it("a hub-stopped intent gives native admission the explicit resume hint", async () => {
+it("a hub-stopped intent directs native admission to the legacy upgrade guide", async () => {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const { global, config, input } = fixture(); seedNewParticipant(input);
   writeFileSync(input.file, JSON.stringify({ type: "session", version: 3, id: input.sessionId, cwd: input.cwd }) + "\n", { mode: 0o600 });
@@ -138,7 +138,7 @@ it("a hub-stopped intent gives native admission the explicit resume hint", async
     await hooks.get("session_start")({}, { cwd: input.cwd, sessionManager: { getSessionId: () => input.sessionId, getSessionFile: () => input.file } });
     const detail = gate.inspect().blockers[0]?.detail;
     expect(detail).toContain("participant-stopped");
-    expect(detail).toContain("spider roam resume new-session");
+    expect(detail).toContain("roaming-upgrade.md#settle-old-work-only-after-approval");
     expect(readLocal(global.db, "participant-ready", input.sessionId)).toBeUndefined();
   } finally { await gate.close(); }
 }, 5000);

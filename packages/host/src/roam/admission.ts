@@ -23,10 +23,13 @@ import { isMachineId } from "@spider/roam/machine-id";
 import { isRevoked } from "@spider/roam/revocation";
 import type { HostIntent, RoamConfig } from "@spider/roam/contracts";
 import type { RunningHome, SessionId } from "@spider/roam/relocate/types";
+import type { OwnerGeneration } from "@spider/roam/relocate/session-stop-types";
+import { consumeManagedLaunch, type ManagedLaunch } from "@spider/roam/relocate/launch-environment";
 import { createV0Runtime } from "@spider/roam/relocate/runtime";
 import { createLocalSessionMachinePorts } from "@spider/roam/relocate/local";
 import { loadRelocateAdmission, prepareRelocateAdmission, type LocalHomeAdmission } from "./relocate-admission";
 import { serveRelocateShutdown } from "./relocate-control";
+import { inspectLiveOwner } from "./live-owner";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[]; setupFailure?: MoveSetupFailure }
 export interface AdmissionGate {
@@ -59,7 +62,9 @@ export interface AdmissionPorts {
   ready?(sessionId: string, file: string, epoch: number, home: Home | null): Promise<void>;
   stopped?(sessionId: string): Promise<void>;
   v0Lookup?(sessionId: SessionId): Promise<LocalHomeAdmission>;
-  v0Ready?(sessionId: SessionId, file: string, home: RunningHome): Promise<{ close(): Promise<void> } | void>;
+  v0Owner?(sessionId: SessionId, file: string): Promise<OwnerGeneration | null>;
+  v0Ready?(sessionId: SessionId, file: string, home: RunningHome,
+    admittedOwner: () => Promise<OwnerGeneration | null>): Promise<{ close(): Promise<void> } | void>;
 }
 
 const VERIFY = "Cannot verify this session's home. Retry or run /spider roam doctor for details.";
@@ -76,9 +81,8 @@ function initialAdmissionFailure(stage: string, error: unknown, sessionId: strin
   const cause = moveSetupFailure("ownership", error).causeCode;
   const code = cause === "setup-unavailable" ? null : cause;
   const resume = code && ["participant-stopped", "participant-hub-intent-required", "participant-launch-provenance-unavailable"].includes(code);
-  const session = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(sessionId) ? sessionId : "<session>";
   return `admission-${stage}-failed. ${code ? `${code}. ` : ""}${resume
-    ? `Close this copy, then run spider roam resume ${session} on the hub. Resume runs doctor before starting the exact session.` : admissionFailure(error)}`;
+    ? "Close this copy. For legacy work, see docs/guide/roaming-upgrade.md#settle-old-work-only-after-approval." : admissionFailure(error)}`;
 }
 
 /** A blocked send must be distinguishable from a delivered message. */
@@ -87,13 +91,21 @@ export class AdmissionClosedError extends Error {
   constructor(message: string) { super(message); this.name = "AdmissionClosedError"; }
 }
 
+// A rebuilt extension may load a fresh module instance in the same pi process.
+const RELOAD_LAUNCH = Symbol.for("spider.roam.reload-launch.v1");
+const reloadState = globalThis as typeof globalThis & { [RELOAD_LAUNCH]?: ManagedLaunch };
+
 export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): AdmissionGate {
+  let initialLaunch = consumeManagedLaunch();
+  let reloadLaunch = reloadState[RELOAD_LAUNCH];
+  delete reloadState[RELOAD_LAUNCH];
+  let admittedLaunch: ManagedLaunch | undefined;
   let handoffRequired = process.env.SPIDER_HERDR_HANDOFF_FILE !== undefined;
-  if (process.env.PI_SUBAGENT_CHILD === "1" && !handoffRequired) {
+  if (process.env.PI_SUBAGENT_CHILD === "1" && !handoffRequired && initialLaunch === undefined && !reloadLaunch) {
     const child: Admission = { kind: "ordinary", home: null, blockers: [] };
     return { inspect: () => child, refreshInitialHome: async () => child, whenSettled: async () => child, close: async () => {}, freeze: async () => { throw new Error(VERIFY); }, unfreeze: async () => { throw new Error(VERIFY); } };
   }
-  let admission: Admission = { kind: "ordinary", home: null, blockers: [] };
+  let admission: Admission = { kind: initialLaunch === undefined && !reloadLaunch ? "ordinary" : "pending", home: null, blockers: [] };
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission);
   let sessionId = "", sessionFile = "", epoch: number | null = null, participating = false, generation = 0;
   let ownershipVerified = false;
@@ -157,7 +169,9 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   async function start(ctx: ExtensionContext | undefined, reopening = false, late = false): Promise<void> {
     const id = ctx?.sessionManager?.getSessionId?.() ?? "";
     const file = ctx?.sessionManager?.getSessionFile?.() ?? "";
-    const ticket = ++generation;
+    if (initialLaunch === undefined && reloadLaunch?.sessionId === id) initialLaunch = reloadLaunch;
+    reloadLaunch = undefined;
+    const ticket = ++generation, launch = initialLaunch;
     let result: Admission | undefined, admitted = false, stage = "eligibility";
     let setupFailure: MoveSetupFailure | undefined;
     const setupFailed = (stage: MoveSetupStage, error: unknown) => {
@@ -183,6 +197,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         if (ticket !== generation) return;
         sessionId = id; sessionFile = file; epoch = null; participating = false; ownershipVerified = false; discoverable = false; captureVersion = null;
         const pinId = !handoffRequired && ctx?.mode === "tui" && ctx.hasUI && process.env.PI_SUBAGENT_CHILD !== "1" ? ports.lockSessionId : undefined;
+        if (launch === null || launch && launch.sessionId !== id) { publishResult("blocked", null, VERIFY); return; }
         if (!id) { publishResult(handoffRequired || pinId ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : pinId ? ID_LOCK : undefined); return; }
         if (pinId && !pinned && !held) {
           try {
@@ -194,9 +209,10 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           }
         }
         v0Managed = false;
-        if (ports.v0Lookup) {
+        const lookupHome = () => ports.v0Lookup?.(id as SessionId);
+        if (ports.v0Lookup || launch) {
           let lookup: LocalHomeAdmission;
-          try { lookup = await ports.v0Lookup(id as SessionId); }
+          try { lookup = await lookupHome() ?? { kind: "unavailable" }; }
           catch { lookup = { kind: "unavailable" }; }
           if (ticket !== generation) return;
           const away = lookup.kind === "unavailable" && lookup.awayMachine;
@@ -204,7 +220,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           const v0Message = away
             ? `The last recorded away home is ${away}. Restore spider.db or re-sync it from a peer if it is missing or stale. Then run spider roam set-home ${arg} mac --force on the Mac to recover the local copy.`
             : "Cannot verify a local running home. Restore the local home before starting this session.";
-          if (lookup.kind === "virgin-local") {
+          if (lookup.kind === "virgin-local" && !launch) {
             v0Managed = true;
             if (handoffRequired || ports.expectedEpoch !== null || !pinned?.valid || observedV0.has(id)) {
               publishResult("blocked", null, v0Message);
@@ -214,24 +230,43 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
             }
             return;
           }
-          if (lookup.kind !== "unmanaged" || observedV0.has(id)) {
+          if (launch || lookup.kind !== "unmanaged" || observedV0.has(id)) {
             v0Managed = true;
             observedV0.add(id);
             const home = lookup.kind === "managed" ? lookup.home : null;
+            const expectedEpoch = launch?.homeEpoch ?? ports.expectedEpoch;
             try {
               const machine = await ports.localMachine();
               if (!home || home.state !== "running" || home.sessionId !== id || home.machineId !== machine ||
-                  ports.expectedEpoch !== null && ports.expectedEpoch !== home.epoch || !file || !isAbsolute(file)) {
-                await release(); publishResult("blocked", home, v0Message); return;
+                  launch && launch.machineId !== machine || expectedEpoch !== null && expectedEpoch !== home.epoch || !file || !isAbsolute(file)) {
+                const stopped = home?.state === "stopped" && home.sessionId === id && home.machineId === machine;
+                const detail = stopped ? `This session has a stopped home. Check spider roam status on the Mac; after Stop is confirmed, run spider roam start ${arg}.` : v0Message;
+                await release(); publishResult("blocked", home, detail); return;
               }
               if (!held) held = { sessionId: id, file, release: await ports.lock(id, file), valid: true };
               if (ticket !== generation) { await release(); return; }
-              const current = await ports.v0Lookup(id as SessionId);
-              if (current.kind !== "managed" || !isDeepStrictEqual(current.home, home)) {
+              const current = await lookupHome();
+              if (ticket !== generation) { await release(); return; }
+              if (current?.kind !== "managed" || !isDeepStrictEqual(current.home, home)) {
                 await release(); publishResult("blocked", home, v0Message); return;
               }
-              v0Control = await ports.v0Ready?.(id as SessionId, file, home);
+              const isAdmitted = () => ticket === generation && !!v0Control && held?.valid &&
+                ordinaryWorkAllowed() && admission.home === home;
+              v0Control = await ports.v0Ready?.(id as SessionId, file, home, async () => {
+                if (!isAdmitted()) return null;
+                const owner = await ports.v0Owner?.(id as SessionId, file);
+                return isAdmitted() ? owner ?? null : null;
+              });
               if (ticket !== generation) { await closeV0Control(); await release(); return; }
+              if (launch) {
+                const readyHome = await lookupHome();
+                if (ticket !== generation) { await closeV0Control(); await release(); return; }
+                if (readyHome?.kind !== "managed" || !isDeepStrictEqual(readyHome.home, home)) {
+                  await closeV0Control(); await release(); publishResult("blocked", home, v0Message); return;
+                }
+                admittedLaunch = launch;
+                initialLaunch = undefined;
+              }
               epoch = home.epoch; participating = true; ownershipVerified = true;
               handoffRequired = false; freeze = undefined; admitted = true;
               publishResult("ordinary", home);
@@ -353,6 +388,10 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           }
         }
       } finally {
+        if (launch !== undefined && !admitted && ticket === generation) {
+          try { await release(); }
+          finally { try { await releasePinnedId(); } finally { ctx?.shutdown(); } }
+        }
         if (late && ticket === generation) {
           if (admitted && result) {
             participating = true; observed.add(id);
@@ -382,10 +421,14 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
 
   pi.on("session_start", async (_event, ctx) => start(ctx));
   pi.on("session_shutdown", async event => {
+    if (event.reason === "reload" && admittedLaunch?.sessionId === sessionId) reloadState[RELOAD_LAUNCH] = admittedLaunch;
+    // In-flight owner reads must see that this admission is no longer current.
+    const control = v0Control;
+    v0Control = undefined;
     // Pi starts shutdown from its prepended signal listener before other listeners run.
     await Promise.resolve();
     unwatchSignals();
-    if (v0Control) await closeV0Control();
+    if (control) await control.close();
     if (!v0Managed && !signalled && event.reason !== "reload" && participating && ordinaryWorkAllowed()) await ports.stopped?.(sessionId);
   });
   pi.on("input", (_event, ctx) => {
@@ -619,13 +662,19 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
       }
       return result;
     },
-    async v0Ready(id,file,home) {
-      const runtime=createV0Runtime(paths.globalRoot);
+    async v0Owner(id, file) {
+      const { pid, startTime, bootId } = await inspectLiveOwner(join(paths.globalRoot, "herdr"), id, file, options.bootId);
+      return { pid, startIdentity: startTime, bootId };
+    },
+    async v0Ready(id, file, home, admittedOwner) {
+      const runtime = createV0Runtime(paths.globalRoot);
       try {
-        await prepareRelocateAdmission(home,file,createLocalSessionMachinePorts(runtime.options));
-        const control=await serveRelocateShutdown({sessionId:id,runtimeRoot:join(paths.globalRoot,"roam","s"),machineId:runtime.options.config.machineId,home:()=>runtime.homes.read(id),async shutdown(){if(!context)throw new Error("Session context unavailable");context.shutdown();}});
-        return {async close(){try{await control.close();}finally{await runtime.close();}}};
-      }catch(error){await runtime.close();throw error;}
+        await prepareRelocateAdmission(home, file, createLocalSessionMachinePorts(runtime.options));
+        const control = await serveRelocateShutdown({ sessionId: id, runtimeRoot: join(paths.globalRoot, "roam", "s"),
+          machineId: runtime.options.config.machineId, home: () => runtime.homes.read(id), admittedEpoch: home.epoch, admittedOwner,
+          async shutdown() { if (!context) throw new Error("Session context unavailable"); context.shutdown(); } });
+        return { async close() { try { await control.close(); } finally { await runtime.close(); } } };
+      } catch (error) { await runtime.close(); throw error; }
     },
     expectedEpoch: null,
     lockUntracked() { try { const current = readLocalIdentity(paths.globalRoot); return current.enabled && current.role === "hub"; } catch { return false; } },

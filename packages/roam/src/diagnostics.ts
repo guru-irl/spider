@@ -211,6 +211,7 @@ export interface StatusPorts {
 }
 export interface RoamStatus {
   enabled: boolean; cached: true; available: boolean; complete: boolean; homes: Home[]; homeConflicts: string[];
+  sessions: readonly import("./relocate/session-stop-types").SessionStatus[];
   stores: Array<{ key: string; stream: string; head: number; changes: number; logBytes: number | null; versionBytes: number | null; tombstones: number;
     cursors: Array<{ machineId: string; stream: string; through: number }> }>;
   peers: Array<{ machineId: string; alias: string; connected: boolean | null; lastSyncAt: number | null;
@@ -302,7 +303,7 @@ export function readStatus(config: RoamConfig, ports: StatusPorts): RoamStatus {
   } catch { sourceCleanups = null; }
   const available = ports.globalDb !== null;
   return { enabled: config.enabled, cached: true, available, complete: available && ports.inventoryComplete !== false && incompleteOperations !== null && sourceCleanups !== null && diagnostics.length === 0,
-    homes, homeConflicts, stores, peers, warnings, suspensions, incompleteOperations, sourceCleanups, diagnostics };
+    homes, homeConflicts, sessions: [], stores, peers, warnings, suspensions, incompleteOperations, sourceCleanups, diagnostics };
 }
 
 /** Refuse before any enable effect if a live consumer or writer is incompatible. */

@@ -553,6 +553,15 @@ advice can reach an installed runtime instead of another bin-mode refusal.
 
 ## Stop and pending launches
 
+Run `spider roam stop <session>` on the Mac hub to stop a managed v0 session.
+Use `--now` to skip graceful shutdown. Stop remains pending until exit is
+confirmed. Read cached `spider roam status`, then run `spider roam start <session>`
+after confirmation. A lost action reply is unknown; read status before retrying.
+For legacy intent and launch repairs, use the
+[legacy upgrade procedure](../../docs/guide/roaming-upgrade.md#settle-old-work-only-after-approval).
+The following launch reconciliation details describe the retained private legacy
+control, not the public v0 Stop command.
+
 `supervisor.ts` reserves a launch before authorization. Production prerequisites
 and exact handoff preparation run while the reservation remains `reserved`.
 After the handoff is durable, the launcher calls the supervisor's `beforeSpawn`
@@ -579,8 +588,8 @@ Inspection failures also retain an allowlisted cause in the first supervisor
 log entry and the persistent hosting warning. Unknown causes use
 `inspection-unavailable`. A failed capture prerequisite reports
 `participant-capture-uninitialized`. Doctor and cached status show the cause
-without exception text or file contents. Doctor offers
-`spider roam stop <session>` on the hub to cancel hosting, not to retry a launch.
+without exception text or file contents. Doctor points to the legacy upgrade
+procedure rather than offering a public Stop command for legacy hosting.
 
 Move activation enables capture in the session's exact worktree stores before
 publishing running intent. It checks store identity and the existing trigger
@@ -639,21 +648,19 @@ Ordinary launch reconciliation cannot use this new proof to retry, and stop
 cannot relaunch the session.
 
 After settlement, stop reads the latest intent version before clearing the
-reservation. If the intent write still loses a race, the refusal includes a
-stop repair command. Invoked launches retain their restart proof so resume can
-use a new operation ID.
+reservation. If the intent write still loses a race, the refusal points to
+`spider roam doctor`. Invoked launches retain their restart proof for private
+legacy reconciliation.
 
 `local-diagnostics.ts` distinguishes unchecked, unavailable, and changed core
 identities. Pending launches remain blocking in all three cases. For a released
 adoption, doctor distinguishes a live owner, unavailable owner status and a
 live file-lease holder. It directs the operator to supported session shutdown
 or restored process and boot identity inspection before stopping again. Once
-the released owner has positively exited, doctor offers stop. A reservation
-without adoption evidence checks the actual pin and core before reporting a
-core problem. These repairs do not send the operator back to doctor. Doctor
-offers stop for an unstarted reservation, but inspection for an invoking
-reservation without a handoff. Stop repair diagnostics name the Mac hub as
-where to run the command, including when doctor runs locally on a box.
+the released owner has positively exited, doctor points to the legacy upgrade
+procedure. A reservation without adoption evidence checks the actual pin and
+core before reporting a core problem. Doctor reports unstarted and invoking
+reservations separately and retains their ownership evidence.
 
 ## Store inventory
 

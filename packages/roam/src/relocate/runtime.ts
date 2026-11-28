@@ -11,18 +11,24 @@ import { createTransport } from "../transport";
 import { createSync } from "../sync";
 import type { Clock, GitPorts, Transport } from "../contracts";
 import { openOutgoingStaging } from "../staging";
-import { createHomeStore } from "./home";
+import { createHomeStore, type HubHomeStore } from "./home";
 import { withV0HomeLifecycle } from "./home-lifecycle";
-import { relocate } from "./relocate";
-import { setHome } from "./set-home";
-import { createRelocateAdapters } from "./adapters";
-import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
+import { relocate, type SettledRelocateOutcome, type StoppedPlacementPorts } from "./relocate";
+import { setHome, type ForceHomePorts } from "./set-home";
+import { createSessionOperations, type SessionOperations } from "./session-operations";
+import { createSessionReconciler, type SessionReconciler } from "./session-reconcile";
+import { createStopCommand } from "./session-stop";
+import { createStartCommand } from "./session-start";
+import { createSessionStopStore, displacedByForce, hasStopProof, projectSessionStatus, readCachedSessionStatus } from "./session-stop-store";
+import type { SessionOutcome, SessionStatus, StartRequest, StopRequest } from "./session-stop-types";
+import { createRelocateAdapters, type StopRelocateAdapters } from "./adapters";
+import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent, refusal } from "./remote";
 import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local";
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
-import { serveV0Control, summarizeSync, type V0HubControlServices, type V0SyncOutcome } from "./service";
-import type { RelocateAdapterOptions, RelocateAdapters, HomeStore, RunningHome, SetHomePorts, V0ControlServices, V0Result } from "./types";
+import { serveV0Control, summarizeSync, type V0HubControlServices, type V0PlacementControlServices, type V0SessionControlServices, type V0SyncOutcome } from "./service";
+import type { RelocateAdapterOptions, HomeStore, RelocateHome, RunningHome, SessionId, SetHomeRequest, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
   openCore?: (root: string) => LocalCore;
@@ -30,13 +36,20 @@ export interface V0RuntimeOverrides {
   transport?: Transport;
   clock?: Clock;
   gitRun?: GitPorts["run"];
+  liveHub?: boolean;
+  localRecovery?: true;
 }
 export interface V0Runtime {
   options: RelocateAdapterOptions;
-  adapters: RelocateAdapters;
-  homes: HomeStore;
+  adapters: StopRelocateAdapters;
+  homes: HubHomeStore;
+  operations: SessionOperations;
   sync: ReturnType<typeof createSync>;
-  services: V0HubControlServices;
+  services: V0HubControlServices & V0SessionControlServices;
+  stopSession(request: StopRequest): Promise<SessionOutcome>;
+  startSession(request: StartRequest): Promise<SessionOutcome>;
+  sessionStatus(id: SessionId): Promise<SessionStatus>;
+  resumeSessionStops(): void;
   close(): Promise<void>;
 }
 function syncRefusal(code: 1 | 2, reason: string): V0SyncOutcome {
@@ -80,17 +93,17 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     };
     stores=createStorePort(config,core.db);
     const homeStore=createHomeStore({db:core.db,hubMachineId:config.hubMachineId,localMachineId:config.machineId});
-    const homes: ReturnType<typeof createHomeStore> = {
+    const homes: HubHomeStore = {
       ...homeStore,
       async initialize(sessionId, source) {
         if (forgotten(source)) throw new Error("Cannot adopt a home on a forgotten peer");
         return homeStore.initialize(sessionId, source);
       },
-      async compareAndSwap(expected, next, checkMacSource) {
+      async compareAndSwap(expected, next, checkMacSource, onApplied) {
         const swap = () => {
           if (forgotten(next.machineId) || next.destination !== null && forgotten(next.destination))
             throw new Error("Cannot assign a home to a forgotten peer");
-          return homeStore.compareAndSwap(expected, next, checkMacSource);
+          return homeStore.compareAndSwap(expected, next, checkMacSource, onApplied);
         };
         if (next.state !== "moving") return swap();
         return withV0HomeLifecycle(root, config.limits.controlMs, async () => {
@@ -105,7 +118,12 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     });
     const transport=createV0ArtifactTransport(createV0SyncTransport(raw),config.machineId);
     const localClock=overrides.clock ?? clock;
-    const sync=createSync({config,globalDb:core.db,transport,journal,clock:localClock,stores});
+    const isHub = config.role === "hub" && config.machineId === config.hubMachineId;
+    const liveHub = overrides.liveHub && isHub;
+    let reconciler: SessionReconciler | undefined;
+    const sync=createSync({config,globalDb:core.db,transport,journal,clock:localClock,stores,
+      ...(liveHub && { onPeerSync(peer) { reconciler?.afterPeerSync(peer.machineId); } }),
+    });
     const git:GitPorts={run:overrides.gitRun ?? runGit,journal,limits:core.config.limits,scratch:join(root,"roam","staging"),worktreeCommand:null};
     const options:RelocateAdapterOptions={root,config,globalDb:core.db,homes,journal,sync,transport:raw,clock:localClock,git,limits:core.config.limits,workspaceImport:{...git,
       async resolveCommonRepository({repoKey}) {
@@ -126,10 +144,6 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       },
     }};
     const adapters=createRelocateAdapters(options);
-    const setHomePorts: SetHomePorts = { ...adapters.setHome, homes: {
-      ...homes,
-      compareAndSwap: (expected, next) => homes.compareAndSwap(expected, next, id => checkMacSourceWriters(id, options)),
-    } };
     const relocatePorts = {
       ...adapters.ports,
       async unlabelledLocalRunner(home: RunningHome) {
@@ -142,9 +156,73 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         return legacy?.epoch ?? 1;
       },
     };
+    const operations = createSessionOperations();
+    // The operation binding and transition must be on the home CAS connection.
+    const stopStore = createSessionStopStore(core.db);
+    const checkMacSource = (id: SessionId) => checkMacSourceWriters(id, options);
+    const setHomePorts: ForceHomePorts = {
+      ...adapters.setHome,
+      homes: { ...homes, compareAndSwap: (expected, next) => homes.compareAndSwap(expected, next, checkMacSource) },
+      commitStopped(expected, home) {
+        const operationId = home.moveId;
+        if (!operationId) throw new Error("A stopped force requires a move ID");
+        return homes.compareAndSwap(expected, home, checkMacSource, () => stopStore.write({
+          action: "force", operationId, expected, committed: home, mode: "graceful",
+          displaced: displacedByForce(expected, home, stopStore.current(home.sessionId)), observations: [], contactReason: null,
+        }));
+      },
+    };
+    const stopPorts = { operations, store: stopStore, homes, withSession: adapters.ports.withSession,
+      clock: localClock, readyMs: config.limits.readyMs };
+    const start = liveHub ? createStartCommand({ ...stopPorts, ...adapters.start, localMachineId: config.machineId, enabled: () => config.enabled }) : undefined;
+    function cachedStatus(home: RelocateHome | null, id: SessionId): SessionStatus {
+      return projectSessionStatus(home, home ? stopStore.current(id) : null, id, localClock.now());
+    }
+    const stoppedPlacements: StoppedPlacementPorts | undefined = liveHub ? {
+      async verifyStoppedSource(home) {
+        const cached = cachedStatus(home, home.sessionId);
+        const nextStep = "Confirm Stop on the source and any displaced machines, then retry relocate.";
+        if (cached.status !== "stopped" || cached.observedAt === null)
+          return refusal("stop-timeout", "The source and any displaced machines have not all confirmed Stop.", nextStep);
+        const observed = await adapters.stop.observe(home.machineId, home);
+        if (!observed.ok || observed.value.observedAt === null || observed.value.observedAt < cached.observedAt ||
+            !hasStopProof(home, home.machineId, { observations: [observed.value] }))
+          return refusal("stop-timeout", "The source could not verify absence for the exact stopped home.", nextStep);
+        return { ok: true, value: undefined };
+      },
+      installDestination: adapters.ports.installDestination,
+      commitStopped(expected, home) {
+        const operationId = home.moveId;
+        if (!operationId) throw new Error("A stopped relocation requires a move ID");
+        return homes.compareAndSwap(expected, home, undefined, () => stopStore.write({
+          action: "relocate", operationId, expected, committed: home, mode: "graceful", displaced: [], observations: [], contactReason: null,
+        }));
+      },
+    } : undefined;
+    reconciler = isHub ? createSessionReconciler({ ...stopPorts, machines: adapters.stop, localMachineId: config.machineId,
+      mayContact: machine => config.enabled && (machine === config.machineId || config.peers.some(peer => peer.machineId === machine)),
+      reconcileStart: start?.reconcile,
+    }) : undefined;
+    const stop = liveHub && reconciler ? createStopCommand({ ...stopPorts, enabled: () => config.enabled,
+      reconcile: reconciler.reconcile, subscribe: stopStore.subscribe }) : undefined;
     let closing:Promise<void>|undefined;
     const revokedDestination = { ok: false, refusal: forgottenDestinationRefusal } as const;
-    return {options,adapters,homes,sync,services:{
+    function actionRefusal(request: StartRequest, reason: string): SessionOutcome {
+      return { sessionId: request.sessionId, operationId: request.operationId, outcome: "refused", reason,
+        machineId: null, homeEpoch: null, homeState: null, status: null, observedAt: null };
+    }
+    return {options,adapters,homes,operations,sync,services:{
+      async stop(request) {
+        if (!liveHub || !stop) return actionRefusal(request, "mac-hub-required");
+        if (!config.enabled) return actionRefusal(request, "roaming-disabled");
+        return stop(request);
+      },
+      async start(request) {
+        if (!liveHub || !start) return actionRefusal(request, "mac-hub-required");
+        if (!config.enabled) return actionRefusal(request, "roaming-disabled");
+        return start(request);
+      },
+      async sessionStatus({ sessionId }) { return readCachedSessionStatus(core.db, sessionId, localClock.now()); },
       async sync({ machineId }) {
         if (config.role !== "hub" || config.machineId !== config.hubMachineId) return syncRefusal(1, "mac-hub-required");
         if (!config.enabled) return syncRefusal(1, "roaming-disabled");
@@ -155,18 +233,78 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         return summarizeSync(await sync.sync(machineId));
       },
       async relocate(request) {
-        if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };
-        if (!config.enabled) return { ok: false, step: "check", home: null, moveId: null, refusal: {
-          code: "replication-disabled", message: "Relocation needs replication enabled.", nextStep: "Run spider roam enable on the Mac, then retry relocation.",
-        } };
-        return relocate(request,relocatePorts,{ clock: localClock, timeoutMs: config.limits.readyMs });
+        const outcome = await operations.relocate<SettledRelocateOutcome>(request.sessionId, async mark => {
+          if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };
+          if (!config.enabled) return { ok: false, step: "check", home: null, moveId: null, refusal: {
+            code: "replication-disabled", message: "Relocation needs replication enabled.", nextStep: "Run spider roam enable on the Mac, then retry relocation.",
+          } };
+          let readSource = false;
+          const moveHomes: HomeStore = {
+            ...homes,
+            async read(id) {
+              const home = await homes.read(id);
+              if (!readSource) {
+                readSource = true;
+                if (home) mark(home);
+              }
+              return home;
+            },
+            async initialize(id, source) {
+              const home = await homes.initialize(id, source);
+              mark(home);
+              return home;
+            },
+            async compareAndSwap(expected, next) {
+              const result = await homes.compareAndSwap(expected, next);
+              if (result.kind === "applied" && result.home.state === "moving") mark(result.home);
+              return result;
+            },
+          };
+          return relocate(request, { ...relocatePorts, homes: moveHomes, stoppedPlacements, stoppedStatus: home => cachedStatus(home, home.sessionId) },
+            { clock: localClock, timeoutMs: config.limits.readyMs });
+        }, () => homes.read(request.sessionId));
+        // Reconciliation may queue writes for this session. Wait only after
+        // releasing the turn and the operation's process lock.
+        const home = outcome.ok ? outcome.value.home : outcome.home;
+        if (liveHub && reconciler && home?.state === "stopped" &&
+            (outcome.ok || outcome.step !== "check" && outcome.moveId !== null && outcome.moveId === home.moveId)) {
+          await reconciler.reconcile(home);
+          if (outcome.ok && "stop" in outcome.value)
+            return { ok: true, value: { ...outcome.value, stop: cachedStatus(home, home.sessionId) } };
+        }
+        return outcome;
       },
       async setHome(request) {
-        if (forgotten(request.destinationMachine)) return revokedDestination;
-        return setHome(request,setHomePorts,config);
+        const result = await operations.enqueue(request.sessionId, async () => {
+          if (forgotten(request.destinationMachine)) return revokedDestination;
+          return setHome(request,setHomePorts,config);
+        });
+        if (result.ok && result.value.state === "stopped") {
+          // Reconciliation can take both locks to save evidence. The assignment is already durable.
+          if (overrides.localRecovery || !config.enabled) await reconciler?.reconcileLocalOnce(result.value);
+          else await reconciler?.reconcile(result.value);
+        }
+        return result;
       },
     },
-      close() {return closing ??= (async()=>{sync.stop();try {await sync.drain();await adapters.dispose();}finally{closeStores();}})();},
+      async stopSession(request) {
+      if (!stop) throw new Error("Stop requires the live v0 hub");
+      return stop(request);
+    },
+    async startSession(request) {
+      if (!start) throw new Error("Start requires the live v0 hub");
+      return start(request);
+    },
+    async sessionStatus(id) { return readCachedSessionStatus(core.db, id, localClock.now()); },
+    resumeSessionStops() { if (liveHub) reconciler?.resume(); },
+    close() {return closing ??= (async()=>{
+      sync.stop();
+      try {
+        await Promise.all([stop?.close(), start?.close(), reconciler?.close()]);
+        await sync.drain();
+        await adapters.dispose();
+      } finally { closeStores(); }
+    })();},
     };
   } catch(error) {closeStores();throw error;}
 }
@@ -206,14 +344,14 @@ async function withV0HubLock<T>(root: string, run: () => Promise<T>): Promise<T>
   }
 }
 
-export async function recoverMacHomeWithoutHub(root: string, request: Parameters<V0ControlServices["setHome"]>[0]): ReturnType<V0ControlServices["setHome"]> {
+export async function recoverMacHomeWithoutHub(root: string, request: SetHomeRequest): ReturnType<V0PlacementControlServices["setHome"]> {
   return withV0HubLock(root, async () => {
     const config = readLocalIdentity(root);
     if (config.enabled || config.role !== "hub" || config.machineId !== config.hubMachineId || request.destinationMachine !== config.machineId) {
       return {ok:false,refusal:{code:"home-unavailable",message:"Local reassignment requires disabled roaming on the Mac.",
         nextStep:"If roaming is enabled, start the v0 hub on the Mac and retry set-home --force."}};
     }
-    const runtime = createV0Runtime(root);
+    const runtime = createV0Runtime(root, { localRecovery: true });
     try { return await runtime.services.setHome(request); }
     finally { await runtime.close(); }
   });
@@ -234,7 +372,7 @@ export async function startV0Hub(root: string, overrides: V0RuntimeOverrides = {
 }
 
 async function startLockedV0Hub(root: string, overrides: V0RuntimeOverrides): Promise<{stop():Promise<void>}> {
-  const runtime=createV0Runtime(root,overrides);
+  const runtime=createV0Runtime(root,{...overrides,liveHub:true});
   try {
     if(runtime.options.config.role!=="hub" || runtime.options.config.machineId!==runtime.options.config.hubMachineId)throw new Error("mac-required");
     const socket=await serveV0Control(root,runtime.services);
@@ -244,7 +382,8 @@ async function startLockedV0Hub(root: string, overrides: V0RuntimeOverrides): Pr
       const next = runtime.options.config.enabled;
       if (enabled !== next) {
         enabled = next;
-        if (next) runtime.sync.start(); else runtime.sync.stop();
+        if (next) { runtime.sync.start(); runtime.resumeSessionStops(); }
+        else runtime.sync.stop();
       }
       cancelConfigCheck = runtime.options.clock.later(1_000, checkConfig);
     };

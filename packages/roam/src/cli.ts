@@ -1,4 +1,4 @@
-import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
+import { parseV0Control, runV0Control, runSessionAction, sessionStatusText, readV0Confirmation } from "./relocate/cli";
 import { createV0Intercom } from "./relocate/intercom";
 import { runV0LinkOnce } from "./relocate/relay-poll";
 import { startV0Relay } from "./relocate/relay-service";
@@ -6,9 +6,9 @@ import { RELAY_HOLD_MS, RELAY_POLL_MAX_BYTES } from "@spider/intercom/relay-prot
 import { parseV0AgentReply, parseV0AgentRequest, parseV0RelayAgentRequest, V0_INTERCOM_BYTES, type V0AgentReply } from "@spider/intercom/roam-v0";
 import { readPeerRevocation } from "./revocation";
 import { skippedProjectDbNotice, v0SessionCatalog } from "./relocate/session-catalog";
-import { requestV0Services, runV0Service } from "./relocate/service";
+import { requestV0Services, runV0Service, type V0PlacementControlServices } from "./relocate/service";
 import { startV0Hub, runV0Agent, V0HubLockRefusal, recoverMacHomeWithoutHub } from "./relocate/runtime";
-import type { V0ControlServices, V0Result } from "./relocate/types";
+import type { V0Result } from "./relocate/types";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { inspectSupervisorCorePin } from "./enrollment";
 import { HOSTING_WARNING_CODE } from "./hosting-warning";
@@ -65,7 +65,8 @@ const HELP = `Usage: spider <command>
   spider roam intercom enroll --graph <file> [--operation <id>]
   spider roam intercom cancel <pair-id>
   spider roam intercom revoke <pair-id> [--fence-epoch <historical-epoch>] [--json]
-  spider roam stop|resume <session>
+  spider roam stop <session> [--now]
+  spider roam start <session>
   spider roam recover|cancel <operation-id>
   spider roam claim <session> <machine>
   spider roam forget <machine> --confirm "destroyed <machine UUID or alias>"
@@ -83,7 +84,7 @@ The destination manages those files. Copy-selection and copy-consent flags apply
 Anyone with the user's shell access can invoke it. While disabled, provision does not enable the box or start hosting.
 Before forget, confirm the machine is destroyed. If it can still run, stop its supervisor before reassigning any homes, or two copies can run.
 You can recover only the last copied transcript and workspace.
-Exit codes: 0 complete, 1 refused, 2 invalid arguments, 3 durable pending or reconciliation needed.
+Exit codes: 0 complete, 1 refused, 2 invalid arguments, 3 durable pending, reconciliation needed, or outcome unknown.
 `;
 
 function clean(value: string): string { return value.replace(/[\u0000-\u001f\u007f]/g, "?"); }
@@ -143,7 +144,7 @@ function setupPendingCause(error: unknown): { code: string } {
   return { code: enrollmentCauseCode(error) };
 }
 
-export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { hub?(root: string): Promise<{ stop(): Promise<void> }>; services?: V0ControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>>; intercom?(input: unknown, root: string): Promise<V0AgentReply | null>; lifecycle?: Partial<V0ServiceOptions> } }): Promise<number> {
+export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { hub?(root: string): Promise<{ stop(): Promise<void> }>; services?: V0PlacementControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>>; intercom?(input: unknown, root: string): Promise<V0AgentReply | null>; lifecycle?: Partial<V0ServiceOptions> } }): Promise<number> {
   let root = process.env.SPIDER_GLOBAL_ROOT || join(homedir(), ".pi", "agent", "spider");
   const privateRoot = argv[0] === "--global-root";
   if (privateRoot) {
@@ -224,7 +225,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     }
     const confirmation = options?.v0?.confirmation ?? readV0Confirmation;
     const socket = requestV0Services(root);
-    const services = options?.v0?.services ?? { ...socket, async setHome(request: Parameters<V0ControlServices["setHome"]>[0]) {
+    const services = options?.v0?.services ?? { ...socket, async setHome(request: Parameters<V0PlacementControlServices["setHome"]>[0]) {
       try { return await socket.setHome(request); }
       catch (error) {
         const code = (error as NodeJS.ErrnoException | null)?.code;
@@ -259,6 +260,19 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     const value = result.information || result.issues ? { information: result.information, issues: result.issues } : null;
     return emitOutcome(io, { ...outcome(result.code, result.reason, value),
       ...(result.repairCommand ? { repairCommand: result.repairCommand } : {}) }, json, `${result.message.split("\n").map(clean).join("\n")}\n`);
+  }
+  if (argv[0] === "roam" && (argv[1] === "stop" || argv[1] === "start")) {
+    const json = argv.at(-1) === "--json", control = parsePublicControl(argv);
+    if (!control || control.kind !== "stop" && control.kind !== "start")
+      return emitOutcome(io, outcome(2, "invalid-arguments"), json, "Invalid arguments. Use spider roam stop <session> [--now] or spider roam start <session>.\n");
+    try {
+      const config = readLocalIdentity(root);
+      if (config.role !== "hub" || config.machineId !== config.hubMachineId) return emitOutcome(io, outcome(1, "mac-hub-required"), json);
+      if (!config.enabled) return emitOutcome(io, outcome(1, "roaming-disabled"), json);
+      const core = openLocalCore(root);
+      try { return await runSessionAction(control, config, core.db, requestV0Services(root), { ...io, confirmation: readV0Confirmation }, json); }
+      finally { core.close(); }
+    } catch { return emitOutcome(io, outcome(1, "home-unavailable"), json, "Cannot read the managed session home. Run spider roam doctor.\n"); }
   }
   const publicInput = argv[0] === "roam" && !["agent", "artifact", "observe", "intercom", "hub"].includes(argv[1]);
   const jsonOutput = publicInput && argv.at(-1) === "--json";
@@ -616,26 +630,6 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       return emitOutcome(io, outcome(0, "memory-tag-updated"), jsonOutput, "Memory tag updated.\n");
     } catch { return emitOutcome(io, outcome(1, "memory-tag-unavailable"), jsonOutput, "Cannot update this memory tag. No other fields were changed.\n"); }
   }
-  if (argv[0] === "roam" && ["stop", "resume"].includes(argv[1])) {
-    try {
-      const core = openLocalCore(root);
-      try {
-        if (core.config.role !== "hub") return emitOutcome(io, outcome(1, "mac-hub-required"), jsonOutput, "Run this command on the Mac hub.\n");
-        const home = core.db.prepare("SELECT machine_id,epoch FROM session_homes WHERE session_id=?").get(argv[2]) as { machine_id: string; epoch: number } | undefined;
-        if (!home?.machine_id) return emitOutcome(io, outcome(1, "participant-home-unavailable"), jsonOutput);
-        const peer = core.config.peers.find(peer => peer.machineId === home.machine_id);
-        if (!peer) return emitOutcome(io, outcome(1, "participant-home-not-enrolled"), jsonOutput);
-        const herdr = loadHerdrConfig(root), transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: core.config.peers });
-        const operation: Operation = { id: randomUUID(), kind: `session-${argv[1]}`, machineId: peer.machineId, expectedEpoch: home.epoch,
-          args: { sourceMachine: core.config.machineId, sessionId: argv[2] } };
-        const handle = await transport.resolve(peer), bytes = await transport.exec(handle, ["roam", "agent", JSON.stringify(operation)],
-          { timeoutMs: core.config.limits.controlMs, maxBytes: core.config.limits.replyBytes });
-        const result = parseRoamJson(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown> | null;
-        if (!result || typeof result !== "object" || Array.isArray(result) || result.operationId !== operation.id || typeof result.code !== "number" || ![0, 1, 2, 3].includes(result.code) || typeof result.reason !== "string") throw new Error("Invalid control response");
-        return emitOutcome(io, result as unknown as Outcome<unknown>, jsonOutput, `${clean(result.reason)}\n`);
-      } finally { core.close(); }
-    } catch { return emitOutcome(io, outcome(1, "participant-control-unavailable"), jsonOutput, "Participant control is unavailable. Run spider roam doctor.\n"); }
-  }
   if (argv[0] === "roam" && argv[1] === "sync") {
     let config;
     try { config = readLocalIdentity(root); }
@@ -669,6 +663,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         const timestamp = (value: number | null) => value === null ? "unknown" : new Date(value).toISOString();
         io.out(`Roaming is ${status.enabled ? "enabled" : "disabled"}. Status is cached${status.complete ? "" : " and incomplete or unavailable"}.\n`);
         for (const home of status.homes) io.out(`Home ${clean(home.sessionId)}: ${clean(home.machineId)} (epoch ${home.epoch}).\n`);
+        for (const session of status.sessions) io.out(sessionStatusText(session));
         for (const session of status.homeConflicts) io.out(`Home conflict: ${clean(session)}.\n`);
         for (const peer of status.peers) io.out(`Peer ${clean(peer.alias)}: ${peer.connected === null ? "connection unknown" : peer.connected ? "connected" : "disconnected"}; last sync ${timestamp(peer.lastSyncAt)}; observation age ${number(peer.observationAgeMs)} ms; backlog ${number(peer.backlog)}${peer.failure ? `; ${clean(peer.failure)}` : ""}.\n`);
         for (const store of status.stores) {

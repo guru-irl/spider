@@ -39,7 +39,7 @@ it.each([
   expect(await snapshot()).toEqual(before);
 }, 5000);
 
-it("names the resume command for a crash-suspended session", async () => {
+it("names the legacy guide for a crash-suspended session", async () => {
   const parent = resolve(".spider/scratch/roam-handoff-doctor");
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const root = await mkdtemp(join(parent, "suspended-")); roots.push(root);
@@ -47,11 +47,11 @@ it("names the resume command for a crash-suspended session", async () => {
   await store.update(id, null, { intent: { sessionId: id, epoch: 1, desired: "running", suspended: "Repeated session crashes need review",
     file: join(root, "session.jsonl"), cwd: root, moveId: null }, failures: [1, 2, 3, 4, 5], supervision: { kind: "idle", nextAttemptAt: null } });
   const report = await runLocalDoctor({ root });
-  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/session-1.*crashes/i),
-    repairCommand: "spider roam resume session-1" })]));
+  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/session-1.*crashes.*roaming-upgrade\.md#settle-old-work-only-after-approval/i),
+    repairCommand: "spider roam doctor" })]));
 }, 5000);
 
-it("offers stop for a pending reservation whose released adopted owner is proved absent", async () => {
+it("names the legacy guide when a released adopted owner is proved absent", async () => {
   const parent = resolve(".spider/scratch/roam-handoff-doctor");
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const root = await mkdtemp(join(parent, "adopted-")); roots.push(root);
@@ -65,8 +65,8 @@ it("offers stop for a pending reservation whose released adopted owner is proved
   const adopted = await claimIdLock(stateRoot, "session-1", child, async () => ({ kind: "live", startIdentity: child.startIdentity }), { bootId: async () => "boot-1", handoff });
   await adopted.release();
   const report = await runLocalDoctor({ root, launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" }) } });
-  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/session-1.*launch-1.*exited/i),
-    repairCommand: "spider roam stop session-1" })]));
+  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/session-1.*launch-1.*exited.*roaming-upgrade\.md#settle-old-work-only-after-approval/i),
+    repairCommand: "spider roam doctor" })]));
 }, 5000);
 
 it("reports a reserved launch with no handoff without changing its state", async () => {

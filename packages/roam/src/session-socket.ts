@@ -3,7 +3,10 @@ import { chmodSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
-import type { JsonObject } from "@spider/db-core/roam/types";
+import type { JsonObject, MachineId } from "@spider/db-core/roam/types";
+import { isMachineId } from "./machine-id.js";
+import type { OwnerGeneration } from "./relocate/session-stop-types.js";
+import type { SessionId } from "./relocate/types.js";
 import type { Operation, Outcome } from "./contracts.js";
 import { validSessionControl } from "./session-control.js";
 import { privateDirectory } from "./staging.js";
@@ -41,8 +44,38 @@ function validReadmit(operation: Operation): boolean {
     !!operation.args.source && typeof operation.args.source === "object" && !!operation.args.restoredHome && typeof operation.args.restoredHome === "object" &&
     typeof operation.args.file === "string" && isAbsolute(operation.args.file);
 }
-function validSocketOperation(operation: Operation): boolean { return validSessionControl(operation) || validReadmit(operation); }
-function parseRequest(bytes: Buffer): SessionControlRequest | null {
+export interface V0OwnerControl {
+  kind: "stopped-shutdown" | "running-inspect";
+  sessionId: SessionId;
+  machineId: MachineId;
+  homeMachineId: MachineId;
+  epoch: number;
+  owner: OwnerGeneration;
+}
+
+export function parseV0OwnerControl(operation: Operation): V0OwnerControl | null {
+  const args = operation?.args, epoch = operation?.expectedEpoch;
+  if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length !== 5 || args.v0 !== true ||
+      !validText(operation.id) || !isMachineId(operation.machineId) || typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 1 ||
+      !validText(args.sessionId) || !args.sessionId.trim() || !isMachineId(args.homeMachineId)) return null;
+  const owner = args.owner;
+  if (!owner || typeof owner !== "object" || Array.isArray(owner) || Object.keys(owner).length !== 3 ||
+      typeof owner.pid !== "number" || !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
+      !validText(owner.startIdentity) || !validText(owner.bootId)) return null;
+  const kind = operation.kind === "session-shutdown" && args.homeState === "stopped" ? "stopped-shutdown"
+    : operation.kind === "session-inspect" && args.homeState === "running" ? "running-inspect" : null;
+  return kind && { kind, sessionId: args.sessionId as SessionId, machineId: operation.machineId, homeMachineId: args.homeMachineId,
+    epoch, owner: { pid: owner.pid, startIdentity: owner.startIdentity, bootId: owner.bootId } };
+}
+
+function validSocketOperation(operation: Operation, v0OwnerControl: boolean): boolean {
+  const args = operation.args;
+  // An owner request with a stray moveId must not become a legacy request.
+  if (args?.v0 === true && ("homeState" in args || "homeMachineId" in args || "owner" in args))
+    return v0OwnerControl && parseV0OwnerControl(operation) !== null;
+  return validSessionControl(operation) || validReadmit(operation);
+}
+function parseRequest(bytes: Buffer, v0OwnerControl: boolean): SessionControlRequest | null {
   try {
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -50,7 +83,7 @@ function parseRequest(bytes: Buffer): SessionControlRequest | null {
     if (Object.keys(row).length !== 2 || !("op" in row) || !("operation" in row) ||
         !row.operation || typeof row.operation !== "object" || Array.isArray(row.operation)) return null;
     const operation = row.operation as Operation;
-    if (!validSocketOperation(operation) || row.op !== verb(operation)) return null;
+    if (!validSocketOperation(operation, v0OwnerControl) || row.op !== verb(operation)) return null;
     return { op: row.op as Verb, operation };
   } catch { return null; }
 }
@@ -79,7 +112,8 @@ async function reclaim(path: string): Promise<void> {
 }
 
 export async function startSessionControlSocket(runtimeRoot: string, sessionId: string,
-  handler: (request: SessionControlRequest) => Promise<Outcome<JsonObject>>): Promise<{ close(): Promise<void> }> {
+  handler: (request: SessionControlRequest) => Promise<Outcome<JsonObject>>,
+  options: { v0OwnerControl?: boolean } = {}): Promise<{ close(): Promise<void> }> {
   const path = sessionControlPath(runtimeRoot, sessionId);
   privateDirectory(runtimeRoot); privateDirectory(dirname(path));
   await reclaim(path);
@@ -102,7 +136,7 @@ export async function startSessionControlSocket(runtimeRoot: string, sessionId: 
       if (end < 0 && input.length <= MAX_REQUEST) return;
       received = true; socket.pause();
       if (end < 0 || end > MAX_REQUEST || end !== input.length - 1) { send(invalid()); return; }
-      const request = parseRequest(input.subarray(0, end)); input = Buffer.alloc(0);
+      const request = parseRequest(input.subarray(0, end), options.v0OwnerControl === true); input = Buffer.alloc(0);
       if (!request || request.operation.args.sessionId !== sessionId) { send(invalid()); return; }
       const task = Promise.resolve().then(() => handler(request)).then(send, () => send({ ...invalid(), code: 1, reason: "session-control-failed", operationId: request.operation.id, epoch: request.operation.expectedEpoch }))
         .finally(() => requests.delete(task));
@@ -124,9 +158,9 @@ export async function startSessionControlSocket(runtimeRoot: string, sessionId: 
 
 export async function requestSessionControl(runtimeRoot: string, operation: Operation, options: { timeoutMs?: number } = {}): Promise<Outcome<JsonObject>> {
   const op = verb(operation), timeout = options.timeoutMs ?? DEADLINE;
-  if (!op || !validSocketOperation(operation) || !Number.isSafeInteger(timeout) || timeout <= 0 || timeout > DEADLINE) throw new Error("Invalid session control request");
+  if (!op || !validSocketOperation(operation, true) || !Number.isSafeInteger(timeout) || timeout <= 0 || timeout > DEADLINE) throw new Error("Invalid session control request");
   const path = sessionControlPath(runtimeRoot, operation.args.sessionId as string), encoded = Buffer.from(JSON.stringify({ op, operation }) + "\n");
-  if (encoded.length > MAX_REQUEST || !parseRequest(encoded.subarray(0, -1))) throw new Error("Invalid session control request");
+  if (encoded.length > MAX_REQUEST || !parseRequest(encoded.subarray(0, -1), true)) throw new Error("Invalid session control request");
   const parent = lstatSync(dirname(path)), socketInfo = lstatSync(path), uid = process.getuid?.();
   if (!parent.isDirectory() || parent.isSymbolicLink() || realpathSync(dirname(path)) !== dirname(path) || !socketInfo.isSocket() || socketInfo.isSymbolicLink() ||
       uid !== undefined && (parent.uid !== uid || socketInfo.uid !== uid) || (parent.mode & 0o7777) !== 0o700 || (socketInfo.mode & 0o7777) !== 0o600)

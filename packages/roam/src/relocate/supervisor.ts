@@ -1,8 +1,13 @@
-import type { HomeSupervisor, HomeSupervisorPorts, SessionId, V0Refusal } from "./types";
+import type { StopObservation } from "./session-stop-types";
+import type { HomeSupervisor, HomeSupervisorPorts, SessionId, StoppedHome, V0Refusal } from "./types";
+
+export type StopSupervisorPorts = HomeSupervisorPorts & {
+  stopStopped(home: StoppedHome): Promise<StopObservation>;
+};
 
 const TICK_MS = 10_000;
 
-export function createHomeSupervisor(ports: HomeSupervisorPorts, warn: (line: string) => void = line => { process.stderr.write(`${line}\n`); }): HomeSupervisor {
+export function createHomeSupervisor(ports: StopSupervisorPorts, warn: (line: string) => void = line => { process.stderr.write(`${line}\n`); }): HomeSupervisor {
   const managed = new Set<SessionId>();
   const reported = new Map<SessionId | null, string>();
   let inFlight: Promise<void> | null = null;
@@ -46,6 +51,15 @@ export function createHomeSupervisor(ports: HomeSupervisorPorts, warn: (line: st
       managed.add(entry.sessionId);
       seen.add(entry.sessionId);
       const { home, placement, sessionId, placementRefusal } = entry;
+      if (home?.state === "stopped") {
+        try {
+          const { evidence } = await ports.stopStopped(home);
+          if (evidence.kind === "pending") report(sessionId, { code: "stop-timeout", message: evidence.reason,
+            nextStep: "Check the Stop status on the Mac before starting this session." });
+          else reported.delete(sessionId);
+        } catch { report(sessionId, unavailable()); }
+        continue;
+      }
       if (!home || home.machineId !== ports.machineId || home.state !== "running") {
         await stopSession(sessionId);
         continue;

@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
@@ -151,6 +152,10 @@ async function productionLaunchFixture(boundary?: "crash" | "stale" | "lost-invo
     return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "doctor", value: await runLocalDoctor({ root: f.root, bundleUrl, currentCore: async () => "core-1", launchRecovery: recovery }) }));
   } } as never);
   const invokeHub = async (command: "stop" | "enable") => {
+    if (command === "stop") {
+      const result = await handleSessionOperation({ ...f.operation, id: randomUUID() }, f.ports, { wake: async () => {}, launchRecovery: recovery });
+      return { code: result.code, result };
+    }
     const out: string[] = [], err: string[] = [];
     const lifecycle = { resolveCli: () => release, launchd: { plistDir: join(hub.root, "LaunchAgents"), serviceHome: hub.root, async launchctl() {} } };
     const pi = process.env.SPIDER_ROAM_PI, home = process.env.HOME;
@@ -159,7 +164,7 @@ async function productionLaunchFixture(boundary?: "crash" | "stale" | "lost-invo
       vi.stubEnv("HOME", process.cwd());
     }
     try {
-      const code = await main(["roam", command, ...(command === "stop" ? ["session-1"] : []), "--json"], { out: text => out.push(text), err: text => err.push(text) }, { bundleUrl, v0: { lifecycle } });
+      const code = await main(["roam", "enable", "--json"], { out: text => out.push(text), err: text => err.push(text) }, { bundleUrl, v0: { lifecycle } });
       expect(err).toEqual([]);
       return { code, result: JSON.parse(out.join("")) };
     } finally {
@@ -535,7 +540,7 @@ it.each([false, true])("stop clears a reservation before authorization completes
   const launch = createDurableLaunchPort({ intents: f.intents, operationId: () => "reserved-1", async authorize() {
     await f.global.db.raw.backup(join(f.root, "spider.db"));
     const before = await runLocalDoctor({ root: f.root });
-    expect(before.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", repairCommand: "spider roam stop session-1" })]));
+    expect(before.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", repairCommand: "spider roam doctor" })]));
     expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {} })).toMatchObject({ code: 0, reason: "stopped-intent" });
     return authorized;
   }, async invoke() { invocations++; throw new Error("stopped reservation cannot launch"); } });
@@ -747,7 +752,7 @@ it.each(["stale-cas", "authority-lost"] as const)("settled stop includes a repai
       return terminals(id, options);
     };
   }
-  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 3, reason: "intent-reconciliation-required", repairCommand: "spider roam stop session-1" });
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 3, reason: "intent-reconciliation-required", repairCommand: "spider roam doctor" });
   expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
   expect(await f.leases.get(f.file)).toBeNull();
   expect((await f.intents.get("session-1"))?.value.supervision.kind).toBe("launching");
@@ -777,7 +782,7 @@ it.each(["unprobed", "matches", "unavailable", "changed"] as const)("disabled pe
   const report = await localDiagnostics.localPendingLaunchDiagnostics({ root: f.root, machineId: BOX, launchRecovery: f.recovery,
     ...(state === "unprobed" ? {} : { currentCore: async () => state === "unavailable" ? null : state === "changed" ? "other-core" : "core-1" }) });
   const pending = report.find(row => /session-1.*launch-1.*pending/i.test(row.reason));
-  expect(pending).toMatchObject({ severity: "block", repairCommand: "spider roam stop session-1" });
+  expect(pending).toMatchObject({ severity: "block", repairCommand: "spider roam doctor" });
   const detail = { unprobed: "core identity has not been checked", matches: "awaiting reconciliation", unavailable: "core identity is unavailable", changed: "destination core changed" }[state];
   expect(pending?.reason).toContain(detail);
   if (state !== "unavailable") expect(pending?.reason).not.toContain("core identity is unavailable");
@@ -788,6 +793,6 @@ it("disabled doctor reports the same pending-launch block that enable must refus
   await f.global.db.raw.backup(join(f.root, "spider.db"));
   const report = await runLocalDoctor({ root: f.root, currentCore: async () => "core-1", launchRecovery: f.recovery });
   expect(report.enabled).toBe(false);
-  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: "spider roam stop session-1" })]));
+  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: "spider roam doctor" })]));
   expect(JSON.stringify(report)).not.toContain(f.handoff.nonce);
 });

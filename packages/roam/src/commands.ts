@@ -15,7 +15,8 @@ export type PublicControl =
   | { kind: "status" | "sync" | "doctor" | "enable" | "disable"; machine?: string }
   | { kind: "move" | "claim"; session: string; machine: string }
   | { kind: "recover" | "cancel"; operationId: string }
-  | { kind: "stop" | "resume"; session: string }
+  | { kind: "stop"; session: string; mode: "graceful" | "hard" }
+  | { kind: "start"; session: string }
   | { kind: "forget"; machine: string; confirmation: string }
   | { kind: "stores-prune"; confirm: boolean }
   | { kind: "repo-map"; repoKey: string; path: string }
@@ -34,7 +35,10 @@ export function parsePublicControl(input: readonly string[]): PublicControl | nu
     if (args.length === 4 && ["--", "--machine"].includes(a) && b && b.length <= 1024 && !/[\u0000-\u0020\u007f]/.test(b)) return { kind: command, machine: b };
   }
   if ((command === "recover" || command === "cancel") && args.length === 3 && plain(a)) return { kind: command, operationId: a };
-  if ((command === "stop" || command === "resume") && args.length === 3 && plain(a)) return { kind: command, session: a };
+  const sessionTarget = typeof a === "string" && !!a.trim() && a.length <= 1024 && !a.startsWith("-") && !/[\u0000-\u001f\u007f]/.test(a);
+  if (command === "stop" && sessionTarget && (args.length === 3 || args.length === 4 && b === "--now"))
+    return { kind: "stop", session: a, mode: b === "--now" ? "hard" : "graceful" };
+  if (command === "start" && sessionTarget && args.length === 3) return { kind: "start", session: a };
   if (command === "claim" && args.length === 4 && plain(a) && plain(b)) return { kind: command, session: a, machine: b };
   if (command === "forget" && args.length === 5 && plain(a) && b === "--confirm" && /^destroyed [A-Za-z0-9._-]+$/.test(c)) return { kind: command, machine: a, confirmation: c };
   if (command === "stores" && a === "prune" && (args.length === 3 || args.length === 4 && b === "--confirm")) return { kind: "stores-prune", confirm: b === "--confirm" };
@@ -60,7 +64,7 @@ export function parsePublicControl(input: readonly string[]): PublicControl | nu
   return null;
 }
 export function controlRefusal(control: PublicControl, config: RoamConfig): string | null {
-  if (!config.enabled && !["status", "doctor", "enable", "disable", "provision", "forget", "stop", "stores-prune"].includes(control.kind)) return "roaming-disabled";
+  if (!config.enabled && !["status", "doctor", "enable", "disable", "provision", "forget", "stores-prune"].includes(control.kind)) return "roaming-disabled";
   if (config.role === "box" && !(control.kind === "status" || control.kind === "repo-map" || control.kind === "stores-prune" || control.kind === "doctor" && control.machine === undefined)) return "mac-hub-required";
   return null;
 }
@@ -110,7 +114,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   const moveCause = candidate === "move-first-home-withheld" && !withheld ? undefined : candidate;
   const causeCode = moveCause ?? safeCauseCode(result.causeCode);
   // provision.ts is the sole producer of permission repairs and binds them to the destination home.
-  const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" || /^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|stop|enable)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
+  const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" || /^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|enable)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
     /^spider roam provision [A-Za-z0-9._-]+ --operation-id [A-Za-z0-9._-]+$/.test(value) ||
     result.reason === "destination-permissions-unsafe" && isPermissionRepairCommand(value)) ? value : null;
   const repair = safeRepair(result.repairCommand);
@@ -193,7 +197,9 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
         /^(?:legacy-move-pending:[A-Za-z0-9._-]+|legacy-move-check-unavailable)$/.test(reason ?? "");
       return reason && repairCommand ? [{ reason, repairCommand, ...(cause ? { causeCode: cause } : {}),
         ...(legacyLaunchWarning || legacyMoveWarning ? { severity: "warning" } : {}),
-        ...(pairDetail || issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
+        ...(legacyLaunchWarning && typeof issue.detail === "string" && issue.detail.includes("roaming-upgrade.md#settle-old-work-only-after-approval")
+          ? { detail: "For legacy work, see docs/guide/roaming-upgrade.md#settle-old-work-only-after-approval." }
+          : pairDetail || issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
     });
   }
   const sourceCleanup = value.sourceCleanup as SourceCleanup | undefined;

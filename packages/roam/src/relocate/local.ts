@@ -1,37 +1,45 @@
 import { execFileSync } from "node:child_process";
-import { join, relative, isAbsolute, sep } from "node:path";
+import { basename, join, relative, isAbsolute, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { discoverOrdinarySource } from "./ordinary-source";
 import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
-import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { localRecordRows } from "./local-records";
+import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { inspectSession } from "../session-file";
 import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { createStorePort } from "../stores";
 import { parsePlacement, object, text } from "./journal";
 import { homedir } from "node:os";
 import { setImmediate as yieldTurn, setTimeout as delay } from "node:timers/promises";
-import { inspectIdLock, claimIdLock, localBootId, type IdLockObservation } from "@spider/herdr/sessions/id-lock";
+import { inspectIdLock, claimIdLock, bootIdChanged, localBootId, type IdLockObservation } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { safeLaunchEnvironment, type PiSpawnRequest } from "@spider/herdr/sessions/launcher";
-import type { SessionId as HerdrSessionId } from "@spider/herdr/contracts";
+import { HERDR_KINDS, type CoreIdentity, type SessionId as HerdrSessionId } from "@spider/herdr/contracts";
 import { invokeCli, observeCoreIdentity } from "@spider/herdr/client/hc";
 import { hubCoreSelection } from "../launchd";
 import { loadHerdrConfig } from "../host-config";
 import type { Operation, Clock } from "../contracts";
 import { createLocalExactHc, resolveParticipantPi } from "../launcher";
+import { decodeManagedHome, readManagedHome, sameManagedHome } from "./home";
+import { createLocalStop, queueStopMode } from "./local-stop";
+import type { StopMode, StopObservation } from "./session-stop-types";
 import { requestSessionControl } from "../session-socket";
-import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, SupervisorEntry, V0Result, RelocatePlan } from "./types";
+import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, StoppedHome, SupervisorEntry, V0Result, RelocatePlan } from "./types";
 import { refusal } from "./remote";
-import { insideDirectory, isPiTitle, localProcessTree, localGroupBlockers, locklessPiInCheckout, processName, type SessionProcessTree } from "./local-process";
+import { insideDirectory, isPiTitle, localProcessTree, localGroupBlockers, locklessPiInCheckout, processName, type SessionProcessTree, type StopTreeCheck } from "./local-process";
 import { localWriterBlockers } from "./local-writers";
 import { piLaunchArgv, toolPath } from "./launch-environment";
 
 type LocalLaunch = { sessionId: string; machineId: string; epoch: number; cwd: string; file: string };
-type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true; launch?: LocalLaunch };
+type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true; labelled?: true; launch?: LocalLaunch };
+export type LocalDurableTerminal = { pid: number; core: CoreIdentity; identity: string; createdAt: number };
+const auxiliaryKinds = new Set<string>([...Object.values(HERDR_KINDS).filter(kind => kind !== HERDR_KINDS.session), "roam-proxy"]);
 function finishedTerminal(terminal: string, row: Record<string,unknown>): LocalTerminal {
   const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
   if (row.reason === "exited" && !Number.isSafeInteger(row.exit_code) && !signaled) throw new Error("Invalid terminal exit");
@@ -41,16 +49,19 @@ function finishedTerminal(terminal: string, row: Record<string,unknown>): LocalT
 }
 export interface LocalIO {
   inspect(sessionId: string): Promise<IdLockObservation | null>;
-  probe(pid: number): Promise<{kind:"absent"}|{kind:"unknown"}|{kind:"live";startIdentity:string;pi:boolean}>;
+  probe(pid: number, readStartedAt?: boolean): Promise<{kind:"absent"}|{kind:"unknown"}|{kind:"live";startIdentity:string;pi:boolean;startedAt?:number}>;
   claimFree(sessionId: string): Promise<void>;
-  tree(pid: number): Promise<SessionProcessTree>;
+  tree(pid: number, stop?: StopTreeCheck): Promise<SessionProcessTree>;
   groupBlockers(groups: readonly number[]): Promise<readonly string[]>;
   writerBlockers(sessionId: SessionId, placement?: SessionPlacement, requireCheckout?: boolean): Promise<readonly string[]>;
-  signal(pid: number): Promise<void>;
-  shutdown(operation: Operation): Promise<boolean>;
+  signal(pid: number, signal: "SIGTERM" | "SIGKILL"): Promise<void>;
+  shutdown(operation: Operation, timeoutMs?: number): Promise<boolean>;
+  bootId?(): Promise<string>;
+  fileLease?(file: string): Promise<{ pid: number; startIdentity: string; bootId?: string } | null>;
   pause(ms: number): Promise<void>;
-  terminals(sessionId: string, admittedPid?: number, includeLaunch?: boolean): Promise<readonly LocalTerminal[]>;
-  launch(request: {home:RunningHome;placement:SessionPlacement}): Promise<{terminal:string}>;
+  terminals(sessionId: string, admittedPid?: number, includeLaunch?: boolean, stop?: { timeoutMs: number }): Promise<readonly LocalTerminal[]>;
+  durableTerminal?(address: string, directory: string, timeoutMs: number): Promise<LocalDurableTerminal | null>;
+  launch(request: {home:RunningHome;placement:SessionPlacement}, beforeSpawn?: () => Promise<void>): Promise<{terminal:string}>;
 }
 export function exactHome(a: RelocateHome | null, b: RelocateHome): boolean {
   return !!a && a.sessionId === b.sessionId && a.machineId === b.machineId && a.epoch === b.epoch && a.state === b.state && a.destination === b.destination && a.moveId === b.moveId;
@@ -58,14 +69,24 @@ export function exactHome(a: RelocateHome | null, b: RelocateHome): boolean {
 function sameOwner(a: IdLockObservation | null, b: IdLockObservation): boolean {
   return !!a && a.identity.pid === b.identity.pid && a.identity.startIdentity === b.identity.startIdentity && a.bootId === b.bootId && a.pendingOperationId === b.pendingOperationId;
 }
-export async function probeLocalProcess(pid: number): ReturnType<LocalIO["probe"]> {
+export async function probeLocalProcess(pid: number, readStartedAt = false): ReturnType<LocalIO["probe"]> {
   let startIdentity: string | null;
   try { startIdentity = processStartIdentity(pid); }
   catch { return {kind:"unknown"}; }
   if (startIdentity === null) return {kind:"absent"};
   try {
-    const comm = execFileSync("ps",["-p",String(pid),"-o","comm="],{encoding:"utf8",timeout:1000}).trim();
-    return {kind:"live",startIdentity,pi:isPiTitle(comm)};
+    if (!readStartedAt) {
+      const comm = execFileSync("ps",["-p",String(pid),"-o","comm="],{encoding:"utf8",timeout:1000}).trim();
+      return {kind:"live",startIdentity,pi:isPiTitle(comm)};
+    }
+    const output = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart=", "-o", "comm="], {
+      encoding: "utf8", timeout: 1000, env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+    }).trim();
+    const fields = /^(\w{3} \w{3} +\d{1,2} \d{2}:\d{2}:\d{2} \d{4})[ \t]+(.+)$/.exec(output);
+    if (!fields || processStartIdentity(pid) !== startIdentity) return {kind:"unknown"};
+    const startedAt = Date.parse(`${fields[1]} UTC`);
+    if (!Number.isSafeInteger(startedAt)) return {kind:"unknown"};
+    return {kind:"live",startIdentity,pi:isPiTitle(fields[2]),startedAt};
   } catch {
     try { return processStartIdentity(pid) === startIdentity ? {kind:"unknown"} : {kind:"absent"}; }
     catch { return {kind:"unknown"}; }
@@ -133,12 +154,13 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
       const held = await claimIdLock(lockRoot,id,{pid:process.pid,startIdentity},probeLocalProcess,{bootId:localBootId});
       await held.release();
     },
-    async signal(pid) { process.kill(pid,"SIGTERM"); },
-    async shutdown(operation) { try { return (await requestSessionControl(join(options.root,"roam","s"),operation,{timeoutMs:options.limits.controlMs})).code === 0; } catch { return false; } },
+    async signal(pid, signal) { process.kill(pid,signal); },
+    async shutdown(operation, timeoutMs = options.limits.controlMs) { try { return (await requestSessionControl(join(options.root,"roam","s"),operation,{timeoutMs})).code === 0; } catch { return false; } },
     pause:ms=>delay(ms),
-    async terminals(id,admittedPid,includeLaunch) {
-      async function list(args: readonly string[], pidFilter?: number): Promise<LocalTerminal[]> {
-        const reply = await invokeCli(binary,args,env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
+    async terminals(id,admittedPid,includeLaunch,stop) {
+      const timeoutMs = stop?.timeoutMs ?? options.limits.controlMs;
+      async function list(args: readonly string[], pidFilter?: number, labelled = false): Promise<LocalTerminal[]> {
+        const reply = await invokeCli(binary,args,env,options.limits.replyBytes,undefined,{timeoutMs});
         if (!reply || typeof reply !== "object" || !("terminals" in reply) || !Array.isArray(reply.terminals)) throw new Error("Terminal list unavailable");
         return (await Promise.all(reply.terminals.map(async (value: unknown) => {
           if (!value || typeof value !== "object") throw new Error("Invalid terminal");
@@ -151,7 +173,7 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
           if (pidFilter !== undefined && pid !== null && pid !== pidFilter) return null;
           let labels: unknown = row.labels, detail: Record<string,unknown> | undefined;
           if (pid === null || labels == null || includeLaunch) {
-            detail = object(await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs}));
+            detail = object(await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs}));
             if (detail.address !== row.address) throw new Error("Terminal identity changed");
             if (detail.state === "finished" && "reason" in detail) return pidFilter === undefined ? finishedTerminal(row.address,detail) : null;
             if (detail.state !== "live" || !("pid" in detail)) throw new Error("Terminal identity changed");
@@ -162,8 +184,14 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
           if (pid !== null && (!Number.isSafeInteger(pid) || (pid as number) <= 0)) throw new Error("Unknown terminal process");
           if (pidFilter !== undefined && pid !== pidFilter) return null;
           const terminal: LocalTerminal = {terminal:row.address,state:"live",pid:pid as number|null};
+          if (includeLaunch && labelled) terminal.labelled = true;
           if (labels && typeof labels === "object") {
             const tags = labels as Record<string,unknown>;
+            const kind = tags["spider.kind"];
+            // Views and job terminals may share the session label. They are
+            // never pi authority; a claim on the ID-lock PID is a conflict.
+            if (stop && pid !== admittedPid && typeof kind === "string" && auxiliaryKinds.has(kind) && !("spider.roam.epoch" in tags)) return null;
+            if (includeLaunch && ("spider.session" in tags || "spider.roam.epoch" in tags || kind === "session")) terminal.labelled = true;
             if (tags["spider.kind"] === "session" && tags["spider.session"] === id && tags["spider.machine"] === options.config.machineId &&
                 typeof tags["spider.roam.epoch"] === "string" && /^[1-9]\d*$/.test(tags["spider.roam.epoch"]) &&
                 !("spider.roam.operation" in tags)) terminal.owned = true;
@@ -178,15 +206,30 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
           return terminal;
         }))).filter(terminal => terminal !== null);
       }
-      const tagged = await list(["ls","--all","--json","--label",`spider.session=${id}`]);
+      const tagged = await list(["ls","--all","--json","--label",`spider.session=${id}`],undefined,true);
       if (admittedPid === undefined || tagged.some(terminal=>terminal.pid === admittedPid)) return tagged;
       return [...tagged,...await list(["ls","--json"],admittedPid)];
     },
-    async launch({home,placement}) {
+    async durableTerminal(address, directory, timeoutMs) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(address)) return null;
+      const core = await observeCoreIdentity(binary, env, { timeoutMs });
+      const row = object(await invokeCli(binary, ["get", address, "--json"], env, options.limits.replyBytes, undefined, { timeoutMs }));
+      const { pid, identity, created_ms: createdAt, argv } = row;
+      if (row.address !== address || row.state !== "live" || typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1 ||
+          typeof identity !== "string" || !identity || typeof createdAt !== "number" || !Number.isSafeInteger(createdAt) || createdAt <= 0 ||
+          !Array.isArray(argv) || argv.length !== 7 || argv[1] !== "--input-type=module" || argv[2] !== "-e" ||
+          typeof argv[4] !== "string" || !isAbsolute(argv[4]) || basename(argv[4]) !== "subagent-supervisor.mjs" ||
+          argv[5] !== join(directory, "request.json") || argv[6] !== join(directory, "supervisor.log")) return null;
+      if (!isDeepStrictEqual(core, await observeCoreIdentity(binary, env, { timeoutMs }))) return null;
+      return { pid, core, identity, createdAt };
+    },
+    async launch({home,placement}, beforeSpawn) {
       if (!pi) throw new Error("Pi executable unavailable");
       const core = await observeCoreIdentity(binary,env,{timeoutMs:options.limits.controlMs});
       const launchEnv: NodeJS.ProcessEnv = {...env,HC_SESSION:core.sessionNamespace,HC_SOCKET:core.socket};
-      const request: PiSpawnRequest = {sessionId:home.sessionId as unknown as HerdrSessionId,sessionFile:placement.file,cwd:placement.cwd,environment:{agentDirectory:launchEnv.PI_CODING_AGENT_DIR!,extensionArguments:[]},argv:piLaunchArgv(pi,placement.file,launchEnv),env:launchEnv,terminal:{background:true,noNotify:true,outliveParent:true,parent:null,labels:{"spider.kind":"session","spider.session":home.sessionId,"spider.machine":home.machineId,"spider.roam.epoch":String(home.epoch)}}};
+      const launch = { sessionId: home.sessionId, machineId: home.machineId, homeEpoch: home.epoch };
+      const request: PiSpawnRequest = {sessionId:home.sessionId as unknown as HerdrSessionId,sessionFile:placement.file,cwd:placement.cwd,environment:{agentDirectory:launchEnv.PI_CODING_AGENT_DIR!,extensionArguments:[]},argv:piLaunchArgv(pi,placement.file,launchEnv,launch),env:launchEnv,terminal:{background:true,noNotify:true,outliveParent:true,parent:null,labels:{"spider.kind":"session","spider.session":home.sessionId,"spider.machine":home.machineId,"spider.roam.epoch":String(home.epoch)}}};
+      await beforeSpawn?.();
       return hc.run(request,{started(){},exited(){}});
     },
   };
@@ -213,7 +256,8 @@ export async function checkMacSourceWriters(id: SessionId, options: RelocateAdap
 const terminalName = (t: LocalTerminal): string => t.pid === null ? `terminal ${t.terminal} (PID unavailable)` : `PID ${t.pid} (pi)`;
 
 /** A free lock alone cannot clear an ordinary pi or a detached Spider job. */
-export async function stopLocalSession(sessionId: SessionId, moving: MovingHome | null, io: LocalIO, clock: Clock, timeoutMs: number): Promise<V0Result<void>> {
+export async function stopLocalSession(sessionId: SessionId, moving: MovingHome | null, io: LocalIO, clock: Clock, timeoutMs: number,
+  beforeSignal?: () => Promise<V0Result<void> | undefined>): Promise<V0Result<void>> {
   try {
     const deadline = clock.now() + timeoutMs;
     let observed = await io.inspect(sessionId);
@@ -264,13 +308,15 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
         const member = await io.probe(child.pid);
         if (member.kind === "unknown") return busy([processName(child)]);
         if (member.kind !== "live" || member.startIdentity !== child.startIdentity) continue;
-        try { await io.signal(child.pid); }
+        if (beforeSignal) { const blocked = await beforeSignal(); if (blocked) return blocked; }
+        try { await io.signal(child.pid,"SIGTERM"); }
         catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
       }
       const shutdown = observed && moving && await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});
       if (!shutdown && (await io.probe(pid)).kind !== "absent") {
         if (!await stillOwned()) return busy([processName(root)]);
-        try { await io.signal(pid); }
+        if (beforeSignal) { const blocked = await beforeSignal(); if (blocked) return blocked; }
+        try { await io.signal(pid,"SIGTERM"); }
         catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
       }
       for (;;) {
@@ -396,14 +442,16 @@ export class SessionSeedBusy extends Error {
 export function seedBusyRefusal<T = never>(error: SessionSeedBusy): V0Result<T> {
   return refusal(error.code,error.message,"Close running subagents, then rerun relocate.");
 }
-export async function seedLocalPlacement(placement: SessionPlacement, epoch: number, options: RelocateAdapterOptions): Promise<void> {
+export async function seedLocalPlacement(placement: SessionPlacement, epoch: number, options: RelocateAdapterOptions, checkHome?: () => Promise<void>): Promise<void> {
   const stores = createStorePort(options.config,options.globalDb);
   try {
     for (const key of placement.stores) {
+      if (checkHome) await checkHome();
       const db=stores.openStore(key).db;
       if (!key.startsWith("worktree:")) { enableMemoryCapture(db,key); continue; }
       let through = -1;
       for (let batch = 1; ; batch++) {
+        if (batch > 1 && checkHome) await checkHome();
         const seeded = seedSession(db,placement.sessionId,epoch,key,options.limits.hardBatchBytes);
         if (seeded.complete) break;
         if (seeded.retryable || seeded.through <= through) throw new SessionSeedBusy("The session is too busy to prepare its capture rows.");
@@ -424,16 +472,46 @@ export async function captureOrdinarySource(plan: RelocatePlan, options: Relocat
   await seedLocalPlacement(plan.sourcePlacement, plan.source.epoch, options);
   recordLocation(options.globalDb, { sessionId: plan.source.sessionId, stores: plan.sourcePlacement.stores, home: { sessionId: plan.source.sessionId, machineId: plan.source.machineId, epoch: plan.source.epoch, moveId: null, updatedAt: plan.source.updatedAt }, file: plan.sourcePlacement.file, cwd: plan.sourcePlacement.cwd });
 }
+/** Check and queue on the same connection so replication cannot change the row between them. */
+export function requestLocalStop(home: StoppedHome, mode: StopMode, options: RelocateAdapterOptions): V0Result<void> {
+  const { config, globalDb: db } = options;
+  const conflict = () => refusal("home-conflict", "The exact stopped home is not present on its named machine.",
+    "Publish the stopped home before requesting Stop again.");
+  if (home.machineId !== config.machineId) return conflict();
+  try {
+    return db.raw.transaction(() => {
+      if (!sameManagedHome(readManagedHome(db, home.sessionId), home)) return conflict();
+      queueStopMode(db, home, mode);
+      return { ok: true, value: undefined } as const;
+    }).immediate();
+  } catch {
+    return refusal("home-unavailable", "The stopped replica or its mode could not be saved locally.", "Check local roaming storage, then retry Stop.");
+  }
+}
+
 export interface LocalRuntime extends SessionMachinePorts {
-  confirm(home: RunningHome, placement: SessionPlacement, exact?: true): Promise<V0Result<{terminal:string}>>;
+  confirm(home: RunningHome, placement: SessionPlacement, exact?: true, admitted?: true): Promise<V0Result<{terminal:string}>>;
   owner(id: SessionId, placement?: SessionPlacement): Promise<SessionOwner>;
   stop(id: SessionId, moving?: MovingHome | null, beforeOrdinaryCapture?: boolean): Promise<V0Result<void>>;
   entries(): Promise<readonly SupervisorEntry[]>;
+  enforceStopped(home: StoppedHome): Promise<StopObservation>;
+  observeStopped(home: StoppedHome): Promise<StopObservation>;
+  freezeStoppedPlacement(home: StoppedHome, placement: SessionPlacement, moving?: MovingHome): Promise<V0Result<void>>;
 }
+async function verifyLocalTranscript(placement: SessionPlacement, options: RelocateAdapterOptions): Promise<void> {
+  if (await realpath(placement.file) !== placement.file || !(await stat(placement.cwd)).isDirectory())
+    throw new Error("The local session transcript or checkout is unavailable.");
+  const session = await inspectSession(placement.file, placement.sessionId, undefined, options.limits);
+  if (session.cwd !== placement.cwd) throw new Error("The transcript does not match the recorded checkout.");
+}
+
 export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO = createLocalIO(options)): LocalRuntime {
-  function withSessionState<T>(id: SessionId, run: () => Promise<T>): Promise<T> {
-    return withProcessLock(join(options.root,"herdr"),`v0-state:${id}`,run);
+  const lockRoot = join(options.root, "herdr");
+  const leases = createSessionLeases(lockRoot);
+  function withSessionState<T>(id: SessionId, run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return withProcessLock(lockRoot, `v0-state:${id}`, run, { signal });
   }
+  const stopped = createLocalStop(options, io, withSessionState);
   async function inspectOwner(id: SessionId, placement?: SessionPlacement): Promise<{owner:SessionOwner;blockers?:readonly string[]}> {
     try {
       const lock = await io.inspect(id), terminals = await io.terminals(id), live = terminals.filter(t=>t.state === "live");
@@ -456,9 +534,24 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
   async function runnable(home: RunningHome, placement: SessionPlacement): Promise<boolean> {
     return home.machineId === options.config.machineId && home.sessionId === placement.sessionId && placement.machineId === options.config.machineId && exactHome(await options.homes.read(home.sessionId),home);
   }
-  async function confirm(home: RunningHome,placement: SessionPlacement,exact?: true): Promise<V0Result<{terminal:string}>> {
+  async function inspectAdmission(home: RunningHome, lock: IdLockObservation): Promise<boolean> {
+    if (lock.pendingOperationId !== null) return false;
+    // The pi socket checks its live admission gate and file lease, not merely
+    // whether it has acquired an ID lock and appeared in the terminal list.
+    const owner = { ...lock.identity, bootId: lock.bootId };
+    const reply = await requestSessionControl(join(options.root, "roam", "s"), {
+      id: `start-inspect-${home.epoch}`, kind: "session-inspect", machineId: home.machineId, expectedEpoch: home.epoch,
+      args: { v0: true, sessionId: home.sessionId, homeMachineId: home.machineId, homeState: "running", owner },
+    }, { timeoutMs: Math.min(options.limits.controlMs, options.limits.readyMs) });
+    if (reply.code !== 0 || reply.reason !== "session-inspect" || reply.value?.version !== 1 || reply.value.sessionId !== home.sessionId ||
+        !sameManagedHome(decodeManagedHome(object(reply.home)), home)) return false;
+    const verified = object(reply.value.owner);
+    return verified.pid === owner.pid && verified.startIdentity === owner.startIdentity && verified.bootId === owner.bootId;
+  }
+  async function confirm(home: RunningHome,placement: SessionPlacement,exact?: true, admitted?: true): Promise<V0Result<{terminal:string}>> {
     try {
       if (!await runnable(home,placement)) return refusal("start-pending","The local running home changed.");
+      if (admitted && !exact) return refusal("start-pending", "Admission confirmation requires the exact launch.");
       if (!exact) {
         const current = await owner(home.sessionId);
         return current.kind === "live" && current.terminal ? {ok:true,value:{terminal:current.terminal}} : refusal("start-pending","Pi has not claimed this session's ID lock.");
@@ -469,9 +562,12 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       const launch = terminal?.launch;
       if (!launch || launch.sessionId !== home.sessionId || launch.machineId !== home.machineId || launch.epoch !== home.epoch ||
           launch.cwd !== placement.cwd || launch.file !== placement.file) return refusal("start-pending","The session owner's launch does not match the running home.");
+      if (admitted && !await inspectAdmission(home, lock)) return refusal("start-pending", "Pi has not admitted the exact running home.");
       const probe = await io.probe(lock.identity.pid);
       if (probe.kind !== "live" || !probe.pi || probe.startIdentity !== lock.identity.startIdentity ||
-          !sameOwner(await io.inspect(home.sessionId),lock) || !await runnable(home,placement)) return refusal("start-pending","The session owner changed before confirmation.");
+          !sameOwner(await io.inspect(home.sessionId),lock) || !(admitted
+            ? sameManagedHome(await options.homes.read(home.sessionId), home)
+            : await runnable(home,placement))) return refusal("start-pending","The session owner changed before confirmation.");
       return {ok:true,value:{terminal:current.terminal}};
     } catch { return refusal("start-pending","The session owner cannot be confirmed."); }
   }
@@ -484,7 +580,20 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       if (current.kind !== "free") return refusal("start-pending","A session owner or pending terminal is still present.");
       // Reread immediately before the only spawn call.
       if (!await runnable(home,placement)) return refusal("start-pending","The home changed before launch.");
-      const launched = await io.launch({home,placement});
+      const launched = await io.launch({home,placement}, async () => {
+        // Core identity resolution can yield. Recheck under the state lock at
+        // the native spawn boundary, without claiming pi's leases for it.
+        const lease = await (io.fileLease ? io.fileLease(placement.file) : leases.get(placement.file));
+        if (lease && !(lease.bootId && bootIdChanged(lease.bootId, await (io.bootId ? io.bootId() : localBootId())))) {
+          const holder = await io.probe(lease.pid);
+          if (holder.kind === "unknown" || holder.kind === "live" && holder.startIdentity === lease.startIdentity)
+            throw new Error("The exact session file is still leased.");
+        }
+        await verifyLocalTranscript(placement, options);
+        if ((await io.terminals(home.sessionId)).some(terminal => terminal.state === "live") ||
+            await io.inspect(home.sessionId) || !sameManagedHome(await options.homes.read(home.sessionId), home))
+          throw new Error("The session owner or home changed before the native spawn.");
+      });
       return {ok:true,value:launched};
     }); } catch { return refusal("start-pending","The launch reply is pending; retry without starting another copy."); }
   }
@@ -496,8 +605,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       if (known) placement=parsePlacement(known);
       else { const source=await inspectLocalSource(id,options,true);if(!source.ok)return source;placement=source.value.placement; }
       if (placement.machineId !== machineId || placement.sessionId !== id) return refusal("destination-copy-missing","The local copy has a different identity.");
-      const session=await inspectSession(placement.file,id,undefined,options.limits);
-      if (session.cwd !== placement.cwd) return refusal("destination-copy-missing","The local transcript cwd no longer matches its recorded copy.");
+      await verifyLocalTranscript(placement, options);
       return {ok:true,value:placement};
     } catch {return refusal("destination-copy-missing","The destination has no verified local session copy.");}
   }
@@ -508,33 +616,81 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
   async function activate(home: RunningHome,placement: SessionPlacement): Promise<V0Result<void>> {
     try { return await withSessionState(home.sessionId,async()=>{
       parsePlacement(placement);
-      const current=await options.homes.read(home.sessionId);
-      const allowed=exactHome(current,home) || current?.state === "moving" && current.moveId === home.moveId && current.epoch+1 === home.epoch && (current.machineId === home.machineId || current.destination === home.machineId) || current?.state === "stopped" && current.machineId === home.machineId && current.epoch+1 === home.epoch;
-      if (!allowed || home.state !== "running" || home.destination !== null || home.machineId !== options.config.machineId || placement.machineId !== home.machineId || home.sessionId !== placement.sessionId) return refusal("home-conflict","The home does not authorize this local activation.");
+      async function authorized() {
+        const current = await options.homes.read(home.sessionId);
+        return sameManagedHome(current, home) || current?.state === "moving" && current.moveId === home.moveId &&
+          current.epoch + 1 === home.epoch && (current.machineId === home.machineId || current.destination === home.machineId);
+      }
+      const checkHome = async () => {
+        if (!await authorized()) throw new Error("The home changed during local activation.");
+      };
+      if (!await authorized() || home.state !== "running" || home.destination !== null || home.machineId !== options.config.machineId || placement.machineId !== home.machineId || home.sessionId !== placement.sessionId) return refusal("home-conflict","The home does not authorize this local activation.");
       const stores=createStorePort(options.config,options.globalDb);
       try { for(const key of placement.stores) if(key.startsWith("worktree:")) {
+        await checkHome();
         const db=stores.openStore(key).db;
         const old=db.prepare("SELECT epoch FROM roam_sessions WHERE session_id=?").get(home.sessionId) as {epoch:number}|undefined;
         if(old && old.epoch>home.epoch) return refusal("home-conflict","The local membership has a newer epoch.");
         db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,?,'active') ON CONFLICT(session_id) DO UPDATE SET epoch=excluded.epoch,state='active'").run(home.sessionId,home.epoch);
       }} finally {stores.close();}
-      await seedLocalPlacement(placement,home.epoch,options);
+      await seedLocalPlacement(placement,home.epoch,options,checkHome);
+      await checkHome();
       writeLocal(options.globalDb,"relocate-managed",home.sessionId,placement);
       recordLocation(options.globalDb,{sessionId:home.sessionId,stores:placement.stores,home,file:placement.file,cwd:placement.cwd});
       return {ok:true,value:undefined};
     }); } catch (error) {return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("install-failed","Local capture membership could not be activated.");}
   }
+  async function freezeStoppedPlacement(home: StoppedHome, placement: SessionPlacement, moving?: MovingHome): Promise<V0Result<void>> {
+    const conflict = () => refusal("home-conflict", "The local home does not authorize this stopped placement.");
+    try { return await withSessionState(home.sessionId, async () => {
+      parsePlacement(placement);
+      if (home.state !== "stopped" || home.machineId !== options.config.machineId ||
+          placement.machineId !== home.machineId || placement.sessionId !== home.sessionId) return conflict();
+      const predecessor = moving && moving.sessionId === home.sessionId && moving.destination === home.machineId &&
+        moving.moveId === home.moveId && moving.epoch + 1 === home.epoch && moving.updatedAt === home.updatedAt ? moving : undefined;
+      const authorized = async () => {
+        const current = await options.homes.read(home.sessionId);
+        return sameManagedHome(current, home) || predecessor !== undefined && sameManagedHome(current, predecessor);
+      };
+      if (!await authorized()) return conflict();
+      await verifyLocalTranscript(placement, options);
+      const stores = createStorePort(options.config, options.globalDb);
+      try {
+        for (const key of placement.stores) {
+          if (!key.startsWith("worktree:")) continue;
+          if (!await authorized()) return conflict();
+          const db = stores.openStore(key).db;
+          if (db.prepare(`INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,?,'frozen')
+            ON CONFLICT(session_id) DO UPDATE SET epoch=excluded.epoch,state='frozen' WHERE roam_sessions.epoch<=excluded.epoch`)
+            .run(home.sessionId, home.epoch).changes !== 1)
+            return refusal("home-conflict", "The local membership has a newer epoch.");
+        }
+      } finally { stores.close(); }
+      if (!await authorized()) return conflict();
+      writeLocal(options.globalDb, "relocate-managed", home.sessionId, placement);
+      recordLocation(options.globalDb, { sessionId: home.sessionId, stores: placement.stores, home, file: placement.file, cwd: placement.cwd });
+      return { ok: true, value: undefined };
+    }); } catch { return refusal("install-failed", "Local stopped membership could not be frozen."); }
+  }
   async function stop(id: SessionId,moving: MovingHome|null=null,beforeOrdinaryCapture=false): Promise<V0Result<void>> {
-    try { return await withSessionState(id,async()=>{
-      const current = await options.homes.read(id).catch(error => {
-        if (moving) throw error;
-        return null; // An unreadable home does not authorize a managed pi to run.
-      });
-      if (moving && !exactHome(current,moving)) return refusal("home-conflict","The source moving home changed before shutdown.");
-      if (!moving && current?.state === "running" && current.machineId === options.config.machineId) {
+    async function checkGenericStop(): Promise<V0Result<void> | undefined> {
+      // An unreadable home does not authorize a managed pi to run.
+      const current = await options.homes.read(id).catch(() => null);
+      if (current?.state === "stopped") {
+        return refusal("home-conflict", "This session now has a stopped home; generic shutdown did not signal pi.",
+          "Wait for the local stopped-home check, or retry Stop on the Mac.");
+      }
+      if (current?.state === "running" && current.machineId === options.config.machineId) {
         return refusal("home-conflict","This machine is now the running home; the supervisor did not stop pi.","Leave the session open. To move it, run spider roam relocate.");
       }
-      const stopped=await stopLocalSession(id,moving,io,options.clock,options.limits.readyMs);if(!stopped.ok)return stopped;
+    }
+    try { return await withSessionState(id,async()=>{
+      if (moving) {
+        if (!exactHome(await options.homes.read(id),moving)) return refusal("home-conflict","The source moving home changed before shutdown.");
+      } else {
+        const blocked = await checkGenericStop(); if (blocked) return blocked;
+      }
+      const stopped=await stopLocalSession(id,moving,io,options.clock,options.limits.readyMs,moving ? undefined : checkGenericStop);if(!stopped.ok)return stopped;
       const known=readLocal<unknown>(options.globalDb,"relocate-managed",id);
       const row=options.globalDb.prepare("SELECT stores_json,file,cwd FROM roam_locations WHERE session_id=?").get(id) as {stores_json:string;file:string|null;cwd:string|null}|undefined;
       // A first-time ordinary source may be cataloged by mapWorkspace before
@@ -553,13 +709,39 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       return refusal("stop-timeout","The stopped source membership could not be frozen.");
     }
   }
+  function retainedLocalCopy(id: SessionId): boolean {
+    const db = options.globalDb;
+    try {
+      const row = db.prepare("SELECT file,cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as
+        {file: string | null; cwd: string | null; stores_json: string} | undefined;
+      if (!row) return false;
+      if (row.file !== null && row.cwd !== null) return true;
+      for (const key of parseLocationStores(JSON.parse(row.stores_json), { allowEmpty: true })) {
+        if (!key.startsWith("worktree:")) continue;
+        try {
+          const store = openRoamStoreReadOnly(db, key);
+          if (!store) continue;
+          try {
+            const meta = store.prepare("SELECT machine_id, store_key FROM roam_meta WHERE id=1").get() as
+              {machine_id: string; store_key: string | null} | undefined;
+            if (meta?.machine_id === options.config.machineId && (meta.store_key === null || meta.store_key === key) &&
+                store.prepare("SELECT 1 FROM roam_sessions WHERE session_id=? AND state IN ('active','frozen')").get(id)) return true;
+          } finally { store.close(); }
+        } catch { /* An unreadable store does not establish local provenance. */ }
+      }
+    } catch { /* Leave an unknown foreign copy unconfirmed. */ }
+    return false;
+  }
   async function entries(): Promise<readonly SupervisorEntry[]> {
     const homes=await options.homes.list(), byId=new Map(homes.map(home=>[home.sessionId,home]));
     const placements = new Map<SessionId, SessionPlacement | null>();
-    for (const {key,value} of localEntries<unknown>(options.globalDb,"relocate-managed")) {
+    const rows = localRecordRows(options.globalDb, "relocate-managed");
+    const unknownPlacement = rows.some(row => !row.valid && row.key === null);
+    for (const {key,value,valid} of rows) {
+      if (key === null) continue;
       const id = key as SessionId;
       let placement: SessionPlacement | null = null;
-      if (!placements.has(id)) {
+      if (valid && !placements.has(id)) {
         try {
           const parsed = parsePlacement(value);
           if (parsed.sessionId === id && parsed.machineId === options.config.machineId) placement = parsed;
@@ -567,12 +749,21 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       }
       placements.set(id,placement);
     }
-    const ids=new Set([...placements.keys(),...homes.filter(home=>home.machineId===options.config.machineId || home.state === "moving" && home.destination===options.config.machineId).map(home=>home.sessionId)]);
+    const machine = options.config.machineId;
+    const ids = new Set(placements.keys());
+    for (const home of homes) {
+      if (home.machineId === machine || home.state === "moving" && home.destination === machine ||
+          home.state === "stopped" && !ids.has(home.sessionId) && retainedLocalCopy(home.sessionId)) ids.add(home.sessionId);
+    }
     const result: SupervisorEntry[]=[];
     for(const sessionId of ids) {
       const home = byId.get(sessionId) ?? null;
+      if (home?.state === "stopped") {
+        result.push({sessionId,home,placement:null});
+        continue;
+      }
       const saved = placements.get(sessionId);
-      if (saved === null) {
+      if (saved === null || saved === undefined && unknownPlacement) {
         result.push({sessionId,home,placement:null,placementRefusal:{code:"destination-copy-missing",
           message:"The saved placement for this session is invalid.",nextStep:"Restore this session's local placement before trying again."}});
         continue;
@@ -582,7 +773,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     }
     return result;
   }
-  return {owner,start,confirm,stop,locate,publishHome,activate,entries};
+  return {owner,start,confirm,stop,locate,publishHome,activate,entries,freezeStoppedPlacement,...stopped};
 }
 export function createLocalSessionMachinePorts(options: RelocateAdapterOptions): SessionMachinePorts {
   const local=createLocalRuntime(options);

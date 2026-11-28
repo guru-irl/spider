@@ -871,7 +871,11 @@ export class PolyglotExecutor {
             startedAt: new Date().toISOString(),
             ...(needsShell ? { shellCommand: buildFullShellCommand() } : { argv: [spawnCmd, ...spawnArgs] }),
           });
-          proc = this.#spawnProcess(process.execPath, [job!.supervisorScript, job!.dir], commonOpts);
+          // Herdr reaps the closing terminal's HC_SCOPE even across setsid.
+          // The supervisor and its payload must outlive that terminal.
+          const backgroundEnv = { ...commonOpts.env };
+          delete backgroundEnv.HC_SCOPE;
+          proc = this.#spawnProcess(process.execPath, [job!.supervisorScript, job!.dir], { ...commonOpts, env: backgroundEnv });
         } else if (needsShell) {
           proc = this.#spawnProcess(buildFullShellCommand(), [], { ...commonOpts, shell: true });
         } else {

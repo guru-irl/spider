@@ -192,11 +192,13 @@ describe("relocate adapters", () => {
     expect(await handleRelocateAgent({version:1,kind:"prerequisite",sessionId:id,candidate:head},f.options)).toMatchObject({ok:true,value:{version:1,available:true}});
     expect(await handleRelocateAgent({version:1,kind:"prerequisite",sessionId:id,candidate:"0".repeat(40)},f.options)).toMatchObject({ok:true,value:{version:1,available:false}});
   });
-  it("stopped-source seeding keeps its writer epoch without launching",async()=>{
+  it("refuses stopped-source seeding without reactivating frozen membership",async()=>{
     const f=adapterFixture(),source=await inspectLocalSource(id,f.options);if(!source.ok)throw new Error("source missing");
     f.worktree.db.prepare("UPDATE roam_sessions SET state='frozen'").run();f.options.homes.read=async()=>({...checkpoint().plan.source,state:"stopped"});
-    expect(await handleRelocateAgent({version:1,kind:"seed",placement:source.value.placement,epoch:1,allowStopped:true},f.options)).toEqual({ok:true,value:{version:1}});
-    expect(f.worktree.db.prepare("SELECT epoch,state FROM roam_sessions").get()).toEqual({epoch:1,state:"active"});
+    expect(await handleRelocateAgent({version:1,kind:"seed",placement:source.value.placement,epoch:1,allowStopped:true},f.options)).toEqual({ok:false,refusal:{
+      code:"home-conflict",message:"A stopped source cannot be seeded.",nextStep:"Retry spider roam relocate with the same session and target.",
+    }});
+    expect(f.worktree.db.prepare("SELECT epoch,state FROM roam_sessions").get()).toEqual({epoch:1,state:"frozen"});
   });
   it("private data handler excludes legacy move and recovery",async()=>{
     const f=adapterFixture();

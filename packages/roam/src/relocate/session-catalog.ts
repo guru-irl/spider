@@ -1,6 +1,8 @@
 import type { Db } from "@spider/db-core";
 import { openRoamPathReadOnly, roamStorePath } from "@spider/db-core/roam/reads";
 import { listStoreKeys } from "../store-inventory";
+import { readManagedHome } from "./home";
+import type { SessionId } from "./types";
 
 /** A stale registration can outlive its checkout. Unsafe paths still throw. */
 export function readAvailableProjectDb<T>(file: string, read: (db: Db) => T): T | undefined {
@@ -21,6 +23,15 @@ export function skippedProjectDbNotice(count: number): string {
 }
 
 type CatalogSession = { id: string; name: string | null };
+
+/** A name or location alone is not evidence that a session is managed. */
+export function managedSessionCatalog(db: Db): CatalogSession[] {
+  const managed = (db.prepare("SELECT session_id FROM session_homes ORDER BY session_id").all() as { session_id: string }[])
+    .map(row => readManagedHome(db, row.session_id as SessionId))
+    .filter(home => home !== null);
+  const names = new Map(v0SessionCatalog(db).sessions.map(row => [row.id, row.name]));
+  return managed.map(home => ({ id: home.sessionId, name: names.get(home.sessionId) ?? null }));
+}
 
 /** Registration supplies fresh project paths; roaming supplies previously moved sessions. */
 export function v0SessionCatalog(globalDb: Db): { sessions: CatalogSession[]; skippedProjectDbs: number } {

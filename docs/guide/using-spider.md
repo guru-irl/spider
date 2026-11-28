@@ -51,6 +51,7 @@ spider batch commands:[{language:"shell",code:"node -v"},{language:"shell",code:
 
 - `background:true` writes stdout and stderr to durable files from the moment the process starts.
 - If you pass `timeout` in milliseconds, a process that is still running detaches when the timeout runs out. Without a timeout, the call waits for the process to exit.
+- Local background jobs keep running after the owning Herdr pane closes.
 - `exitCode:null` means the process is still running or its outcome is unknown. It does not mean success. Read the returned `backgroundJob` paths to find the logs and the receipt.
 - The receipt is the source of truth for how the process ended. A failed command is not a successful sample.
 - Keep durable working files in `.spider/scratch/`. Each call gets a temporary scratch directory that is deleted when the call ends, so jobs launched separately must not depend on it.

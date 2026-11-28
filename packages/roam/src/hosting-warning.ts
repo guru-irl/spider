@@ -57,9 +57,7 @@ export function hostingWarningText(warning: HostingWarning): string {
   return `${warning.code} (${warning.check}${details ? `: ${details}` : ""}); hosting checks will retry automatically.`;
 }
 export function hostingWarningDiagnostic(sessionId: string, warning: HostingWarning): Diagnostic {
-  const repairCommand = warning.check === "inspection" && /^[A-Za-z0-9._-]{1,256}$/.test(sessionId) ? `spider roam stop ${sessionId}` : null;
-  return { code: warning.code, severity: "warning", reason: hostingWarningReason(sessionId, warning) +
-    (repairCommand ? ` To cancel hosting, run ${repairCommand} on the hub.` : ""), repairCommand };
+  return { code: warning.code, severity: "warning", reason: `${hostingWarningReason(sessionId, warning)} For legacy work, see docs/guide/roaming-upgrade.md#settle-old-work-only-after-approval.`, repairCommand: warning.check === "inspection" ? "spider roam doctor" : null };
 }
 export function hostingWarningReason(sessionId: string, warning: HostingWarning): string {
   const id = sessionId.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);

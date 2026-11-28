@@ -15,10 +15,11 @@ import { prepareWorkspace, verifyWorkspace } from "../workspace-import";
 import { createStorePort } from "../stores";
 import { inspectSession, stageSession, installSession } from "../session-file";
 import { openOutgoingStaging, openStaging, privateDirectory, readPrivate, sourceChunk, validateManifest, writeImmutable, verifyStagedFile } from "../staging";
+import { sameManagedHome } from "./home";
 import { createLocalRuntime, digestIdentity, exactHome, probeLocalProcess } from "./local";
 import { json, parseCaptured, parsePlan, parsePlacement } from "./journal";
 import { refusal } from "./remote";
-import type { CapturedSession, InstalledSession, RelocateAdapterOptions, RelocatePlan, RunningHome, SessionOwner, V0Result } from "./types";
+import type { CapturedSession, InstalledSession, MovingHome, RelocateAdapterOptions, RelocatePlan, SettledHome, SessionOwner, V0Result } from "./types";
 
 export const stagingRoot = (options: RelocateAdapterOptions): string => join(options.root,"roam","staging");
 export function beginLocalMove(plan: RelocatePlan, options: RelocateAdapterOptions): void {
@@ -127,14 +128,19 @@ function installDiagnostic(error: unknown, lastCompleted: string) {
   return {name: diagnosticAtom(error.name) ?? "Error", code, message, lastCompleted};
 }
 
-export async function installLocalSession(plan:RelocatePlan,captured:CapturedSession,home:RunningHome,options:RelocateAdapterOptions,withBothLocks?:<T>(id:string,run:()=>Promise<T>)=>Promise<T>,owner?:()=>Promise<SessionOwner>):Promise<V0Result<InstalledSession>> {
+export async function installLocalSession(plan:RelocatePlan,captured:CapturedSession,home:SettledHome,options:RelocateAdapterOptions,withBothLocks?:<T>(id:string,run:()=>Promise<T>)=>Promise<T>,owner?:()=>Promise<SessionOwner>):Promise<V0Result<InstalledSession>> {
   let lastCompleted = "none";
   try {
     beginLocalMove(plan,options);
     lastCompleted = "journal-begun";
     parseCaptured(captured);
     const placement=parsePlacement(plan.destinationPlacement),current=await options.homes.read(home.sessionId);
-    if(home.sessionId!==plan.source.sessionId || home.machineId!==options.config.machineId || home.machineId!==placement.machineId || home.epoch!==plan.source.epoch+2 || home.moveId!==plan.moveId || !(exactHome(current,home) || current?.state==="moving" && current.moveId===plan.moveId && current.machineId===plan.source.machineId && current.destination===home.machineId && current.epoch===plan.source.epoch+1))return refusal("home-conflict","The home does not authorize this destination install.");
+    const moving: MovingHome = { ...plan.source, state: "moving", epoch: plan.source.epoch + 1,
+      destination: placement.machineId, moveId: plan.moveId, updatedAt: plan.startedAt };
+    const authorized = home.state === "stopped"
+      ? home.updatedAt === plan.startedAt && (sameManagedHome(current, home) || sameManagedHome(current, moving))
+      : exactHome(current,home) || current?.state==="moving" && current.moveId===plan.moveId && current.machineId===plan.source.machineId && current.destination===home.machineId && current.epoch===plan.source.epoch+1;
+    if(home.state!==plan.source.state || home.sessionId!==plan.source.sessionId || home.machineId!==options.config.machineId || home.machineId!==placement.machineId || home.epoch!==plan.source.epoch+2 || home.moveId!==plan.moveId || !authorized)return refusal("home-conflict","The home does not authorize this destination install.");
     lastCompleted = "home-verified";
     const cwdParts=captured.workspace.relativeCwd.split(/[\\/]/).filter(Boolean);
     let checkout=placement.cwd;for(const _part of cwdParts)checkout=dirname(checkout);
@@ -185,8 +191,10 @@ export async function installLocalSession(plan:RelocatePlan,captured:CapturedSes
       ownership:async()=>({kind:"absent"}),
     });
     lastCompleted = "session-installed";
-    const local=createLocalRuntime(options),activated=await local.activate(home,placement);if(!activated.ok)return activated;
-    lastCompleted = "membership-activated";
+    const local=createLocalRuntime(options);
+    const membership = home.state === "stopped" ? await local.freezeStoppedPlacement(home,placement,moving) : await local.activate(home,placement);
+    if(!membership.ok)return membership;
+    lastCompleted = home.state === "stopped" ? "membership-frozen" : "membership-activated";
     writeLocal(options.globalDb,"relocate-incoming",`worktree:${placement.repoKey}:${placement.workspaceId}`,undefined);
     lastCompleted = "incoming-cleared";
     const installed: InstalledSession={placement,session:{...staged,file:placement.file}, ...(branchDetached ? { branchDetached: true } : {})};

@@ -65,7 +65,7 @@ function supervisorRace(f: ReturnType<typeof runtimeFixture>, mismatch?: "sessio
   const supervisor = createHomeSupervisor({
    machineId:destination, clock:f.options.clock,
    entries:async()=>[{sessionId:home.sessionId,home,placement}],
-   owner:local.owner, stop:async()=>{throw new Error("unexpected stop");},
+   owner:local.owner, stop:async()=>{throw new Error("unexpected stop");}, stopStopped:local.enforceStopped,
    activate:async()=>({ok:true,value:undefined}), start:local.start, report() {},
   }, () => {});
   await supervisor.tick();
@@ -114,7 +114,7 @@ describe("v0 local runtime",()=>{
    throw new Error("unexpected native request");
   });
   const signal = f.io.signal, pause = f.io.pause;
-  f.io.signal = async pid => { await signal(pid); f.setProbe({kind:"absent"}); f.setLock(null); };
+  f.io.signal = async (pid, kind) => { await signal(pid, kind); f.setProbe({kind:"absent"}); f.setLock(null); };
   f.io.pause = async ms => { await pause(ms); terminalExited = true; };
   const local = createLocalRuntime(f.options,{...f.io,terminals:createLocalIO(f.options).terminals});
   expect(await local.stop(id,moving)).toEqual({ok:true,value:undefined});
@@ -141,7 +141,7 @@ describe("v0 local runtime",()=>{
     return {terminals: argv.includes("--label") || stopped ? [] : [{address:"t12",state:"live",agent:"pi",pid:42,labels:{}}]};
    });
    const signal = f.io.signal;
-   f.io.signal = async pid => { await signal(pid); stopped = true; f.setProbe({kind:"absent"}); f.setLock(null); };
+   f.io.signal = async (pid, kind) => { await signal(pid, kind); stopped = true; f.setProbe({kind:"absent"}); f.setLock(null); };
    const native = createLocalIO(f.options);
    const local = createLocalRuntime(f.options,{...f.io,terminals:native.terminals,writerBlockers:native.writerBlockers});
    expect(await local.stop(id,moving)).toMatchObject({ok:false,refusal:{code:"session-busy",message:expect.stringContaining(`PID ${child.pid} (pi)`)}});
@@ -329,7 +329,7 @@ describe("v0 local runtime",()=>{
   const calls:{argv:readonly string[];env:Readonly<NodeJS.ProcessEnv>}[]=[];
   vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_binary,argv,env)=>{calls.push({argv,env});return {address:"selected:t"};});
   const io=createLocalIO(f.options);expect(await io.launch({home:f.home,placement:f.placement})).toEqual({terminal:"selected:t"});
-  expect(calls[0].argv).toEqual(["run","--json","--bg","--no-notify","--outlive-parent","--no-parent","--cwd","/mapped/sub","--label","spider.kind=session","--label",`spider.session=${id}`,"--label",`spider.machine=${box}`,"--label","spider.roam.epoch=3","--","/usr/bin/env",`PATH=${calls[0].env.PATH}`,`PI_CODING_AGENT_DIR=${calls[0].env.PI_CODING_AGENT_DIR}`,`SPIDER_GLOBAL_ROOT=${f.options.root}`,"PI_SUBAGENT_CHILD=0",pi,"--session","/sessions/exact.jsonl"]);
+  expect(calls[0].argv).toEqual(["run","--json","--bg","--no-notify","--outlive-parent","--no-parent","--cwd","/mapped/sub","--label","spider.kind=session","--label",`spider.session=${id}`,"--label",`spider.machine=${box}`,"--label","spider.roam.epoch=3","--","/usr/bin/env",`PATH=${calls[0].env.PATH}`,`PI_CODING_AGENT_DIR=${calls[0].env.PI_CODING_AGENT_DIR}`,`SPIDER_GLOBAL_ROOT=${f.options.root}`,"PI_SUBAGENT_CHILD=0",`SPIDER_ROAM_V0_LAUNCH={"sessionId":"${id}","machineId":"${box}","homeEpoch":3}`,pi,"--session","/sessions/exact.jsonl"]);
   expect(calls[0].env).toMatchObject({HC_SESSION:"selected",HC_SOCKET:"/selected.sock",SPIDER_GLOBAL_ROOT:f.options.root});
   expect(calls[0].env.HC_TERMINAL_ID).toBeUndefined();expect(calls[0].env.SPIDER_HERDR_LEASE_TOKEN).toBeUndefined();expect(calls[0].env.SPIDER_HERDR_HANDOFF_FILE).toBeUndefined();
   expect(calls[0].env.PI_CODING_AGENT_DIR).toBeTruthy();expect(calls[0].env.PATH!.split(delimiter)).toContain(dirname(process.execPath));expect(calls[0].argv.join(" ")).not.toContain("synthetic-secret");
@@ -363,33 +363,74 @@ describe("v0 local runtime",()=>{
   f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
   f.setTerminals([{terminal:"core:t",state:"live",pid:42,owned:true}]);
   const signal = f.io.signal;
-  f.io.signal = async pid => { await signal(pid); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
-  const loop = createHomeSupervisor({...local,machineId:box,clock:f.options.clock,report() {}}, () => {});
+  f.io.signal = async (pid, kind) => { await signal(pid, kind); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
+  const loop = createHomeSupervisor({...local,stopStopped:local.enforceStopped,machineId:box,clock:f.options.clock,report() {}}, () => {});
   await loop.tick();
   expect(f.signalled).toEqual([]);
   expect(await local.owner(id)).toEqual({kind:"live",pid:42,terminal:"core:t"});
  });
- it.each(["moved to the Mac", "stopped", "missing"] as const)("stops the returning box pi with a malformed placement when its home is %s", async state => {
+ it.each(["moved to the Mac", "missing"] as const)("stops the returning box pi with a malformed placement when its home is %s", async state => {
   const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
   writeLocal(f.options.globalDb,"relocate-managed",id,{sessionId:id,file:"/old/s.jsonl"});
   f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
   f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
   f.setTerminals([{terminal:"core:t",state:"live",pid:42,owned:true}]);
   const signal = f.io.signal;
-  f.io.signal = async pid => { await signal(pid); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
-  const loop = createHomeSupervisor({...local,machineId:box,clock:f.options.clock,report() {}}, () => {});
+  f.io.signal = async (pid, kind) => { await signal(pid, kind); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
+  const loop = createHomeSupervisor({...local,stopStopped:local.enforceStopped,machineId:box,clock:f.options.clock,report() {}}, () => {});
   await loop.tick();
   expect(f.signalled).toEqual([]);
-  f.setHome(state === "missing" ? null : state === "stopped" ? {...f.home,state:"stopped",epoch:4} : {...f.home,machineId:hub,epoch:4});
+  f.setHome(state === "missing" ? null : {...f.home,machineId:hub,epoch:4});
   await loop.tick();
   expect(f.signalled).toEqual([42]);
   expect(f.launches).toEqual([]);
+ });
+ it("stops the returning box pi with a malformed placement when its home is stopped", async () => {
+  const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
+  writeLocal(f.options.globalDb,"relocate-managed",id,{sessionId:id,file:"/old/s.jsonl"});
+  claimFixtureLock(f);
+  f.io.bootId = async () => "boot";
+  f.setTerminals([{terminal:"core:t",state:"live",pid:42,owned:true}]);
+  const signal = f.io.signal;
+  f.io.signal = async (pid, kind) => { await signal(pid, kind); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
+  const loop = createHomeSupervisor({...local,stopStopped:local.enforceStopped,machineId:box,clock:f.options.clock,report() {}}, () => {});
+  await loop.tick();
+  expect(f.signalled).toEqual([]);
+  const stopped = {...f.home,state:"stopped" as const,epoch:4,moveId:null,updatedAt:2};
+  f.options.globalDb.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,state,destination,move_id,updated_at) VALUES (?,?,?,?,?,?,?)")
+   .run(id,box,stopped.epoch,stopped.state,stopped.destination,stopped.moveId,stopped.updatedAt);
+  f.setHome(stopped);
+  await loop.tick();
+  expect(f.signalled).toEqual([42]);
+  expect(f.launches).toEqual([]);
+  expect(await local.observeStopped(stopped)).toMatchObject({evidence:{kind:"pending",blockers:expect.arrayContaining([
+   {kind:"check",reason:`unreadable-stop-record:${JSON.stringify({kind:"relocate-managed",sessionId:id})}`},
+  ])}});
+ });
+ it.each(["before", "during"] as const)("a generic supervisor tick does not signal if a stopped row arrives %s process inspection", async when => {
+  const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
+  const older = {...f.home,machineId:hub}, stopped = {...f.home,state:"stopped" as const,epoch:4};
+  writeLocal(f.options.globalDb,"relocate-managed",id,f.placement);
+  f.options.homes.list = async () => [older];
+  f.setHome(when === "before" ? stopped : older);
+  const tree = f.io.tree;
+  f.io.tree = async pid => { f.setHome(stopped); return tree(pid); };
+  claimFixtureLock(f);
+  f.setTerminals([{terminal:"core:t",state:"live",pid:42,owned:true}]);
+  const signal = f.io.signal;
+  f.io.signal = async (pid, kind) => { await signal(pid, kind); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
+  const report = vi.fn();
+  const loop = createHomeSupervisor({...local,stopStopped:local.enforceStopped,machineId:box,clock:f.options.clock,report}, () => {});
+  await loop.tick();
+  expect(f.signalled).toEqual([]);
+  expect(f.launches).toEqual([]);
+  expect(report).toHaveBeenCalledWith(id,expect.objectContaining({code:"home-conflict"}));
  });
  it("reports one malformed placement and still restarts the healthy session", async () => {
   const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
   writeLocal(f.options.globalDb,"relocate-managed",id,f.placement);
   const report = vi.fn(), stop = vi.fn(local.stop);
-  const loop = createHomeSupervisor({...local,stop,machineId:box,clock:f.options.clock,report}, () => {});
+  const loop = createHomeSupervisor({...local,stopStopped:local.enforceStopped,stop,machineId:box,clock:f.options.clock,report}, () => {});
   await loop.tick();
   expect(f.launches).toHaveLength(1);
   const broken = "old-placement" as SessionId;

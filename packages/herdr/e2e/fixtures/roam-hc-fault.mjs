@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-// Fail or interrupt only named `hc exec --on` calls; every other call reaches the real recording wrapper.
+// Fail or interrupt named fixture routes; all other calls reach the real recording wrapper.
 import { readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -10,10 +10,14 @@ const inside = value => value && isAbsolute(value) && resolve(value) === value &
 if (!root || !isAbsolute(root) || resolve(root) !== root || realpathSync(root) !== root ||
     !inside(real) || !inside(file) || realpathSync(real) !== real || realpathSync(file) !== file) throw new Error('unsafe fixture transport paths');
 const args = process.argv.slice(2), at = args.indexOf('--on');
-const target = args[0] === 'exec' && at >= 0 ? args[at + 1] : null;
+const stopRoute = process.env.SPIDER_E2E_STOP_ROUTE;
+if (stopRoute !== undefined && stopRoute !== 'dest.invalid') throw new Error('invalid fixture Stop route');
+const operand = args.indexOf('--');
+const target = stopRoute === undefined ? (args[0] === 'exec' && at >= 0 ? args[at + 1] : null)
+  : at >= 0 && (operand < 0 || at < operand) ? args[at + 1] : null;
 const pairAlias = process.env.SPIDER_E2E_PAIR_ALIAS;
 if (pairAlias && !/^spider-pair-[A-Za-z0-9._-]+$/.test(pairAlias)) throw new Error('invalid fixture pair alias');
-if (target && !['hub.invalid', 'box-1.invalid', 'box-2.invalid', pairAlias].includes(target)) throw new Error('unowned fixture target');
+if (target && !(stopRoute === undefined ? ['hub.invalid', 'box-1.invalid', 'box-2.invalid', pairAlias].includes(target) : target === stopRoute)) throw new Error('unowned fixture target');
 const down = () => {
   try {
     const state = JSON.parse(readFileSync(file, 'utf8'));

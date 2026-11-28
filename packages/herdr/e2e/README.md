@@ -30,6 +30,8 @@ The workflow exercises the packed extension and real, isolated local cores witho
 
 R19 is a Linux-only opt-in story for delivery through one relay, refusal while it is stopped, and a fresh delivery after it restarts. Run it with `-f stories=R19`. It uses one worker and the five-minute unmeasured timeout. It is excluded from the default CI matrix, the headless profile, and `--task roam`. The delivery assertion remains red until relay routing is implemented.
 
+Run `-f stories=R20` in Linux CI to test the packaged `roam stop`, `roam start`, and `roam stop --now` commands. R20 uses two owned cores and cuts only the route between them. It checks that Stop persists across two supervisor passes, Start preserves the transcript and checkout, a detached job delays exit confirmation, and reconnect confirms Stop without another mutation. R20 uses one worker and the existing five-minute limit. It is excluded from the default CI matrix, the headless profile, and `--task roam`.
+
 The workflow sets an absolute overall runner deadline before checkout. It reserves 20 seconds from the job limit for cleanup and failure uploads. When that deadline expires, the runner writes `deadline.json` in the failure archive and marks the selected stories failed. A step or job timeout can still stop the process before it writes those files.
 
 To shorten a manual run without increasing its limit, pass `-f deadline-seconds=30` with the dispatch command. The input must be a positive number no greater than the computed runner allowance. Story-specific waits do not extend the overall deadline.

@@ -56,7 +56,12 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
     colors: { ...object(root.colors ?? {}), ...edits.root.colors },
   });
   delete root.window_blur;
-  if (isSpacesALookVersion(names.release)) Object.assign(root, edits.spacesA[names.release].root);
+  if (isSpacesALookVersion(names.release)) {
+    const release = edits.spacesA[names.release];
+    Object.assign(root, release.root);
+    // Native Settings shares the popover backing with other framed overlays.
+    if ('colors' in release) Object.assign(object(root.colors), release.colors);
+  }
   if (names.menu) root.terminal_menu = names.menu;
   if (names.toast) root.toast = names.toast;
   if (names.bodyFont) root.ui_font = names.bodyFont;

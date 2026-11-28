@@ -3,7 +3,10 @@
   "spacesA": {
     "0.1.13": { "root": { "terminal_menu": "spider-menu" } },
     "0.1.16": { "root": { "terminal_menu": "spider-menu", "toast": "spider-toast" } },
-    "0.1.18": { "root": { "terminal_menu": "spider-menu", "toast": "spider-toast" } }
+    "0.1.18": {
+      "root": { "terminal_menu": "spider-menu", "toast": "spider-toast" },
+      "colors": { "popover": "#161618" }
+    }
   },
   "blur": {
     "background": "#16161800",

@@ -84,8 +84,15 @@ export class AgentFooter implements Component {
     }
     this.lastSelectedRunId = selected;
     const model = buildFooterModel(agents, visibleCount, this.offset);
-    const lines = model.visible.map((a) => this.agentLine(a, width, this.store.isSelecting(), selected));
-    if (model.overflow) {
+    const selecting = this.store.isSelecting();
+    const lines = model.visible.map((a) => this.agentLine(a, width, selecting, selected));
+    if (model.overflow && selecting) {
+      const direction = this.offset + visibleCount < agents.length ? "arrowDown" : "arrowUp";
+      const left = `${icon(this.theme.iconStyle, direction)} view more`;
+      const right = `${agents.length} subagents`;
+      const padding = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
+      lines.push(truncateToWidth(this.theme.fg("muted", left + padding + right), width, "…"));
+    } else if (model.overflow) {
       const o = model.overflow;
       const seg: string[] = [];
       if (o.running) seg.push(`${o.running} running`);

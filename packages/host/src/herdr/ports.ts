@@ -27,7 +27,7 @@ import { offerResume, resumeOfferShell, resumeWatchShell, buildResumeBlock, shel
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
 import { launchSession } from '@spider/herdr/sessions/launcher';
 import { resolveLaunchSource, launchFlagTakesValue } from '@spider/herdr/sessions/launch-environment';
-import { applyLookPatches, selectLookPatches, applyModPatches, lookCloneKinds, type AdditionalLookPatches, type LookModKind, type LookPatch, type HerdrClones, type LookPatchSet } from '@spider/herdr/look/patches';
+import { applyLookPatches, selectLookPatches, applyModPatches, hasNativeLookFeatures, isSpacesALookVersion, lookCloneKinds, type AdditionalLookPatches, type LookModKind, type LookPatch, type HerdrClones, type LookPatchSet } from '@spider/herdr/look/patches';
 import { notificationAgentPatches } from '@spider/herdr/look/notification-patches';
 import { applyCrossMachinePatches, crossMachineKinds, selectCrossMachinePatches, type CrossMachineLookRecipe } from '@spider/herdr/look/cross-machine';
 import { buildGlassLayout } from '@spider/herdr/look/layout';
@@ -355,7 +355,7 @@ function pendingNativeKeys(release: string, bytes: Buffer | null): KeySections {
     current = parsed as Record<string, unknown>;
   } catch { throw new HerdrError('key-binding-conflict', 'The keys file is malformed'); }
   const sections = Object.values(current).filter((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value));
-  return Object.fromEntries(Object.entries(nativeKeyCandidates[release] ?? {}).flatMap(([section, bindings]) => {
+  return Object.fromEntries(Object.entries(nativeKeyCandidates[hasNativeLookFeatures(release) ? '0.1.16' : release] ?? {}).flatMap(([section, bindings]) => {
     const missing = Object.fromEntries(Object.entries(bindings).filter(([key]) => !sections.some(value => Object.hasOwn(value, key))));
     return Object.keys(missing).length ? [[section, missing]] : [];
   }));
@@ -377,7 +377,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   };
   const appEnv = (request: SetupRequest) => ({ ...env, HERDR_APP_HOME: request.config.app.home });
   const toastAvailable = async (release: string | undefined, appHome: string) => release ? (await planToastFiles(release, appHome, join(packageRoot, 'packages/herdr/assets/toast'))).length > 0 : false;
-  const additionalFor = (release: string | undefined) => release === '0.1.13' || release === '0.1.16' ? additionalPatches[release] ?? {} : {};
+  const additionalFor = (release: string | undefined) => isSpacesALookVersion(release) ? additionalPatches[release] ?? {} : {};
   const auxiliaryModIds = (selected: (LookPatchSet & { crossMachine?: CrossMachineLookRecipe }) | undefined) => [
     ...PANE_ENTRY_MODS.filter(name => selected?.crossMachine || name === 'spider-pane-waiting'),
     ...(selected?.mods.menu ? ['spider-menu'] : []),
@@ -394,7 +394,8 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const files = await assetFiles(join(assets, 'mods/spider'));
     const main = files.find(file => file.relative === 'main.js');
     if (!main) throw new HerdrError('picker-assets-missing', 'The packaged panel is incomplete');
-    for (const patch of [...(release === '0.1.16' ? ['native-panel-0.1.16.json'] : []), ...(paneEnabled ? ['pane-panel-b.json'] : [])]) {
+    // The native records patch Spider-owned sources, not built-in mod copies.
+    for (const patch of [...(hasNativeLookFeatures(release) ? ['native-panel-0.1.16.json'] : []), ...(paneEnabled ? ['pane-panel-b.json'] : [])]) {
       const patches = JSON.parse(await readFile(join(assets, 'look', patch), 'utf8')) as LookPatch[];
       main.bytes = Buffer.from(applyModPatches({ 'main.js': main.bytes.toString('utf8') }, patches, 'panel')['main.js']);
     }
@@ -417,7 +418,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     if (sources.some(file => file.relative === 'config.json')) throw new HerdrError('picker-assets-invalid', 'Picker config must be generated during setup');
     const references: { path: string; root: string; specifier: string }[] = [];
     const paneEnabled = modIds.includes('spider-machine-picker');
-    const pickerPatches = release === '0.1.16' ? JSON.parse(await readFile(join(assets, 'look/native-picker-0.1.16.json'), 'utf8')) as LookPatch[] : [];
+    const pickerPatches = hasNativeLookFeatures(release) ? JSON.parse(await readFile(join(assets, 'look/native-picker-0.1.16.json'), 'utf8')) as LookPatch[] : [];
     if (paneEnabled) {
       const nativeOnly = pickerPatches.findIndex(patch => patch.id === 'picker-native-no-service');
       if (nativeOnly >= 0) pickerPatches.splice(nativeOnly, 1);
@@ -435,7 +436,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     if (!navSource || !children) throw new HerdrError('picker-assets-missing', 'The packaged picker dependencies are incomplete');
     const navigation = rewriteImportPrefix(navSource.bytes.toString('utf8'), '../agents/children.js', '../spider-children.js', join(assets, 'shared/navigation.js'));
     if (navigation.references.length !== 1) throw new HerdrError('picker-assets-invalid', 'Navigation needs one declared children import');
-    let navigationSource = release === '0.1.16'
+    let navigationSource = hasNativeLookFeatures(release)
       ? applyModPatches({ 'navigation.js': navigation.source }, JSON.parse(await readFile(join(assets, 'look/native-navigation-0.1.16.json'), 'utf8')) as LookPatch[], 'native navigation')['navigation.js']
       : navigation.source;
     if (modIds.includes('spider-machine-picker')) navigationSource = applyModPatches({ 'navigation.js': navigationSource }, JSON.parse(await readFile(join(assets, 'look/pane-navigation-b.json'), 'utf8')) as LookPatch[], 'pane navigation')['navigation.js'];
@@ -568,7 +569,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     } catch { throw new HerdrError('upstream-version-unavailable', 'Cannot determine the installed Herdr app version'); }
     if (stagedVersion && appVersion !== stagedVersion) throw new HerdrError('upstream-version-mismatch', 'The Herdr version changed during setup; rerun setup');
     const selected = selectLookPatches(JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'), 'utf8')) as LookPatchSet, appVersion);
-    if (appVersion !== '0.1.13' && appVersion !== '0.1.16') return selected;
+    if (!isSpacesALookVersion(appVersion)) return selected;
     let records: unknown;
     try { records = JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/look/cross-machine-patches.json'), 'utf8')); }
     catch { throw new HerdrError('cross-machine-recipe-missing', 'The packaged cross-machine records are missing or unreadable'); }
@@ -918,10 +919,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (item === 'layout-theme') {
         const path = join(request.config.app.home, 'layouts/spider-glass.json'), layout = JSON.parse(await readFile(path, 'utf8'));
         if (layout.theme !== 'spider-glass') return failure('layout-theme-mismatch', 'Installed layout does not use spider-glass');
-        const blur = release === '0.1.16' && request.config.look?.windowBlur !== false;
+        const blur = hasNativeLookFeatures(release) && request.config.look?.windowBlur !== false;
         if (blur ? layout.window_blur !== true : Object.hasOwn(layout, 'window_blur')) return failure('window-blur-mismatch', 'Installed window blur differs from the verified release and configured preference');
         if (selected?.mods.menu && layout.terminal_menu !== 'spider-menu') return failure('menu-selector-mismatch', 'The layout does not select spider-menu');
-        if (hasToast && layout.toast !== 'spider-toast') return failure('toast-selector-mismatch', 'The layout does not select spider-toast', 'Install the verified 0.1.16 layout and rerun doctor.');
+        if (hasToast && layout.toast !== 'spider-toast') return failure('toast-selector-mismatch', 'The layout does not select spider-toast', 'Install the verified layout for this Herdr release and rerun doctor.');
         type LayoutContent = { mod?: string; props?: unknown; pane?: { header?: { content?: LayoutContent } } };
         const contents = (root: unknown) => {
           const found = new Map<string, unknown[]>();

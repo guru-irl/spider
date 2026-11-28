@@ -8,9 +8,9 @@ import crossMachine from '../../assets/look/cross-machine-patches.json' with { t
 import { ACTIVITY_FRAMES } from '../../../ui/src/icons.js';
 import { middlePath } from '../../assets/shared/feed.js';
 import { identityPill } from '../../assets/shared/look.js';
-import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
+import { applyLookPatches, selectLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
 import { applyCrossMachinePatches, selectCrossMachinePatches } from '../look/cross-machine.js';
-import { loadPublishedSpacesARecipe, loadSpacesAFiles, replaySpacesARecipe, type SpacesAVersion } from './spaces-a-fixture.js';
+import { loadSpacesAFiles, type SpacesAVersion } from './spaces-a-fixture.js';
 import { createUiModules } from './strict-mod-api.mjs';
 
 type Element = { items: (Element | string)[]; styles: Record<string, unknown[]>; asset?: string };
@@ -27,9 +27,18 @@ async function sources(version: '0.1.12' | SpacesAVersion): Promise<Record<strin
     const result = await applyLookPatches(clones, patches as LookPatchSet);
     return Object.fromEntries(Object.entries(result).map(([kind, clone]) => [kind, clone.files['main.js']]));
   }
-  const recipe = loadPublishedSpacesARecipe(version);
-  const staged = replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe);
-  const result = applyCrossMachinePatches(staged, selectCrossMachinePatches(crossMachine, version));
+  const files = loadSpacesAFiles(version);
+  const kinds = ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome', 'menu', 'new-menu'] as const;
+  const clones = Object.fromEntries(kinds.map(kind => [kind, {
+    name: `spider-${kind}`, clonedFrom: { name: kind, version }, files: files[kind],
+  }])) as unknown as HerdrClones;
+  const recipe = selectLookPatches(patches as LookPatchSet, version);
+  const staged = await applyLookPatches(clones, { ...recipe, mods: { ...recipe.mods, 'new-menu': [] } }, { requireCompleteSources: true });
+  for (const derived of recipe.recipe!.derivedFiles) {
+    const clone = staged[derived.mod as keyof HerdrClones];
+    if (clone) clone.files = { ...clone.files, [derived.file]: readFileSync(new URL(`../../assets/${derived.asset}`, import.meta.url), 'utf8') };
+  }
+  const result = applyCrossMachinePatches(Object.fromEntries(kinds.map(kind => [kind, staged[kind]!.files])), selectCrossMachinePatches(crossMachine, version));
   return Object.fromEntries(Object.entries(result).map(([kind, files]) => [kind, files['main.js']]));
 }
 function render(source: string, mod: 'agents' | 'tabs' | 'pane', status: string): Element {
@@ -62,14 +71,20 @@ function render(source: string, mod: 'agents' | 'tabs' | 'pane', status: string)
   return view.render({ notify() {} });
 }
 
-for (const version of ['0.1.12', '0.1.13', '0.1.16'] as const) {
+const flippedMoon = [
+  '\uE3E3', '\uE3E1', '\uE3DF', '\uE3DD', '\uE3DB', '\uE3D9', '\uE3D7',
+  '\uE3D5', '\uE3D3', '\uE3D1', '\uE3CF', '\uE3CD', '\uE3CB', '\uE3C9',
+];
+
+for (const version of ['0.1.12', '0.1.13', '0.1.16', '0.1.18'] as const) {
   for (const mod of ['agents', 'tabs', 'pane'] as const) {
     test(`${version} ${mod} shows Spider's moon only while working`, async () => {
       const source = (await sources(version))[mod];
       const working = all(render(source, mod, 'working'));
       const animation = working.filter(node => node.styles.frames);
       expect(animation).toHaveLength(1);
-      expect(animation[0].styles.frames).toEqual([ACTIVITY_FRAMES.nerd.working, 1000 / 14]);
+      expect(animation[0].styles.frames).toEqual([flippedMoon, 1000 / 14]);
+      expect(animation[0].styles.frames[0]).toEqual(ACTIVITY_FRAMES.nerd.working);
       expect(animation[0].styles).toMatchObject({ size: [12], text_size: [12], font_family: ['CaskaydiaCove Nerd Font'], text_color: ['#123456'], flex_none: [] });
       expect(working.some(node => node.asset === 'mods/workspace-chrome/spinner.svg')).toBe(false);
       expect(all(render(source, mod, 'idle')).some(node => node.styles.frames)).toBe(false);

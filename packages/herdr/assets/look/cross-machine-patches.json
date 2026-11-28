@@ -702,6 +702,354 @@
           "replacement": "  openChild(k) {\n    if (k.action?.kind === \"pane\") return requestPaneService(spiderProps(), exec, k.action.request).catch(error => { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); });\n    if (k.action?.kind === \"focus\") { run(\"pane.focus\", { pane: k.action.pane }); return; }"
         }
       ]
+    },
+    "0.1.18": {
+      "pane": [
+        {
+          "id": "b-pane-entry-imports",
+          "file": "main.js",
+          "anchor": "import { identityPill } from \"./shared/look.js\";",
+          "replacement": "import { identityPill } from \"./shared/look.js\";\nimport { openPickerFromHost } from \"./machines/actions.js\";"
+        },
+        {
+          "id": "b-pane-split-entry",
+          "file": "main.js",
+          "anchor": "/* spider-look:confirm-session-close */        if (command === \"pane.close\") this.closePane(args);\n        else run(command, args);",
+          "replacement": "/* spider-look:confirm-session-close */        if (command === \"pane.close\") this.closePane(args);\n        else if (command === \"pane.split\") openPickerFromHost({ place: args.direction, program: { kind: \"shell\" }, pane: args.pane }, herdrApi);\n        else run(command, args);"
+        },
+        {
+          "id": "b-pane-machine-import",
+          "file": "main.js",
+          "anchor": "import { middlePath } from \"./shared/feed.js\";",
+          "replacement": "import { middlePath } from \"./shared/feed.js\";\nimport { panePresentation, paneTargetFacts, resolvePaneHeaderFacts, renderMachinePill, initPaneHeaderProjection, closePaneHeaderProjection } from \"./machine.js\";"
+        },
+        {
+          "id": "b-pane-machine-init",
+          "file": "main.js",
+          "anchor": "    this.hovered = false;",
+          "replacement": "    this.hovered = false;\n    initPaneHeaderProjection(this, cx, herdrApi);"
+        },
+        {
+          "id": "b-pane-machine-close",
+          "file": "main.js",
+          "anchor": "  me() {",
+          "replacement": "  close() { closePaneHeaderProjection(this); }\n\n  me() {"
+        },
+        {
+          "id": "b-pane-target-projection",
+          "file": "main.js",
+          "anchor": "    const name = p.name || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || \"shell\";\n/* spider-look:spider-header-facts */    const spiderLabels = props()?.labelContract?.labels ?? {};\n    const own = terminals().find((x) => x.address === p.terminal)?.labels ?? {};",
+          "replacement": "    const proxyLabels = terminals().find((x) => x.address === p.terminal)?.labels ?? {};\n    const headerFacts = { address: p.terminal ?? null, programIsAgent: Boolean(p.program?.agent || p.app), nativeTitle: p.title ?? \"\", nativeStatus: p.status ?? null, nativeCwd: p.cwd ?? null, labels: proxyLabels };\n    const snapshot = this.machineSnapshot ?? { presentations: [], targetFacts: {} };\n    const binding = panePresentation(headerFacts, snapshot.presentations);\n    const targetFacts = paneTargetFacts(headerFacts, snapshot.presentations, snapshot.targetFacts);\n    const projected = resolvePaneHeaderFacts(headerFacts, snapshot.presentations, snapshot.targetFacts);\n    const isProxy = proxyLabels[\"spider.kind\"] === \"pane-proxy\" || proxyLabels[\"spider.kind\"] === \"roam-proxy\" || Boolean(proxyLabels[\"spider.target-core\"] || proxyLabels[\"spider.target-terminal\"]) || snapshot.presentations.some(row => row.mode === \"proxy\" && row.proxy === p.terminal && p.terminal);\n    const name = isProxy ? projected.name : (p.name || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || \"shell\");\n/* spider-look:spider-header-facts */    const spiderLabels = props()?.labelContract?.labels ?? {};\n    const own = targetFacts?.identityLabels ?? proxyLabels;"
+        },
+        {
+          "id": "b-pane-session-name",
+          "file": "main.js",
+          "anchor": "    const sessionName = spiderRow ? null : piSessionName(p.title);",
+          "replacement": "    const sessionName = spiderRow ? null : isProxy ? (binding?.role === \"agent\" ? projected.name : null) : piSessionName(p.title);"
+        },
+        {
+          "id": "b-pane-target-icon",
+          "file": "main.js",
+          "anchor": "    const pic = icon(p.program, 14, t.dim, spiderKind);",
+          "replacement": "    const pic = icon(isProxy && targetFacts?.app === \"pi\" ? { key: \"pi\" } : p.program, 14, t.dim, spiderKind);"
+        },
+        {
+          "id": "b-pane-target-status",
+          "file": "main.js",
+          "anchor": "    const st = core && (typeof core.status === \"string\" ? core.status : core.status?.state) === \"error\" ? \"error\" : p.status;",
+          "replacement": "    const st = isProxy ? projected.status : core && (typeof core.status === \"string\" ? core.status : core.status?.state) === \"error\" ? \"error\" : p.status;"
+        },
+        {
+          "id": "b-pane-machine-pill",
+          "file": "main.js",
+          "anchor": "/* spider-look:style-2 */.when(Boolean(spiderParent)",
+          "replacement": ".when(Boolean(projected.machine), el => el.child(renderMachinePill(projected.machine, t, mono)))\n      /* spider-look:style-2 */.when(Boolean(spiderParent)"
+        },
+        {
+          "id": "b-pane-name-shrink",
+          "file": "main.js",
+          "anchor": "div().flex_none().min_w(0).max_w(220)",
+          "replacement": "div().flex_shrink_1().min_w(0).max_w(220)"
+        },
+        {
+          "id": "b-pane-parent-shrink",
+          "file": "main.js",
+          "anchor": "div().flex_none().min_w(0).max_w(180)",
+          "replacement": "div().flex_shrink_1().min_w(0).max_w(180)"
+        },
+        {
+          "id": "b-pane-title-shrink",
+          "file": "main.js",
+          "anchor": "div().flex_none().truncate().max_w(260)",
+          "replacement": "div().flex_shrink_1().min_w(0).truncate().max_w(260)"
+        },
+        {
+          "id": "b-pane-path-tooltip",
+          "file": "main.js",
+          "anchor": ".tooltip(folder(p.cwd))",
+          "replacement": ".tooltip(folder(isProxy ? projected.cwd : p.cwd))"
+        },
+        {
+          "id": "b-pane-path-display",
+          "file": "main.js",
+          "anchor": ".child(middlePath(folder(p.cwd),",
+          "replacement": ".child(middlePath(folder(isProxy ? projected.cwd : p.cwd),"
+        },
+        {
+          "id": "b-pane-action-import",
+          "file": "main.js",
+          "anchor": "import { identityPill } from \"./shared/look.js\";",
+          "replacement": "import { identityPill } from \"./shared/look.js\";\nimport { capturePaneAction, handlePaneCommand, paneActionPorts } from \"./actions.js\";"
+        },
+        {
+          "id": "b-pane-action-loop",
+          "file": "main.js",
+          "anchor": "/* spider-look:a-pane-park */if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }\n          if (command === \"park\" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run, title => herdrApi.notify({ title, level: \"warning\" }));",
+          "replacement": "/* spider-look:a-pane-park */if (command.startsWith(\"confirm-\")) { void this.executePaneAction(command); cx.notify(); }\n          else if ((command === \"close\" || command === \"park\") && p?.focused) { void this.executePaneAction(command); cx.notify(); }"
+        },
+        {
+          "id": "b-pane-captured-action",
+          "file": "main.js",
+          "anchor": "  closePane(args) {",
+          "replacement": "  executePaneAction(command) {\n    const p = this.me();\n    const context = p ? capturePaneAction(herdrApi, p.pane, this.machineSnapshot ?? null) : null;\n    const actionPorts = paneActionPorts(herdrApi, captured => this.closePane({ pane: captured.pane.pane }), captured => {\n      const contract = props()?.labelContract;\n      if (contract) parkFocusedTerminal({ pane: captured.pane.pane, terminal: captured.header.address }, herdrApi.terminals(), contract, run, title => herdrApi.notify({ title, level: \"warning\" }));\n    });\n    return handlePaneCommand(command, context, actionPorts);\n  }\n\n  closePane(args) {"
+        },
+        {
+          "id": "b-pane-close-button",
+          "file": "main.js",
+          "anchor": "/* spider-look:confirm-session-close */        if (command === \"pane.close\") this.closePane(args);",
+          "replacement": "/* spider-look:confirm-session-close */        if (command === \"pane.close\") { void this.executePaneAction(\"close\"); }"
+        }
+      ],
+      "tabs": [
+        {
+          "id": "b-tabs-entry-imports",
+          "file": "main.js",
+          "anchor": "import { initTabAutoHide, renderTabAutoHide, closeTabAutoHide } from \"./autohide.js\";",
+          "replacement": "import { initTabAutoHide, renderTabAutoHide, closeTabAutoHide } from \"./autohide.js\";\nimport * as machineHerdr from \"herdr\";\nimport { openPickerFromHost } from \"./machines/actions.js\";"
+        },
+        {
+          "id": "b-tabs-plus-entry",
+          "file": "main.js",
+          "anchor": "this.tabAuto ? this.tabAuto.newMenu(cx) : openOverlay({ mod: \"new-menu\", kind: \"popup\", width: 250, height: 512 })",
+          "replacement": "openPickerFromHost({ place: \"tab\", program: \"menu\", space: space?.id }, machineHerdr)"
+        },
+        {
+          "id": "b-navigation-drop-import",
+          "file": "main.js",
+          "anchor": "import { View, div, svg, image } from \"gpui-kit\";",
+          "replacement": "import { View, div, svg, image } from \"gpui-kit\";\nimport { dropPresentation } from \"./presentation-move.js\";\nimport { requestPaneService } from \"./shared/feed.js\";\nimport * as presentationHost from \"herdr\";"
+        },
+        {
+          "id": "b-navigation-drop",
+          "file": "main.js",
+          "anchor": ".on_mouse_up(\"left\", () => {\n          const from = this.pressed;",
+          "replacement": ".on_mouse_up(\"left\", (_event, cx) => {\n          if (presentationHost.shared(\"spider.presentation-drag\") && this.pressed === null) {\n            this.pressed = null; cx.stop_propagation();\n            cx.spawn(async cx => {\n              try { await dropPresentation({ space: space.id, tab: c.id }, { shared: presentationHost.shared, setShared: presentationHost.setShared,\n                pane: body => requestPaneService(props() ?? {}, presentationHost.exec, body) }); }\n              catch (error) { presentationHost.notify({ title: String(error?.message ?? \"Move failed\"), level: \"warning\" }); }\n              cx.notify();\n            }); return;\n          }\n          if (presentationHost.shared(\"spider.presentation-drag\")) presentationHost.setShared(\"spider.presentation-drag\", null);\n          const from = this.pressed;"
+        }
+      ],
+      "menu": [
+        {
+          "id": "b-menu-entry-imports",
+          "file": "main.js",
+          "anchor": "/* spider-look:a-menu-notify */import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec, notify } from \"herdr\";",
+          "replacement": "/* spider-look:a-menu-notify */import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec, notify } from \"herdr\";\nimport * as machineHerdr from \"herdr\";\nimport { openPickerFromHost } from \"./machines/actions.js\";"
+        },
+        {
+          "id": "b-menu-creation-entry",
+          "file": "main.js",
+          "anchor": "    if (it[1] === \"worktree\") openOverlay(",
+          "replacement": "    if (it[1] === \"pane.split\") openPickerFromHost({ place: it[2].direction, program: { kind: \"shell\" }, pane: it[2].pane }, machineHerdr);\n    else if (it[1] === \"tab.new\") openPickerFromHost({ place: \"tab\", program: { kind: \"shell\" }, space: it[2].space }, machineHerdr);\n    else if (it[1] === \"worktree\") openOverlay("
+        },
+        {
+          "id": "b-menu-action-import",
+          "file": "main.js",
+          "anchor": "import { v_flex, h_flex } from \"gpui-base\";",
+          "replacement": "import { v_flex, h_flex } from \"gpui-base\";\nimport { routeMenuPaneCommand } from \"./actions.js\";"
+        },
+        {
+          "id": "b-menu-proxy-park-row",
+          "file": "main.js",
+          "anchor": "        ...(parent ? [[`Send back to ${parent.name || parent.address}`, \"terminal.park\", { terminal: term.address }]] : []),",
+          "replacement": "        ...(term?.labels?.[\"spider.kind\"] === \"pane-proxy\" ? [[\"Send back\", \"terminal.park\", { terminal: term.address }]] : parent ? [[`Send back to ${parent.name || parent.address}`, \"terminal.park\", { terminal: term.address }]] : []),"
+        },
+        {
+          "id": "b-menu-captured-action",
+          "file": "main.js",
+          "anchor": "/* spider-look:a-menu-remote-park */else if (it[1] === \"terminal.park\" && (it[2]?.terminal?.includes(\"/\") || terminals().find(t => t.address === it[2]?.terminal)?.labels?.[\"spider.kind\"] === \"roam-proxy\")) notify({ title: \"Send back works only for this computer's panes for now\", level: \"warning\" });",
+          "replacement": "/* spider-look:a-menu-remote-park */else if ((it[1] === \"pane.close\" || it[1] === \"terminal.park\") && clickedTab === \"pane\") void routeMenuPaneCommand(it[1] === \"pane.close\" ? \"close\" : \"park\", clickedTarget, machineHerdr);"
+        },
+        {
+          "id": "b-menu-context-capture",
+          "file": "main.js",
+          "anchor": "    closeOverlay(props()?.overlay);",
+          "replacement": "    const clickedTab = props()?.tab, clickedTarget = { ...(props()?.target ?? {}) };\n    closeOverlay(props()?.overlay);"
+        }
+      ],
+      "new-menu": [
+        {
+          "id": "b-new-menu-entry-imports",
+          "file": "main.js",
+          "anchor": "import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared } from \"herdr\";",
+          "replacement": "import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared } from \"herdr\";\nimport * as machineHerdr from \"herdr\";\nimport { peekMenuTicket, chooseMenuProgram } from \"./machines/actions.js\";"
+        },
+        {
+          "id": "b-new-menu-destination",
+          "file": "main.js",
+          "anchor": "    const machine = spaces().find(s => s.active)?.machine;",
+          "replacement": "    const ticket = props()?.machineTicket;\n    const selection = ticket ? peekMenuTicket(ticket, machineHerdr) : null;\n    const machine = selection ? selection.alias : spaces().find(s => s.active)?.machine;"
+        },
+        {
+          "id": "b-new-menu-invalid-ticket",
+          "file": "main.js",
+          "anchor": "    this.handle.focus();\n    cx.spawn(async cx => {",
+          "replacement": "    this.handle.focus();\n    if (ticket && !selection) { this.agents = []; this.failed = true; return; }\n    cx.spawn(async cx => {"
+        },
+        {
+          "id": "b-new-menu-keyboard-entry",
+          "file": "main.js",
+          "anchor": "run(\"tab.new\", { name: agent.name, space: space?.id, argv: agent.run });",
+          "replacement": "void chooseMenuProgram(props()?.machineTicket, { kind: \"agent\", key: agent.key }, space?.id, machineHerdr);"
+        },
+        {
+          "id": "b-new-menu-terminal-entry",
+          "file": "main.js",
+          "anchor": "() => run(\"tab.new\", { space: space?.id })",
+          "replacement": "() => { void chooseMenuProgram(props()?.machineTicket, { kind: \"shell\" }, space?.id, machineHerdr); }"
+        },
+        {
+          "id": "b-new-menu-agent-entry",
+          "file": "main.js",
+          "anchor": "() => run(\"tab.new\", { name: a.name, space: space?.id, argv: a.run })",
+          "replacement": "() => { void chooseMenuProgram(props()?.machineTicket, { kind: \"agent\", key: a.key }, space?.id, machineHerdr); }"
+        }
+      ],
+      "agents": [
+        {
+          "id": "b-navigation-imports",
+          "file": "main.js",
+          "anchor": "import { projectNavigation } from \"./shared/navigation.js\";",
+          "replacement": "import { projectNavigation, navigationAgents, indexPaneNavigation } from \"./shared/navigation.js\";\nimport { FEED_DISCONNECT_MS, requestPaneService } from \"./shared/feed.js\";\nimport { createPaneServiceState, disableUnavailableRemoteActions } from \"./shared/pane-service-state.js\";\nimport { beginPresentationDrag } from \"./move.js\";"
+        },
+        {
+          "id": "b-navigation-refresh",
+          "file": "main.js",
+          "anchor": "const loaded = await this.spiderReader.read();",
+          "replacement": "const updatePane = () => {\n        const state = this.spiderPaneService.state();\n        if (state.index?.key !== this.spiderPaneIndex?.key || state.unavailable !== this.spiderPaneUnavailable) this.spiderPaneRevision = (this.spiderPaneRevision ?? 0) + 1;\n        this.spiderPaneIndex = state.index; this.spiderPaneSnapshot = state.snapshot; this.spiderPaneUnavailable = state.unavailable;\n      };\n      this.spiderPaneService ??= createPaneServiceState(p, { exec, timer: this.spiderFeedTimer, request: requestPaneService, index: indexPaneNavigation, refreshMs: FEED_REFRESH_MS, staleMs: FEED_DISCONNECT_MS, changed: () => {\n        if (this.spiderClosed) return; updatePane();\n        if (this.spiderPaneUnavailable && !this.spiderFeedError) this.spiderFeedError = \"Pane service unavailable; run doctor\";\n        else if (!this.spiderPaneUnavailable && this.spiderFeedError === \"Pane service unavailable; run doctor\") this.spiderFeedError = null;\n        this.spiderRequestRefresh();\n      } });\n      updatePane(); void this.spiderPaneService.refresh();\n      const loaded = await this.spiderReader.read();\n      if (p.moveMenu) await this.spiderPaneService.refresh();\n      const paneError = this.spiderPaneUnavailable ? \"Pane service unavailable; run doctor\" : null;"
+        },
+        {
+          "id": "b-navigation-feed-error",
+          "file": "main.js",
+          "anchor": "this.spiderFeedError = loaded.errors[0]?.message ?? null;",
+          "replacement": "this.spiderFeedError = loaded.errors[0]?.message ?? paneError;"
+        },
+        {
+          "id": "b-navigation-model-key",
+          "file": "main.js",
+          "anchor": "const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);",
+          "replacement": "const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);\n    const paneIndex = this.spiderPaneIndex, paneRevision = this.spiderPaneRevision ?? 0;"
+        },
+        {
+          "id": "b-navigation-model-unchanged",
+          "file": "main.js",
+          "anchor": "if (inputKey !== null && inputKey === this.spiderModel?.inputKey) {",
+          "replacement": "if (inputKey !== null && inputKey === this.spiderModel?.inputKey && paneRevision === this.spiderModel?.paneRevision) {"
+        },
+        {
+          "id": "b-navigation-model-job",
+          "file": "main.js",
+          "anchor": "const job = { inputKey, now, snapshot, list, listed, rows, parked, layouts, diagnostics,",
+          "replacement": "const job = { inputKey, paneRevision, now, snapshot, list, listed, rows, parked, layouts, diagnostics,"
+        },
+        {
+          "id": "b-navigation-list",
+          "file": "main.js",
+          "anchor": "const list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract);",
+          "replacement": "const paneNavigation = paneIndex ? this.spiderProjectNavigation(snapshot, paneIndex, input.focus, now) : null;\n    if (paneNavigation) snapshot.paneNavigation = paneNavigation;\n    /* spider-look:b-native-list-fallback */const list = paneNavigation?.list ?? filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract);"
+        },
+        {
+          "id": "b-navigation-collapse",
+          "file": "main.js",
+          "anchor": "const model = this.spiderModel;\n    if (!model?.rows.has(owner)) return;\n    if (this.spiderShowFinished?.has(owner) && model.hiddenFinished.has(owner)) {",
+          "replacement": "const model = this.spiderModel;\n    if (!model?.rows.has(owner)) return;\n    if (model.snapshot.paneNavigation && !this.spiderShowFinished?.has(owner) && !model.hiddenFinished.has(owner)) {\n      for (const row of model.rows.get(owner)) {\n        const owners = model.childOwners.get(row.key);\n        owners?.delete(owner);\n        if (owners?.size === 0) model.childOwners.delete(row.key);\n        if (row.kind === \"console\") {\n          const key = `console-group:${JSON.stringify([owner, row.parentKey])}`, groups = model.groupOwners.get(key);\n          groups?.delete(owner);\n          if (groups?.size === 0) model.groupOwners.delete(key);\n        }\n      }\n      this.spiderRenderSnapshot = model.snapshot;\n      this.spiderRenderSummaries = model.hiddenFinished;\n      try {\n        const rows = this.projectChildren(model.snapshot.terminals, owner);\n        model.rows.set(owner, rows);\n        model.rowKeys.set(owner, agentModelRowKey(rows));\n        model.stats.set(owner, { ...agentModelChildStats(rows, model.listed, RANK), machine: machineGroupCounts(rows) });\n        this.spiderIndexTreeOwner(model, owner, rows);\n        model.outputKey = agentModelOutputKey(model);\n      } finally {\n        this.spiderRenderSnapshot = null;\n        this.spiderRenderSummaries = null;\n      }\n    }\n    if (this.spiderShowFinished?.has(owner) && model.hiddenFinished.has(owner)) {"
+        },
+        {
+          "id": "b-navigation-parked",
+          "file": "main.js",
+          "anchor": "  parkedSessions() {",
+          "replacement": "  parkedSessions() {\n    if (this.spiderRenderSnapshot?.paneNavigation || !this.spiderRenderSnapshot && this.spiderPaneIndex) return [];"
+        },
+        {
+          "id": "b-navigation-name",
+          "file": "main.js",
+          "anchor": "const sessionName = a => this.spiderModel ? this.spiderModel.sessionNames.get(a.address) : snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;",
+          "replacement": "const sessionName = a => a.navigation?.name || (this.spiderModel ? this.spiderModel.sessionNames.get(a.address) : snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name);"
+        },
+        {
+          "id": "b-navigation-focus-authority",
+          "file": "main.js",
+          "anchor": "const remoteMachine = a.address.includes(\"/\") ? a.address.split(\"/\")[0] : null;\n      const canFocus = () => Boolean(a.pane) && (!remoteMachine || !this.spiderConnections?.observed || (machineConnection(remoteMachine, this.spiderConnections?.snapshot ?? null) === \"connected\" && (this.spiderRenderSnapshot?.machines ?? machines()).find(item => item.name === remoteMachine)?.layout !== \"unavailable\"));\n      const focusAvailable = canFocus();\n      const machine = byMachine ? null : remoteMachine;",
+          "replacement": "const remoteMachine = a.navigation ? a.navigation.machine : a.address.includes(\"/\") ? a.address.split(\"/\")[0] : null;\n      /* spider-look:b-native-focus-fallback */const canFocus = () => a.navigation ? Boolean(a.navigation.action) : !this.spiderPaneIndex && Boolean(a.pane) && (!remoteMachine || !this.spiderConnections?.observed || (machineConnection(remoteMachine, this.spiderConnections?.snapshot ?? null) === \"connected\" && (this.spiderRenderSnapshot?.machines ?? machines()).find(item => item.name === remoteMachine)?.layout !== \"unavailable\"));\n      const focusAvailable = canFocus();\n      const machine = byMachine ? null : remoteMachine;"
+        },
+        {
+          "id": "b-navigation-a-agents-row-focus",
+          "file": "main.js",
+          "anchor": "\n        .when(focusAvailable, el => el.on_click(() => { if (canFocus()) run(\"pane.focus\", { pane: a.pane }); }))\n        .when(!focusAvailable, el => el.tooltip(a.pane ? \"Machine unavailable\" : \"No pane available\"))",
+          "replacement": "/* spider-look:b-native-row-focus */\n        .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n        .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
+        },
+        {
+          "id": "b-navigation-a-agents-rail-focus",
+          "file": "main.js",
+          "anchor": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) run(\"pane.focus\", { pane: a.pane }); }))\n          .when(!focusAvailable, el => el.tooltip(a.pane ? \"Machine unavailable\" : \"No pane available\"))",
+          "replacement": "/* spider-look:b-native-rail-focus */\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
+        },
+        {
+          "id": "b-navigation-move-session-rail-hook",
+          "file": "main.js",
+          "anchor": "          .when(Boolean(a.pane), el => el.on_mouse_down(\"right\", (_e, cx) => {\n            cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: \"pane\", pane: a.pane, terminal: a.address } } });\n          }))",
+          "replacement": "          .when(Boolean(a.navigation || a.pane), el => el.on_mouse_down(\"right\", (_e, cx) => {\n            cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: \"pane\", pane: a.pane, terminal: a.address, navigationId: a.navigation?.id } } });\n          }))\n        .when(Boolean(a.navigation?.presentationId || a.navigation?.kind === \"agent\" && a.navigation?.generation) && !a.navigation?.disabledReason, el => el.on_mouse_down(\"left\", () => beginPresentationDrag(a.navigation, { shared, setShared })))"
+        },
+        {
+          "id": "b-navigation-move-session-row-hook",
+          "file": "main.js",
+          "anchor": "        .when(Boolean(a.pane), el => el.on_mouse_down(\"right\", (_e, cx) => {\n          cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: \"pane\", pane: a.pane, terminal: a.address } } });\n        }))",
+          "replacement": "        .when(Boolean(a.navigation || a.pane), el => el.on_mouse_down(\"right\", (_e, cx) => {\n          cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: \"pane\", pane: a.pane, terminal: a.address, navigationId: a.navigation?.id } } });\n        }))\n        .when(Boolean(a.navigation?.presentationId || a.navigation?.kind === \"agent\" && a.navigation?.generation) && !a.navigation?.disabledReason, el => el.on_mouse_down(\"left\", () => beginPresentationDrag(a.navigation, { shared, setShared })))"
+        },
+        {
+          "id": "b-navigation-peek",
+          "file": "main.js",
+          "anchor": "  peek(addr) {",
+          "replacement": "  async peek(addr) {\n    const context = this.spiderCurrentNavigation(terminals());\n    if (context) {\n      const target = context.owners.get(addr);\n      if (target?.action?.kind === \"focus\") { run(\"pane.focus\", { pane: target.action.pane }); return; }\n      if (target?.action?.kind !== \"pane\") return;\n      try { await requestPaneService(spiderProps(), exec, target.action.request); this.spiderReloadAt = null; await this.reloadSpiderFeeds(); }\n      catch (error) { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); }\n      return;\n    }\n    /* spider-look:b-native-viewer-peek */if (this.spiderModel?.snapshot?.paneNavigation) return;"
+        },
+        {
+          "id": "b-navigation-children",
+          "file": "main.js",
+          "anchor": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);",
+          "replacement": "  spiderProjectNavigation(snapshot, index, focus, now) {\n    const p = spiderProps();\n    const input = { ...snapshot, paneSnapshot: index.snapshot, coreId: this.spiderConnections?.coreId,\n      destination: focus?.space && focus?.tab ? { space: focus.space, tab: focus.tab } : null,\n      contract: p.labelContract, now, completedHours: p.retention?.completedHours ?? 24,\n      completedRows: p.retention?.completedRows ?? 50, includeRetained: false };\n    input.paneServiceConfigured = this.spiderPaneService?.state().configured ?? false;\n    const targets = disableUnavailableRemoteActions(projectNavigation(input), this.spiderPaneService?.state().unavailable, input.coreId), list = navigationAgents(input, targets);\n    const owners = new Map(list.filter(a => a.navigation).map(a => [a.address, a.navigation]));\n    const children = new Map();\n    for (const target of targets) if (target.ownerId) {\n      if (!children.has(target.ownerId)) children.set(target.ownerId, []);\n      children.get(target.ownerId).push(target);\n    }\n    return { input, index, list, owners, children };\n  }\n\n  spiderCurrentNavigation(all) {\n    if (!this.spiderPaneIndex) return null;\n    const snapshot = { agents: agents(), terminals: all, panes: panes(), spaces: spaces(), machines: machines(), feeds: this.spiderFeeds ?? [] };\n    return this.spiderProjectNavigation(snapshot, this.spiderPaneIndex, focused(), Date.now());\n  }\n\n  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const context = this.spiderRenderSnapshot?.paneNavigation ?? (!this.spiderRenderSnapshot ? this.spiderCurrentNavigation(all) : null);\n    if (context) {\n      const owner = context.owners.get(addr), shown = this.spiderShowFinished?.has(addr);\n      let targets = owner ? context.children.get(owner.id) ?? [] : [];\n      if (owner?.sessionId && shown && context.index.hidden.get(owner.sessionId)) {\n        const source = context.index.sources.get(owner.sessionId);\n        targets = disableUnavailableRemoteActions(projectNavigation({ ...context.input, paneSnapshot: { ...context.index.snapshot, rows: [source] }, includeRetained: true }), this.spiderPaneService?.state().unavailable, context.input.coreId)\n          .filter(row => row.ownerId === owner.id);\n      }\n      const rows = targets.map(row => ({ kind: row.kind, key: row.id, name: row.name, status: row.status === \"running\" ? \"working\" : row.status === \"failed\" ? \"error\" : row.status, address: row.terminal ?? row.id,\n        originalAddress: row.terminal, machine: row.machine, retained: row.retained || row.kind === \"console\" && row.status === \"retained, not open\",\n        action: row.action, terminal: row.kind === \"console\" ? { state: row.status === \"open\" ? \"live\" : \"finished\" } : null,\n        parentKey: null, depth: 0, navigationId: row.id }));\n      if (this.spiderRenderSummaries && !shown) this.spiderRenderSummaries.set(addr, context.index.hidden.get(owner?.sessionId) ?? 0);\n      cache?.set(addr, rows);\n      return rows;\n    }"
+        },
+        {
+          "id": "b-pane-service-close",
+          "file": "main.js",
+          "anchor": "this.spiderClosed = true; this.spiderRefreshTimer?.cancel?.();",
+          "replacement": "this.spiderClosed = true; this.spiderPaneService?.close(); this.spiderRefreshTimer?.cancel?.();"
+        },
+        {
+          "id": "b-navigation-console-owners",
+          "file": "main.js",
+          "anchor": "const owners = new Set([...filterTopLevelAgents(agents(), all, contract).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);",
+          "replacement": "const owners = this.spiderModel?.groupOwners.get(key) ?? new Set([...(this.spiderModel?.list ?? filterTopLevelAgents(agents(), all, contract)).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);"
+        },
+        {
+          "id": "b-navigation-child-menu",
+          "file": "main.js",
+          "anchor": "      .gap(0)\n      .items_center()\n      .text_size(12.5)\n      .when(k.status !== \"unreachable\" && [\"subagent\", \"console\", \"remote\"].includes(k.kind), el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: k.kind, key: k.key, terminal: k.originalAddress ?? k.address, action: k.action, retained: k.retained } } });\n      }))",
+          "replacement": "      .gap(0)\n      .items_center()\n      .text_size(12.5)\n      .when(k.status !== \"unreachable\" && [\"subagent\", \"console\", \"remote\"].includes(k.kind), el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: k.kind, key: k.key, navigationId: k.navigationId, terminal: k.originalAddress ?? k.address, action: k.action, retained: k.retained } } });\n      }))"
+        },
+        {
+          "id": "b-navigation-child-action",
+          "file": "main.js",
+          "anchor": "  openChild(k) {",
+          "replacement": "  openChild(k) {\n    if (k.action?.kind === \"pane\") return requestPaneService(spiderProps(), exec, k.action.request).catch(error => { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); });\n    if (k.action?.kind === \"focus\") { run(\"pane.focus\", { pane: k.action.pane }); return; }"
+        }
+      ]
     }
   },
   "checks": {
@@ -788,6 +1136,57 @@
         "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
         "pane/main.js": "538146834fb1bde0e4c728cd53a2cefbac7af318d00e3e73111c9ff76131397b",
+        "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
+        "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
+        "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
+        "pane/unzoom.svg": "a061af514f83278f3b5f0bea6388b116ce66969897b202cd5709f4970b8750c6",
+        "pane/zoom.svg": "e2d29d06235819c0b617029291adc8a9f4d31dc59264a50e97e55470e9ad2823",
+        "tabs/main.js": "c3bb52e007c1107ae33898950cfaf2977b070b348ee5288dd5e451153b9c02b5",
+        "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
+        "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
+        "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
+        "tabs/win-min.svg": "c2f8d7d1e117f99b73970816877a926becb3da102cd706fd0f0ce1780259cd52",
+        "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
+      },
+      "helperHashes": {
+        "pane/actions.js": "6a52fb639bae96b5eb784f1176266c8f7c75a827e822afce7bce83ed9fe13869",
+        "pane/machine.js": "acd8b260029a1661e0159524069e34a0e51318fd19ea14dbdf9826ff27bea628",
+        "machines/actions.js": "a169b1b5a2a65877f97d46ba37d30581dd03c0da1d162884d78ac40ebc8a266b",
+        "machines/picker.js": "9f4584285b27a07ccfc3e91278e14599aea0f3d8c466c48e1625a96391c3f281"
+      }
+    },
+    "0.1.18": {
+      "recordsHash": "6bc095305fb4df42487a9a70c04c3b033252c19db4ca781649f1662735cfa38c",
+      "inputHashes": {
+        "agents/main.js": "14c4ea004c9289b72d7ab8b29600ceee9a9a6a9d51060f37fbfdb0bb6dc89a05",
+        "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
+        "menu/main.js": "b91ebcf60b26184ca860845b9bdce6ab2e37a1cbdaeb57bc475bbb35a43cfb13",
+        "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "new-menu/main.js": "2fcc80ed1486c35816f662db2a619cdee1ec1d82997991ca4feb64c1212d2688",
+        "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
+        "pane/main.js": "be16c5bd11b92fb46037e4c24363db4d591009eca37441fe2e10eb92478f6e30",
+        "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
+        "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
+        "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
+        "pane/unzoom.svg": "a061af514f83278f3b5f0bea6388b116ce66969897b202cd5709f4970b8750c6",
+        "pane/zoom.svg": "e2d29d06235819c0b617029291adc8a9f4d31dc59264a50e97e55470e9ad2823",
+        "tabs/main.js": "18dc46fdd7e4d28032d1c3fee6bfb170b9f04ceba3e3064152ce6f8ae88f455a",
+        "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
+        "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
+        "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
+        "tabs/win-min.svg": "c2f8d7d1e117f99b73970816877a926becb3da102cd706fd0f0ce1780259cd52",
+        "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
+      },
+      "outputHashes": {
+        "agents/main.js": "43ef337f296684cb96d8ebc70a3d0e1550b11a6b8d8ae019f722b293985fd1d9",
+        "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
+        "menu/main.js": "1457bba3b42e5fc0c88dcc2a3df9ae8f00b56748357252f74823f8bb2c2e9389",
+        "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "new-menu/main.js": "84110b585e4de7546e21a99320d9c2c418ff70c950e5829b89ecc3bf124e03dd",
+        "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
+        "pane/main.js": "c7928b314e8fb8230be6a806636576ec47d6ef84d6bd2982791d48810cdcc751",
         "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
         "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
         "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",

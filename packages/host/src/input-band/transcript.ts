@@ -1,7 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Spacer, stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import { icon, type IconStyle } from "@spider/ui";
-import { bindHalfBox, edgeInk, halfEdge, isImageRow, stripRow } from "./box.js";
+import { stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { bindHalfBox, bindToolCardShell, edgeInk, halfEdge, icon, isHalfEdge, isImageRow, joinToolCards, stripRow, type IconStyle } from "@spider/ui";
 import type { InputBandHost } from "./index.js";
 import { formatMessageTime } from "../message-time.js";
 
@@ -61,20 +60,7 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
   }
   const tool = host.ToolExecutionComponent?.prototype;
   off.push(patch(tool, options, function (render, width) {
-    const box = field(this, "contentBox");
-    const text = field(this, "contentText");
-    const child = this.children?.[1];
-    let shell: unknown;
-    if (child === box) shell = box;
-    else if (child === field(this, "contentTextRegion") && field(child, "child") === text) shell = text;
-    else if (field(this, "toolName") === "edit" && field(field(this, "toolDefinition"), "renderShell") === "self"
-      && child === field(this, "selfRenderContainer")) {
-      // Native edit owns its shell; only its known, padded header Box is changed.
-      const call = field(this, "callRendererComponent");
-      const shellChildren = field(child, "children");
-      if (Array.isArray(shellChildren) && shellChildren.some(region => field(region, "child") === call)) shell = call;
-    }
-    if (padded(shell)) bindHalfBox(shell, () => active(tool) && field(shell, "paddingY") === 1);
+    bindToolCardShell(this, padded, () => active(tool));
     return render.call(this, width);
   }));
   // Pi's chat container owns the layout and its mouse hit map. Work on its
@@ -83,41 +69,9 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
   const container = tool && Object.getPrototypeOf(tool) as Container | undefined;
   off.push(patch(container, options, function (render, width) {
     const rows = render.call(this, width);
-    if (!host.ToolExecutionComponent || width < 1 || !this.children?.some(child => child instanceof host.ToolExecutionComponent!)) return rows;
-    const layout = field(this, "mouseLayout") as { width?: number; children?: { component: Component; height: number }[] } | undefined;
-    const entries = layout?.children;
-    if (layout?.width !== width || !Array.isArray(entries) || entries.length !== this.children.length ||
-      entries.some((entry, i) => entry.component !== this.children[i] || !Number.isInteger(entry.height) || entry.height < 0) ||
-      entries.reduce((sum, entry) => sum + entry.height, 0) !== rows.length) return rows;
-    const output: string[] = [];
-    const mouseChildren: { component: Component; height: number }[] = [];
-    let offset = 0;
-    let previousTool = false;
-    for (const entry of entries) {
-      const part = rows.slice(offset, offset + entry.height);
-      offset += entry.height;
-      const isTool = entry.component instanceof host.ToolExecutionComponent;
-      const leading = isTool ? (entry.component as Container).children?.[0] : undefined;
-      const join = previousTool && isTool && leading instanceof Spacer && field(leading, "lines") === 1 && part.length > 1 && part[0] === "" &&
-        stripTerminalSequences(part[1]) === "▄".repeat(width);
-      const component = entry.component;
-      if (join) {
-        output.push(...part.slice(1));
-        // Forward the same click to Pi at its original local coordinates.
-        const mouse: Component = {
-          render: w => component.render(w).slice(1),
-          invalidate: () => component.invalidate?.(),
-          handleMouse: event => component.handleMouse?.({ ...event, y: event.y + 1, height: event.height + 1 }),
-        };
-        mouseChildren.push({ component: mouse, height: entry.height - 1 });
-      } else {
-        output.push(...part);
-        mouseChildren.push(entry);
-      }
-      if (part.length) previousTool = isTool && stripTerminalSequences(part.at(-1)!) === "▀".repeat(width);
-    }
-    layout.children = mouseChildren;
-    return output;
+    const Tool = host.ToolExecutionComponent;
+    if (!Tool) return rows;
+    return joinToolCards(this, rows, width, child => child instanceof Tool, isHalfEdge);
   }));
   // Pi passes entry metadata on restore, but live components only receive text.
   // Its message_start event precedes the synchronous component construction.

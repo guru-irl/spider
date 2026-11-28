@@ -8,6 +8,7 @@ import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { registerHerdrTemplates } from '../../../herdr/src/templates/register.js';
 import { cleanup, fixture, type SetupFixture } from './herdr-setup-fixture.js';
+import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 
 // An isolated fixture must not inventory unrelated host sessions.
 vi.mock('node:child_process', async importOriginal => {
@@ -16,7 +17,7 @@ vi.mock('node:child_process', async importOriginal => {
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 const bareFixture = () => fixture('fake', false, { startCores: false });
-const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
+const fastFixture = () => focusedSetupFixture();
 
 const unavailableWorker = 'unavailable.invalid/missing-worker';
 const cases = [

@@ -390,6 +390,22 @@ it("refuses an ask without queuing it when no relay is reachable", async () => {
   expect(await f.remote.received()).toEqual([]);
 });
 
+it("refuses a short relayed ask before registering a waiter or making an offer", async () => {
+  vi.stubEnv("PI_INTERCOM_ASK_TIMEOUT_MS", "2000");
+  const f = await fixture();
+  const registerWaiter = vi.spyOn(relayBroker, "beginV0RelayAsk");
+  const refused = await f.tool("remote-recipient", "ask");
+  f.abort.abort();
+  const held = await f.held!;
+  expect(refused.details).toMatchObject({ error: true, code: "ask-timeout-too-short" });
+  expect(refused.content[0].text.split("\n")[0]).toBe(
+    "The ask timeout is too short for a relay. At least 4001 ms must remain. Nothing was queued.",
+  );
+  expect(registerWaiter).not.toHaveBeenCalled();
+  expect(held.submissions).toEqual([]);
+  expect(await f.remote.received()).toEqual([]);
+});
+
 it("reports when no relay is reachable without queuing a send", async () => {
   const f = await fixture({ link: false });
   const refused = await f.tool("remote-recipient");
@@ -500,23 +516,32 @@ it("uses configured order when links arrive in reverse order and their reach cha
   expect(await f.remote.received()).toEqual(["preferred", "reach-withdrawn", "preferred-again"]);
 });
 
-it.each(["unreachable", "relay-stopping"] as const)("switches after an explicit pre-delivery %s refusal", async code => {
+it.each(["handoff-expired", "relay-stopping", "unreachable"] as const)("switches after an explicit pre-delivery %s refusal", async code => {
   const f = await twoRelays();
   // With no held call, the primary is still up but the broker must expire its offer before hand-off.
   expect((await f.poll(0)).ready.ok).toBe(true);
   expect((await f.backup.poll(0)).ready.ok).toBe(true);
-  const primaryHeld = code === "relay-stopping" ? f.poll(20_000) : undefined;
+  const primaryHeld = code === "handoff-expired" ? undefined : f.poll(20_000);
   const backupHeld = f.backup.poll(20_000);
   const send = await sendPlan(f);
   const pending = send(marker("safe-refusal"));
   const [backupOffers, stoppedOffers] = await Promise.all([
     settleOffers(backupHeld, pending, deliverOffer(f.backup)),
-    primaryHeld ? settleOffers(primaryHeld, pending, submit => f.poll(0, [relayRefused(submit.message.id, code)])) : [],
+    primaryHeld ? settleOffers(primaryHeld, pending, async submit => {
+      if (code !== "unreachable") return f.poll(0, [relayRefused(submit.message.id, code)]);
+      f.faults.lookupFailureMachineId = TARGET;
+      try {
+        const refusal = await f.forward(submit);
+        expect(refusal).toEqual(relayRefused(submit.message.id, "unreachable"));
+        return f.poll(0, [refusal]);
+      } finally { f.faults.lookupFailureMachineId = ""; }
+    }) : [],
   ]);
   const secondAfterSafeRefusal = await pending;
-  expect(secondAfterSafeRefusal).toMatchObject({ kind: "socket_delivered", id: "safe-refusal", path: "relay relay-2.invalid" });
+  expect(secondAfterSafeRefusal).toMatchObject({ kind: "socket_delivered", id: "safe-refusal", path: "relay relay-2.invalid",
+    relaySkips: [{ relay: relay.alias, reason: code === "unreachable" ? "cannot reach the target" : "down" }] });
   expect(backupOffers).toEqual(["safe-refusal"]);
-  expect(stoppedOffers).toEqual(code === "relay-stopping" ? ["safe-refusal"] : []);
+  expect(stoppedOffers).toEqual(primaryHeld ? ["safe-refusal"] : []);
   expect((await f.poll(0)).submissions).toEqual([]);
   expect(await f.remote.received()).toEqual(["safe-refusal"]);
 });

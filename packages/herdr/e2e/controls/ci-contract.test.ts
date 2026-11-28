@@ -383,6 +383,75 @@ describe('CI acceptance contract', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('selects from the base commit and runs the full head inventory if the base has no selector', () => {
+    const tests = workflow('pr').jobs.tests!;
+    const select = step(tests, 'Select affected tests');
+    const headCheckout = tests.steps.find(item => item.uses === 'actions/checkout@v4');
+    expect(headCheckout?.with).toMatchObject({ ref: '${{ github.event.pull_request.head.sha }}',
+      'fetch-depth': 0, 'persist-credentials': false });
+    expect(select.env?.BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+
+    const scratch = join(process.cwd(), '.spider/scratch');
+    mkdirSync(scratch, { recursive: true });
+    const directory = mkdtempSync(join(scratch, 'base-selector-contract-'));
+    const root = join(directory, 'head'), temp = join(directory, 'runner');
+    mkdirSync(temp, { recursive: true });
+    const output = join(root, '.spider/scratch/test-results/test-selection.json');
+    const firstTest = 'packages/example/src/a.test.ts', newTest = 'packages/example/src/b.test.ts';
+    const write = (file: string, text: string): void => {
+      mkdirSync(join(root, file, '..'), { recursive: true });
+      writeFileSync(join(root, file), text);
+    };
+    try {
+      write('scripts/test-shards.ts', readFileSync(join(process.cwd(), 'scripts/test-shards.ts'), 'utf8'));
+      write('scripts/test-durations.json', JSON.stringify({ [firstTest]: 120 }));
+      write(firstTest, 'export {};');
+      gitAt(root, 'init', '-q');
+      const commit = (): string => {
+        gitAt(root, 'add', '--', 'scripts', 'packages');
+        gitAt(root, 'commit', '-qm', 'Fixture change');
+        return gitAt(root, 'rev-parse', 'HEAD');
+      };
+      const legacy = commit();
+      write('scripts/test-resources.json', '{"label":"base policy"}');
+      write('scripts/roam-entries.json', '{"label":"base entries"}');
+      write('scripts/selection/sidecar.mjs', 'export const marker = "base selector";');
+      write('scripts/selection/select.mjs', `
+import { execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { marker } from './sidecar.mjs';
+const [base, output] = process.argv.slice(2);
+const read = file => JSON.parse(readFileSync(new URL('../' + file, import.meta.url), 'utf8')).label;
+const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const changes = execFileSync('git', ['diff', '--name-only', base, head], { encoding: 'utf8' }).trim().split('\\n');
+writeFileSync(output, JSON.stringify({ marker, base, head, changes, policy: read('test-resources.json'), entries: read('roam-entries.json') }));
+`);
+      const base = commit();
+      write('scripts/selection/select.mjs', `import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[3], '{"marker":"head selector"}');`);
+      write('scripts/test-resources.json', '{"label":"head policy"}');
+      write('scripts/roam-entries.json', '{"label":"head entries"}');
+      write('scripts/test-shards.ts', 'throw new Error("Used head partitioner");');
+      write(newTest, 'export {};');
+      write('packages/example/skip.test.ts', 'export {};');
+      const head = commit();
+      mkdirSync(join(root, 'node_modules'));
+      mkdirSync(join(root, '.spider/scratch/test-results'), { recursive: true });
+      const run = (baseSha: string): Record<string, unknown> => {
+        const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', select.run!], { cwd: root,
+          env: { ...process.env, RUNNER_TEMP: temp, BASE_SHA: baseSha, GITHUB_STEP_SUMMARY: join(directory, 'summary') }, encoding: 'utf8' });
+        expect(result.status, result.stderr).toBe(0);
+        return JSON.parse(readFileSync(output, 'utf8')) as Record<string, unknown>;
+      };
+      expect(run(base)).toMatchObject({ marker: 'base selector', base, head, policy: 'base policy', entries: 'base entries',
+        changes: expect.arrayContaining([newTest, 'scripts/selection/select.mjs']) });
+      const { selectionHash, ...manifest } = run(legacy);
+      expect(manifest).toMatchObject({ version: 1, head, mode: 'full', mapRunId: null, mapCommit: null,
+        fallback: 'base commit has no selector', groups: [[firstTest], [newTest], [], []] });
+      expect(Object.keys(manifest.selected as object)).toEqual([firstTest, newTest]);
+      expect(selectionHash).toBe(createHash('sha256').update(JSON.stringify(manifest)).digest('hex'));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('sets explicit timeouts for every runner job', () => {
     for (const name of ['ci', 'pr', 'release', 'publish']) for (const job of Object.values(workflow(name).jobs)) {
       if (!job.uses) expect(job['timeout-minutes']).toBeGreaterThan(0);

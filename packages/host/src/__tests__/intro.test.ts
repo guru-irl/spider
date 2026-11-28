@@ -69,6 +69,7 @@ function fixture(options: { cwd?: string; session?: SessionManager; mode?: Exten
   const source = (path: string) => ({ path, source: "local", scope: "project", origin: "top-level", baseDir: cwd });
   let overlay: { reader: TabbedReader; options: unknown } | undefined;
   let prompt = "Fixture prompt";
+  let contributedSkills = false, contributedPrompts = false;
   let component: ReturnType<NonNullable<Parameters<ExtensionUIContext["setHeader"]>[0]>> | undefined;
   const pi = {
     on: (name: string, handler: Handler) => { handlers.set(name, handler); },
@@ -77,6 +78,8 @@ function fixture(options: { cwd?: string; session?: SessionManager; mode?: Exten
       { name: "other-command", source: "extension", sourceInfo: source(join(cwd, "ext.ts")) },
       { name: "skill:example", source: "skill", sourceInfo: source(join(cwd, "skills/example/SKILL.md")) },
       { name: "template", source: "prompt", sourceInfo: source(join(cwd, "prompts/template.md")) },
+      ...(contributedSkills ? [{ name: "skill:contributed", source: "skill", sourceInfo: source(join(cwd, "skills/contributed/SKILL.md")) }] : []),
+      ...(contributedPrompts ? [{ name: "contributed", source: "prompt", sourceInfo: source(join(cwd, "prompts/contributed.md")) }] : []),
     ],
     getAllTools: () => [
       { sourceInfo: source(join(cwd, "tools-only.ts")) }, { sourceInfo: source("builtin:read") },
@@ -109,6 +112,8 @@ function fixture(options: { cwd?: string; session?: SessionManager; mode?: Exten
   return { cwd, session, terminal, printed, readVisitUsage, commands, shortcuts,
     get header() { return component; }, get overlay() { return overlay; }, start, shutdown, change,
     setPrompt(value: string) { prompt = value; },
+    discoverSkill() { contributedSkills = true; prompt += "\nPlugin skill details."; },
+    discoverTemplate() { contributedPrompts = true; },
     runResources: () => commands.get("resources")?.("", ctx),
     pressResources: () => shortcuts.get("alt+o")?.(ctx),
   };
@@ -120,6 +125,20 @@ describe("interactive intro lifecycle", () => {
     await f.start(reason);
     expect(f.header?.render(80).map(stripTerminalSequences).join("\n")).toContain("pi v1.5.2");
     await f.shutdown("new");
+  });
+
+  it.each(["startup", "reload"])("shows resources discovered after %s without opening the reader", async reason => {
+    const f = fixture();
+    await f.start(reason);
+    const resourceRow = () => f.header?.render(120).map(stripTerminalSequences).find(line => line.includes("Loaded resources"));
+    try {
+      expect(resourceRow()).toMatch(/Skills 1 .*Prompts 1 .*~4 tokens/);
+      f.discoverSkill();
+      expect(resourceRow()).toMatch(/Skills 2 .*Prompts 1 .*~9 tokens/);
+      // Adding a template need not change the system prompt. The count still updates.
+      f.discoverTemplate();
+      expect(resourceRow()).toMatch(/Skills 2 .*Prompts 2 .*~9 tokens/);
+    } finally { await f.shutdown("new"); }
   });
 
   it.each(["print", "rpc", "json", "child", "unadmitted"] as const)("keeps the header and receipt quiet for %s", async kind => {

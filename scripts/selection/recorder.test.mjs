@@ -13,7 +13,8 @@ import { selectTests } from './select.mjs';
 
 const hook = fileURLToPath(new URL('./cov-hook.cjs', import.meta.url));
 const id = 'packages/example/src/probe.test.ts';
-const canTrace = process.platform === 'linux' && spawnSync('strace', ['--version']).status === 0;
+// The map workflow also runs this file before starting its outer strace.
+const canTrace = !process.env.SPIDER_SELECTION_DIR && process.platform === 'linux' && spawnSync('strace', ['--version']).status === 0;
 
 function fixture(t) {
   const scratch = resolve('.spider/scratch/selection');
@@ -554,6 +555,20 @@ test('keeps scripts loaded by an externally killed child and marks its record in
   assert.deepEqual(record.reads, ['child.mjs', 'dependency.mjs']);
   assert.equal(record.incomplete, true);
   assert.equal(record.cpuMs, null);
+});
+
+test('a Node test supervisor without an inspector stays incomplete without breaking publication', t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'sample.test.mjs'), `import { test } from 'node:test'; test('sample', () => {});`);
+  const result = runNode(['--input-type=module', '-e', `
+    import { execFileSync } from 'node:child_process';
+    execFileSync(process.execPath, ['--test', 'sample.test.mjs']);
+  `], { cwd: root, env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const { records, stats } = probeShard(paths);
+  assert.equal(stats.hookErrors, 0);
+  assert.equal(records[id].incomplete, true);
 });
 
 test('a nested recorder keeps its fixture journal and does not claim an outer startup', t => {

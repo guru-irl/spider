@@ -622,16 +622,36 @@ it("enable removes the legacy service and starts only the local v0 hub", async (
 }, 5000);
 
 it("the packaged hub synchronizes a captured home to the enrolled peer without a core", async () => {
+  const started = performance.now();
+  let previous = started;
+  const timing = (step: string) => {
+    const now = performance.now();
+    console.log(`[hub-sync-timing] ${JSON.stringify({ step, ms: now - previous, totalMs: now - started, wallMs: Date.now() })}`);
+    previous = now;
+  };
+  timing("begin");
   const { f, alias, box, calls, server } = await twoNodeFixture(true);
+  timing("fixture");
+  const traceFile = join(f.root, "hc-timing");
+  f.env.SPIDER_TEST_HC_TRACE = traceFile;
+  const printTrace = (label: string) => {
+    console.log(`[hub-sync-hc ${label}] ${JSON.stringify(existsSync(traceFile) ? readFileSync(traceFile, "utf8") : "no calls")}`);
+  };
+  const watchdog = setTimeout(() => printTrace("watchdog"), 4000);
+  watchdog.unref();
   const local = openDb(join(f.root, "spider.db")), remote = openDb(join(box, "spider.db"));
   try {
     enableMemoryCapture(remote, "global");
     local.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES ('session-sync',?,1,NULL,1)").run(HUB);
   } finally { local.close(); remote.close(); }
+  timing("capture");
   let child = start(f);
+  timing("spawn");
   try {
     await ready(f.socket, child);
+    timing("ready");
     const result = await requestHubControl(f.socket, { op: "sync", machine: BOX });
+    timing("sync");
     expect(result.code, result.reason + JSON.stringify(result.value)).toBe(0);
     const hubDb = openDb(join(f.root, "spider.db")), boxDb = openDb(join(box, "spider.db"));
     let stream: string, committedThrough: number;
@@ -647,9 +667,12 @@ it("the packaged hub synchronizes a captured home to the enrolled peer without a
       expect(cursor.last_seq).toBe(committedThrough);
       expect(boxDb.prepare("SELECT count(*) AS n FROM roam_receipts").get()).toEqual({ n: 1 });
     } finally { hubDb.close(); boxDb.close(); }
+    timing("sync-assertions");
     child.kill("SIGTERM"); expect(await exit(child)).toEqual({ code: 0, signal: null });
+    timing("stop");
     f.env.SPIDER_TEST_HC_OFFLINE = "1";
     child = start(f); await ready(f.socket, child);
+    timing("restart-ready");
     const restarted = openDb(join(box, "spider.db"));
     try {
       const cursor = restarted.prepare("SELECT last_seq FROM roam_cursors WHERE peer_machine=? AND peer_stream=?").get(HUB, stream) as { last_seq: number };
@@ -659,9 +682,13 @@ it("the packaged hub synchronizes a captured home to the enrolled peer without a
     const entries = readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
     expect(entries.some(args => args[0] === "exec" && args.includes("artifact") && args.includes("receive"))).toBe(true);
     expect(entries.filter(args => args[0] === "exec").every(args => args.includes(`--on=${alias}`))).toBe(true);
+    timing("restart-assertions");
   } finally {
     if (child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); await exit(child); }
     await new Promise<void>(done => server.close(() => done()));
+    timing("cleanup");
+    clearTimeout(watchdog);
+    printTrace("final");
   }
 }, 5000);
 

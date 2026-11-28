@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+if [[ -n ${SPIDER_TEST_HC_TRACE:-} ]]; then
+  printf '%s\t%s\n' "${EPOCHREALTIME:-missing}" "$*" >> "$SPIDER_TEST_HC_TRACE"
+fi
+
 log_call() {
   local arg line='' separator=''
   for arg in "$@"; do

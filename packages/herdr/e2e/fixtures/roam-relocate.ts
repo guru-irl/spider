@@ -38,7 +38,7 @@ export interface RelocateFixture {
 }
 
 /** Start real packaged v0 services and a native Pi, but never create its session state. */
-export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
+export async function relocateFixture(suite: Suite, { hubCoreWrapper }: { hubCoreWrapper?: string } = {}): Promise<RelocateFixture> {
   const cores = suite.cores;
   if (!cores || process.platform !== 'linux') throw new Error('v0 relocation needs the two owned Linux fixture cores');
   const source = await suite.project('relocate-source');
@@ -77,7 +77,7 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
       machineId: machine.id, hubMachineId: HUB, peers: machine === hub ? [peer] : [], discoveryRoots: [], coreUnit: 'fixture.service',
       syncMs: 5_000 }), { mode: 0o600 });
     await writeFile(join(machine.root, 'herdr', 'config.json'), JSON.stringify({ app: { binary: join(suite.root, 'closed-app'), home: suite.directories.HERDR_APP_HOME },
-      core: { binary: cores.wrapper, config: join(suite.root, 'core.toml') }, globalRoot: machine.root, agentDirectory: machine.agent,
+      core: { binary: machine === hub && hubCoreWrapper ? suite.ownPath(hubCoreWrapper) : cores.wrapper, config: join(suite.root, 'core.toml') }, globalRoot: machine.root, agentDirectory: machine.agent,
       shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });
     const db = openDb(join(machine.root, 'spider.db'));
     try {

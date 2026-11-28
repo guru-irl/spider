@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { basename, dirname, matchesGlob, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { partitionFiles } from '../test-shards.ts';
+import { fixtureBuilders, fixtureEntries, fixtureScope } from './fixture-bundles.mjs';
 import { github } from './github.mjs';
 import { groupCount, rootTest, safePath, selectionHash, sorted } from './manifest.mjs';
 
@@ -144,8 +145,10 @@ export async function createGraphResolver(root, inventory, entries) {
     if ([...inventory, ...entries].some(file => !discovered.has(file))) throw new Error('Vitest graph omitted a tracked test or bundle entry');
   } catch (error) { await ctx.close(); throw error; }
   let importers;
+  const included = new Set([...inventory, ...entries]);
   return {
     async resolveRelated(seeds, targets) {
+      if (targets?.some(file => !included.has(file))) throw new Error('Missing fixture or bundle graph target');
       importers ??= await staticImporters(root);
       const reached = importers(seeds);
       const candidates = targets ?? [...inventory, ...entries];
@@ -156,8 +159,19 @@ export async function createGraphResolver(root, inventory, entries) {
   };
 }
 
+export function fixtureBlobsAtCommit(root, commit) {
+  try {
+    return new Map(git(root, 'ls-tree', '-z', commit, '--', ...fixtureBuilders).split('\0').flatMap(line => {
+      const match = /^100(?:644|755) blob ([\da-f]{40})\t(.*)$/.exec(line);
+      return match ? [[match[2], match[1]]] : [];
+    }));
+  } catch {
+    return new Map(); // Unverified builders must keep their broad selection.
+  }
+}
+
 export async function selectTests({ head, inventory, changes, map, fallback = null,
-  fallbackDurations = {}, namedBy = () => [], resolveRelated = async () => [] }) {
+  fallbackDurations = {}, namedBy = () => [], fixtureBlobs = () => new Map(), resolveRelated = async () => [] }) {
   const reasons = new Map();
   const tests = new Set(inventory);
   const add = (file, reason) => {
@@ -176,18 +190,22 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
         fallback = `toolchain changed: ${toolchain.file}`;
       } else {
         const readers = new Map(map.files.map(file => [file, []]));
-        const unresolved = [], bundleExecutors = [];
-        let legacyBundleRecords = false;
+        const unresolved = new Map(), bundleExecutors = [];
+        let blobs, legacyBundleRecords = false;
         for (const file of inventory) {
           const record = map.tests[file];
           if (!record) { add(file, 'missing from map'); continue; }
           if (record.result !== 'passed') add(file, `recorded result: ${record.result}`);
-          if (record.unresolved.length) unresolved.push(file);
+          if (record.unresolved.length) {
+            blobs ??= fixtureBlobs(map.commit);
+            const scope = fixtureScope(record.unresolved, new Set(record.reads.map(index => map.files[index])), blobs);
+            if (scope === null || scope.size) unresolved.set(file, scope);
+          }
           if (record.ranBundle || record.unresolved.length) bundleExecutors.push(file);
           legacyBundleRecords ||= record.ranBundle === undefined;
           for (const index of record.reads) readers.get(map.files[index]).push(file);
         }
-        const graphSeeds = new Set(), bundleSeeds = new Set();
+        const graphSeeds = new Set(), bundleSeeds = new Set(), fixtureSeeds = new Set();
         let buildChanged = false;
         for (const { file, status, rules: matching } of rules) {
           const ids = new Set(matching.map(rule => rule.id));
@@ -196,7 +214,15 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
           const isScript = file.startsWith('scripts/'), isHerdrE2e = file.startsWith('packages/herdr/e2e/');
           const isBuild = ids.has('build-install');
           const isPolicy = ids.has('test-policy');
-          if (!isDoc && !isTest && (!isPolicy || code.test(file))) for (const test of unresolved) add(test, `unresolved bundle may reach ${file}`);
+          if (!isDoc && !isTest && (!isPolicy || code.test(file))) {
+            // The head graph cannot prove a delete, type change, script, or
+            // non-code resource did not affect a fixture's old output.
+            const fixtureCode = (status === 'A' || status === 'M') && file.startsWith('packages/') && code.test(file);
+            if (fixtureCode) fixtureSeeds.add(file);
+            for (const [test, scope] of unresolved) {
+              if (scope === null || !fixtureCode) add(test, `unresolved bundle may reach ${file}`);
+            }
+          }
           for (const test of readers.get(file) ?? []) add(test, `recorded ${removed ? 'deleted ' : ''}input: ${file}`);
           if (isTest && !removed) add(file, 'changed test');
           if (isDoc || isScript || isHerdrE2e || isPolicy) {
@@ -223,6 +249,15 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
           const related = graphSeeds.size ? await resolveRelated(sorted(graphSeeds)) : [];
           for (const test of related) add(test, 'static import graph');
           if (buildChanged) for (const test of bundleExecutors) add(test, 'ran a bundle affected by build configuration');
+          const fixtureTargets = sorted([...unresolved.values()].flatMap(scope => scope ? [...scope] : []));
+          if (fixtureSeeds.size && fixtureTargets.length && !buildChanged) {
+            const affected = new Set([...fixtureSeeds, ...await resolveRelated(sorted(fixtureSeeds), fixtureTargets)]);
+            for (const [test, scope] of unresolved) {
+              for (const entry of scope ?? []) {
+                if (affected.has(entry)) add(test, `fixture bundle imports changed source via ${entry}`);
+              }
+            }
+          }
           const knownSeeds = sorted([...bundleSeeds].filter(file => !graphSeeds.has(file)));
           const bundleAffected = buildChanged || related.some(file => policy.bundles.entries.includes(file))
             || (knownSeeds.length && (await resolveRelated(knownSeeds, policy.bundles.entries)).some(file => policy.bundles.entries.includes(file)));
@@ -280,8 +315,10 @@ async function main(base, output) {
   catch { lookup.fallback = 'could not read map-to-head changed files'; }
   const selection = await selectTests({ head, inventory, changes, ...lookup, fallbackDurations: read(fallbackDurationsURL),
     namedBy: file => namedByTests(root, head, file),
+    fixtureBlobs: commit => fixtureBlobsAtCommit(root, commit),
     async resolveRelated(seeds, targets) {
-      graph ??= await createGraphResolver(root, inventory, readPolicy().bundles.entries);
+      const availableFixtures = fixtureEntries.filter(file => existsSync(resolve(root, file)));
+      graph ??= await createGraphResolver(root, inventory, sorted([...readPolicy().bundles.entries, ...availableFixtures]));
       return graph.resolveRelated(seeds, targets);
     },
   }).finally(() => graph?.close());

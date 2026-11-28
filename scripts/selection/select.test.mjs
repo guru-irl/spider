@@ -244,6 +244,32 @@ test('a fixture with a verified build graph still runs on deletes and non-code i
   assertSelected(await wiringFixture({ changes: [changed('packages/one/src/options.json')] }), b);
 });
 
+test('matches cutover CLI inputs from the generated entry, even in a basename-only record', async () => {
+  const builder = 'packages/herdr/src/__tests__/production-cutover-fixture.ts';
+  const ports = 'packages/host/src/herdr/ports.ts';
+  const options = { files: [builder], records: { [b]: wiringRecord('<tmp>/cli.mjs') },
+    fixtureBlobs: () => new Map([[builder, '22410c6e6d8cd2ad45964b01b2fa39c938f277b3']]) };
+  assertSelected(await fixture({ ...options, changes: [changed(unrelatedInput)] }));
+  assertSelected(await fixture({ ...options, changes: [changed(ports)] }), b);
+});
+
+test('the standalone bridge fixture does not scope other files called extension.js', async () => {
+  const builder = 'packages/host/src/__tests__/copy-button-entry.test.ts';
+  const options = { changes: [changed(unrelatedInput)], files: [builder],
+    fixtureBlobs: () => new Map([[builder, '76292c563bb1a50fd9a1733d2a6bc2a11f497b71']]) };
+  assertSelected(await fixture({ ...options, records: { [b]: wiringRecord('<tmp>/tests/case-1/dist/extension.js') } }));
+  assertSelected(await fixture({ ...options, records: { [b]: wiringRecord('<tmp>/tests/release/dist/extension.js') } }), b);
+});
+
+test('a broken fixture graph cannot omit the tests that ran it', async () => {
+  const result = await wiringFixture({ async resolveRelated(_seeds, targets) {
+    if (targets?.includes(viewerEntry)) throw new Error('test fixture graph error');
+    return [];
+  } });
+  assert.equal(result.mode, 'full');
+  assertSelected(result, ...inventory);
+});
+
 test('always runs failed, skipped and unrecorded test files', async () => {
   const tests = Object.fromEntries(inventory.filter(file => file !== d).map(file => [file, row()]));
   tests[b] = row({ result: 'failed' });

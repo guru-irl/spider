@@ -16,7 +16,7 @@ import { createStorePort } from "../stores";
 import { inspectSession, stageSession, installSession } from "../session-file";
 import { openOutgoingStaging, openStaging, privateDirectory, readPrivate, sourceChunk, validateManifest, writeImmutable, verifyStagedFile } from "../staging";
 import { createLocalRuntime, digestIdentity, exactHome, probeLocalProcess } from "./local";
-import { json, parseCaptured, parsePlan, parsePlacement } from "./journal";
+import { json, parseCaptured, parsePlan, parsePlacement, recordInstalledSession } from "./journal";
 import { refusal } from "./remote";
 import type { CapturedSession, InstalledSession, RelocateAdapterOptions, RelocatePlan, RunningHome, SessionOwner, V0Result } from "./types";
 
@@ -190,7 +190,7 @@ export async function installLocalSession(plan:RelocatePlan,captured:CapturedSes
     writeLocal(options.globalDb,"relocate-incoming",`worktree:${placement.repoKey}:${placement.workspaceId}`,undefined);
     lastCompleted = "incoming-cleared";
     const installed: InstalledSession={placement,session:{...staged,file:placement.file}, ...(branchDetached ? { branchDetached: true } : {})};
-    options.journal.record(plan.moveId,"relocate-installed",json({installed}));
+    recordInstalledSession(options.journal,plan.moveId,installed);
     return {ok:true,value:installed};
   } catch(error) {
     const message=error instanceof Error?error.message:"";

@@ -2,7 +2,9 @@ import type { HomeSupervisor, HomeSupervisorPorts, SessionId, V0Refusal } from "
 
 const TICK_MS = 10_000;
 
-export function createHomeSupervisor(ports: HomeSupervisorPorts, warn: (line: string) => void = line => { process.stderr.write(`${line}\n`); }): HomeSupervisor {
+export type LocalHomeSupervisorPorts = HomeSupervisorPorts & { clearRefusal?(sessionId: SessionId): void };
+
+export function createHomeSupervisor(ports: LocalHomeSupervisorPorts, warn: (line: string) => void = line => { process.stderr.write(`${line}\n`); }): HomeSupervisor {
   const managed = new Set<SessionId>();
   const reported = new Map<SessionId | null, string>();
   let inFlight: Promise<void> | null = null;
@@ -20,6 +22,11 @@ export function createHomeSupervisor(ports: HomeSupervisorPorts, warn: (line: st
     reported.set(sessionId,line);
     warn(line);
     try { ports.report(sessionId,detail); } catch { /* Keep enforcing after a failed diagnostic write. */ }
+  }
+
+  function clearRefusal(sessionId: SessionId): void {
+    reported.delete(sessionId);
+    try { ports.clearRefusal?.(sessionId); } catch { /* Diagnostics do not control hosting. */ }
   }
 
   async function stopSession(sessionId: SessionId): Promise<void> {
@@ -62,10 +69,10 @@ export function createHomeSupervisor(ports: HomeSupervisorPorts, warn: (line: st
         // have a newer epoch after an uncertain moving-home publication.
         const activated = await ports.activate(home, placement);
         if (!activated.ok) { report(sessionId, activated.refusal); continue; }
-        if (owner.kind === "live") { reported.delete(sessionId); continue; }
+        if (owner.kind === "live") { clearRefusal(sessionId); continue; }
         const result = await ports.start(home, placement);
         if (!result.ok) report(sessionId, result.refusal);
-        else reported.delete(sessionId);
+        else clearRefusal(sessionId);
       } catch { report(sessionId, unavailable()); }
     }
     for (const sessionId of managed) if (!seen.has(sessionId)) await stopSession(sessionId);

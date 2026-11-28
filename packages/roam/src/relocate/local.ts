@@ -3,6 +3,7 @@ import { join, relative, isAbsolute, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { lstat, realpath } from "node:fs/promises";
+import { getBinding, openDbReadOnly, projectRoot } from "@spider/db-core";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { discoverOrdinarySource } from "./ordinary-source";
 import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
@@ -11,7 +12,7 @@ import { openRoamPathReadOnly } from "@spider/db-core/roam/reads";
 import { inspectSession } from "../session-file";
 import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { createStorePort } from "../stores";
-import { parsePlacement, object, text } from "./journal";
+import { parsePlacement, object, text, readInstalledPlacement } from "./journal";
 import { homedir } from "node:os";
 import { setImmediate as yieldTurn, setTimeout as delay } from "node:timers/promises";
 import { inspectIdLock, claimIdLock, localBootId, type IdLockObservation } from "@spider/herdr/sessions/id-lock";
@@ -430,6 +431,7 @@ export interface LocalRuntime extends SessionMachinePorts {
   owner(id: SessionId, placement?: SessionPlacement): Promise<SessionOwner>;
   stop(id: SessionId, moving?: MovingHome | null, beforeOrdinaryCapture?: boolean): Promise<V0Result<void>>;
   entries(): Promise<readonly SupervisorEntry[]>;
+  checkLaunchReady(home: RunningHome, placement: SessionPlacement, cwd?: string): V0Result<void>;
 }
 export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO = createLocalIO(options)): LocalRuntime {
   function withSessionState<T>(id: SessionId, run: () => Promise<T>): Promise<T> {
@@ -476,6 +478,61 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       return {ok:true,value:{terminal:current.terminal}};
     } catch { return refusal("start-pending","The session owner cannot be confirmed."); }
   }
+  function checkLaunchReady(home: RunningHome, placement: SessionPlacement, cwd = placement.cwd): V0Result<void> {
+    const ready = {ok:true,value:undefined} as const;
+    if (!home.moveId) return ready;
+    const doctor = "Run spider roam doctor on the destination before retrying.";
+    const restore = "Restore the installed checkout before trying again.";
+    const retry = "Wait for sync to finish, then try again shortly.";
+    let installed: SessionPlacement | undefined;
+    try { installed = readInstalledPlacement(options.journal,home.moveId); }
+    catch { return refusal("journal-unavailable","The relocation installation journal could not be read.",doctor); }
+    // Reassignment changes the move ID without installing another copy. The
+    // existing placement still names the origin on a previously used box.
+    if (!installed && placement.historyMachine === home.machineId) return ready;
+    if (installed && (installed.sessionId !== home.sessionId || installed.machineId !== home.machineId ||
+        installed.repoKey !== placement.repoKey || installed.workspaceId !== placement.workspaceId || installed.cwd !== placement.cwd)) {
+      return refusal("home-conflict","The launch does not match the installed session checkout.",restore);
+    }
+    const expected = installed ?? placement;
+    let file: string;
+    try {
+      const mapped = options.globalDb.prepare("SELECT path FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?")
+        .get(expected.repoKey,expected.workspaceId) as {path:string}|undefined;
+      if (!mapped) return refusal("repo-unmapped","The installed session has no local workspace mapping.",doctor);
+      if (!insideDirectory(mapped.path,expected.cwd)) return refusal("home-conflict","The installed session checkout mapping has changed.",restore);
+      file = join(mapped.path,".spider","project.db");
+      // Startup records the session in the bound project, or in the caller's
+      // worktree. Prove that this is the same database we are about to check.
+      const openFrom = `Open it from ${mapped.path} and try again.`;
+      if (join(projectRoot(cwd),"project.db") !== file) return refusal("home-conflict",
+        "This is not the installed checkout for the session.",openFrom);
+      const bound = getBinding(options.globalDb,home.sessionId);
+      if (bound && join(projectRoot(bound),"project.db") !== file) return refusal("home-conflict",
+        "Pi would record this session outside the installed checkout.",
+        `Restore the session's project binding first. ${openFrom}`);
+    } catch { return refusal("repo-unmapped","The destination workspace mapping could not be checked.",doctor); }
+
+    // Replication can commit the running home before the checkout's worktree row.
+    // Never use a pending batch or an unmapped replica as startup evidence.
+    let row: {origin_machine:string}|undefined;
+    try {
+      const db = openRoamPathReadOnly(file,path => openDbReadOnly(path,{busyTimeoutMs:1_000}));
+      try { row = db?.prepare("SELECT origin_machine FROM sessions WHERE id=?").get(home.sessionId) as typeof row; }
+      finally { db?.close(); }
+    } catch (error) {
+      const code = (error as {code?:unknown}|null)?.code;
+      if (typeof code === "string" && (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED"))) {
+        return refusal("start-pending","The destination checkout database is busy.","Try again shortly.");
+      }
+      return refusal("destination-copy-missing","The destination checkout database could not be checked.",doctor);
+    }
+    if (!row) return refusal("start-pending","The session data has not arrived in the destination checkout yet.",retry);
+    if (row.origin_machine !== expected.historyMachine) return refusal("home-conflict",
+      `Session ${home.sessionId} has a different origin in this checkout: expected ${expected.historyMachine}, found ${row.origin_machine}.`,
+      "This checkout needs manual repair. Run spider roam doctor on the destination for diagnostics before retrying.");
+    return ready;
+  }
   async function start(home: RunningHome,placement: SessionPlacement): Promise<V0Result<{terminal:string}>> {
     try { return await withSessionState(home.sessionId,async()=>{
       if (!await runnable(home,placement)) return refusal("start-pending","The local running home does not authorize launch.");
@@ -485,27 +542,8 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       if (current.kind !== "free") return refusal("start-pending","A session owner or pending terminal is still present.");
       // Reread immediately before the only spawn call.
       if (!await runnable(home,placement)) return refusal("start-pending","The home changed before launch.");
-      const install = home.moveId && options.journal.read(home.moveId).findLast(row=>row.action === "relocate-installed");
-      if (install) {
-        // A move ID alone also covers source rollback and restart. The destination
-        // install records where the session originated, even after multiple moves.
-        const installed = parsePlacement(object(install.result.installed).placement);
-        if (installed.sessionId !== home.sessionId || installed.machineId !== home.machineId ||
-            installed.repoKey !== placement.repoKey || installed.workspaceId !== placement.workspaceId || installed.cwd !== placement.cwd) {
-          return refusal("home-conflict","The launch does not match the installed session checkout.");
-        }
-        const mapped = options.globalDb.prepare("SELECT path FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?")
-          .get(installed.repoKey,installed.workspaceId) as {path:string}|undefined;
-        if (mapped && !insideDirectory(mapped.path,installed.cwd)) return refusal("home-conflict","The installed session checkout mapping has changed.");
-        // The global home can arrive first. Only the checkout DB counts, not a
-        // pending batch or a replica that has not been merged into the checkout.
-        const db = mapped && openRoamPathReadOnly(join(mapped.path,".spider","project.db"));
-        let row: {origin_machine:string|null}|undefined;
-        try { row = db?.prepare("SELECT origin_machine FROM sessions WHERE id=?").get(home.sessionId) as typeof row; }
-        finally { db?.close(); }
-        if (!row) return refusal("start-pending","The session data has not arrived in the destination checkout yet.","Wait for sync. The destination will check again before starting Pi.");
-        if (row.origin_machine !== installed.historyMachine) return refusal("home-conflict","The session row in the destination checkout has a different origin.","Check the session origin before retrying.");
-      }
+      const ready = checkLaunchReady(home,placement);
+      if (!ready.ok) return ready;
       const launched = await io.launch({home,placement});
       return {ok:true,value:launched};
     }); } catch { return refusal("start-pending","The launch reply is pending; retry without starting another copy."); }
@@ -604,9 +642,9 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     }
     return result;
   }
-  return {owner,start,confirm,stop,locate,publishHome,activate,entries};
+  return {owner,start,confirm,stop,locate,publishHome,activate,entries,checkLaunchReady};
 }
-export function createLocalSessionMachinePorts(options: RelocateAdapterOptions): SessionMachinePorts {
+export function createLocalSessionMachinePorts(options: RelocateAdapterOptions): SessionMachinePorts & Pick<LocalRuntime, "checkLaunchReady"> {
   const local=createLocalRuntime(options);
-  return {locate:local.locate,publishHome:local.publishHome,activate:local.activate,start:local.start,confirm:local.confirm};
+  return {locate:local.locate,publishHome:local.publishHome,activate:local.activate,start:local.start,confirm:local.confirm,checkLaunchReady:local.checkLaunchReady};
 }

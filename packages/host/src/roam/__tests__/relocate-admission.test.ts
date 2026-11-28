@@ -6,13 +6,21 @@ import { readRelocateAdmission, prepareRelocateAdmission, loadRelocateAdmission,
 import { createReplica } from "@spider/db-core/testutil";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
+import { registerHooks } from "../../hooks";
+import { applyBatch } from "@spider/db-core/roam/apply";
+import { validateBatch } from "@spider/db-core/roam/codec";
+import { createReplicaEffects } from "@spider/db-core/roam/effects";
+import { exportBatch } from "@spider/db-core/roam/export";
+import { sessionHome } from "@spider/roam/homes";
+import { openJournal } from "@spider/roam/journal";
+import { json } from "@spider/roam/relocate/journal";
 import { createHomeStore } from "@spider/roam/relocate/home";
 import { inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
-import { writeFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, existsSync } from "node:fs";
 import * as admissionLookup from "../relocate-admission";
 import { join } from "node:path";
-import type { SessionMachinePorts, SessionPlacement } from "@spider/roam/relocate/types";
+import type { SessionPlacement } from "@spider/roam/relocate/types";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RunningHome, SessionId } from "@spider/roam/relocate/types";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
@@ -156,6 +164,86 @@ it("a foreign replica cannot offer a local managed home without a fence", async 
   } finally { db.close(); f.close(); }
 });
 
+it.each(["pending", "conflict"] as const)("manual relocate admission refuses a %s row before Pi writes", async state => {
+  const box = "22222222-2222-4222-8222-222222222222";
+  const scratch = join(process.env.SPIDER_TEST_FIXTURE_CHECKOUT!, ".spider", "scratch");
+  mkdirSync(scratch, { recursive: true });
+  const root = mkdtempSync(join(scratch, "a-")), source = createReplica("worktree", local);
+  const dbPath = join(root, "spider.db"), cwd = join(root, "checkout"), file = join(cwd, "session.jsonl");
+  mkdirSync(join(cwd, ".spider"), { recursive: true });
+  mkdirSync(join(root, "roam"), { mode: 0o700 });
+  const db = openDb(dbPath), project = openDb(join(cwd, ".spider", "project.db"));
+  try {
+    migrate(db, "global", { machineId: box, globalRoot: root });
+    db.prepare("UPDATE roam_meta SET store_key='global'").run();
+    migrate(project, "worktree", { machineId: box, globalRoot: root });
+    project.prepare("UPDATE roam_meta SET store_key=?").run(source.storeKey);
+    const running = { ...home, machineId: box, moveId: "v0-44444444-4444-4444-8444-444444444444" as RunningHome["moveId"] };
+    const placement: SessionPlacement = { sessionId: id, machineId: box, repoKey: "fixture-repo", workspaceId: "fixture-workspace",
+      repository: cwd, cwd, file, stores: [source.storeKey], historyMachine: local };
+    const config = { enabled: false, role: "box", machineId: box, hubMachineId: local, peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 10_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+    writeFileSync(join(root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+    writeFileSync(join(root, "roam", "machine.json"), JSON.stringify({ machineId: box }), { mode: 0o600 });
+    const timestamp = "2000-01-01T00:00:00Z";
+    writeFileSync(file, [
+      { type: "session", version: 3, id, cwd, timestamp },
+      { type: "message", id: "entry", parentId: null, timestamp, message: { role: "user", content: [{ type: "text", text: "fixture" }] } },
+    ].map(line => JSON.stringify(line)).join("\n") + "\n");
+    db.prepare("INSERT INTO session_homes VALUES (?, ?, ?, ?, ?, 'running', NULL)").run(id, box, running.epoch, running.moveId, running.updatedAt);
+    db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?, ?, ?)").run(placement.repoKey, placement.workspaceId, cwd);
+    writeLocal(db, "relocate-managed", id, placement);
+    const journal = openJournal(join(root, "roam", "journal.db"));
+    journal.begin({ id: running.moveId!, kind: "relocate", machineId: box, expectedEpoch: running.epoch, args: {} });
+    journal.record(running.moveId!, "relocate-installed", json({ installed: { placement } }));
+    paths.globalRoot = root;
+    setGlobalDbPathForTests(dbPath);
+    vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
+    vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+    vi.stubEnv("GIT_CEILING_DIRECTORIES", root);
+    vi.stubEnv("HC_SOCKET", join(root, "hc.sock"));
+    vi.stubEnv("HC_SESSION", "manual-relocate-admission");
+
+    const row = () => project.prepare("SELECT origin_machine,started_at,reason FROM sessions WHERE id=?").get(id);
+    if (state === "conflict") project.prepare("INSERT INTO sessions(id,started_at) VALUES (?,2)").run(id);
+    async function open(sessionCwd = cwd) {
+      const host = createHostSessionFixture({ cwd: sessionCwd, sessionId: id, sessionFile: file, hasUI: false });
+      const gate = registerAdmission(host.pi as unknown as ExtensionAPI, createAdmissionPorts());
+      registerHooks(host.pi, undefined, () => gate.inspect().kind === "ordinary");
+      try {
+        for (const handler of host.hooks.get("session_start") ?? []) await handler({ reason: "resume" }, host.ctx);
+        return gate.inspect();
+      } finally { await gate.close(); }
+    }
+
+    const blocked = await open();
+    expect(blocked).toMatchObject({ kind: "blocked", home: running });
+    if (state === "conflict") {
+      expect(blocked.blockers[0]?.detail).toContain(id);
+      expect(blocked.blockers[0]?.detail).toContain(local);
+      expect(blocked.blockers[0]?.detail).toContain(box);
+      expect(row()).toEqual({ origin_machine: box, started_at: 2, reason: null });
+      return;
+    }
+    expect(blocked.blockers[0]?.detail).toMatch(/session data has not arrived.*try again shortly/i);
+    expect(row()).toBeUndefined();
+    const wrongCheckout = await open(root);
+    expect(wrongCheckout).toMatchObject({ kind: "blocked", home: running });
+    expect(wrongCheckout.blockers[0]?.detail).toContain(`Open it from ${cwd}`);
+    expect(existsSync(join(root, ".spider", "project.db"))).toBe(false);
+    expect(row()).toBeUndefined();
+
+    source.db.exec("UPDATE roam_meta SET capture_enabled=1");
+    source.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'active')").run(id);
+    source.db.prepare("INSERT INTO sessions(id,started_at) VALUES (?,1)").run(id);
+    const batch = await exportBatch(source.db, { after: 0, targetBytes: 16_384, batchId: "admission-source" }, { encode: (_entity, body) => body });
+    const now = Date.now();
+    const valid = await validateBatch(batch, { storeKey: source.storeKey, senderMachine: local, senderStream: batch.header.senderStream, now });
+    applyBatch(project, valid, { hubMachine: local, effects: createReplicaEffects(() => {}), now, sessionHome: key => sessionHome(db, key) });
+    expect(await open()).toEqual({ kind: "ordinary", home: running, blockers: [] });
+    expect(row()).toEqual({ origin_machine: local, started_at: 1, reason: "resume" });
+  } finally { project.close(); db.close(); source.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 it("a matching box replica can read its own managed running home", async () => {
   const box = "22222222-2222-4222-8222-222222222222";
   const f = createReplica("global", box), db = openDb(join(f.root, "spider.db"));
@@ -255,11 +343,11 @@ it("successful SQL discovery distinguishes legacy rows from managed missing home
 });
 it("readiness activates the locked exact file at the home epoch", async () => {
   const placement: SessionPlacement = { sessionId: id, machineId: local, repoKey: "repo", workspaceId: "ws", repository: "/fixture", cwd: "/fixture", file: "/fixture/session.jsonl", stores: ["global", "repo:repo", "worktree:repo:ws"], historyMachine: local };
-  const machine: SessionMachinePorts = { locate: vi.fn(async () => ({ ok: true as const, value: placement })), activate: vi.fn(async () => ({ ok: true as const, value: undefined })), start: vi.fn(), confirm: vi.fn(), publishHome: vi.fn() };
-  await prepareRelocateAdmission(home, placement.file, machine);
+  const machine = { checkLaunchReady: () => ({ ok: true as const, value: undefined }), locate: vi.fn(async () => ({ ok: true as const, value: placement })), activate: vi.fn(async () => ({ ok: true as const, value: undefined })), start: vi.fn(), confirm: vi.fn(), publishHome: vi.fn() };
+  await prepareRelocateAdmission(home, placement.file, machine, placement.cwd);
   expect(machine.locate).toHaveBeenCalledWith(local, id); expect(machine.activate).toHaveBeenCalledWith(home, placement);
   vi.mocked(machine.activate).mockClear();
-  await expect(prepareRelocateAdmission(home, "/fixture/other.jsonl", machine)).rejects.toThrow();
+  await expect(prepareRelocateAdmission(home, "/fixture/other.jsonl", machine, placement.cwd)).rejects.toThrow();
   expect(machine.activate).not.toHaveBeenCalled(); expect(machine.start).not.toHaveBeenCalled(); expect(machine.publishHome).not.toHaveBeenCalled();
 });
 it("only local running v0 home admits", async () => {

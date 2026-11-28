@@ -3,7 +3,7 @@ import type { MachineId, JsonObject } from "@spider/db-core/roam/types";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { isMachineId } from "../machine-id";
 import type { Journal } from "../contracts";
-import type { RelocateCheckpoint, RelocateHome, RelocateJournal, RelocatePlan, RelocateStep, SessionPlacement } from "./types";
+import type { InstalledSession, RelocateCheckpoint, RelocateId, RelocateHome, RelocateJournal, RelocatePlan, RelocateStep, SessionPlacement } from "./types";
 
 export const steps: readonly RelocateStep[] = ["check", "mark-moving", "stop-source", "pull-source", "push-destination", "install-destination", "commit-home", "start-destination", "confirm"];
 export function object(value: unknown): Record<string, unknown> {
@@ -72,6 +72,15 @@ export function parseCheckpoint(value: unknown): RelocateCheckpoint {
   return value as RelocateCheckpoint;
 }
 export function json(value: unknown): JsonObject { return JSON.parse(JSON.stringify(value)) as JsonObject; }
+const installedAction = "relocate-installed";
+export function recordInstalledSession(journal: Journal, moveId: RelocateId, installed: InstalledSession): void {
+  journal.record(moveId, installedAction, json({ installed }));
+}
+export function readInstalledPlacement(journal: Journal, moveId: RelocateId): SessionPlacement | undefined {
+  const record = journal.read(moveId).findLast(row => row.action === installedAction);
+  return record && parsePlacement(object(record.result.installed).placement);
+}
+
 function canonical(value: unknown): string {
   return JSON.stringify(value, (_key, v: unknown) => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
 }

@@ -12,6 +12,7 @@ import { callV0, createV0ArtifactTransport, handleRelocateAgent, refusal } from 
 import { createLocalRuntime, exactHome, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, captureOrdinarySource, SessionSeedBusy, seedBusyRefusal, type LocalSource } from "./local";
 import { captureLocalSession, installLocalSession, stagingRoot } from "./transfer";
 import { legacyRecordedHomeRefusal } from "./home";
+import type { LocalHomeSupervisorPorts } from "./supervisor";
 import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePorts, SessionId, SessionPlacement, SettledHome, V0Result, RelocatePlan, CapturedSession, RunningHome, InstalledSession } from "./types";
 
 export interface ExactRelocatePorts extends RelocatePorts {
@@ -19,7 +20,7 @@ export interface ExactRelocatePorts extends RelocatePorts {
   confirmPending: RelocatePorts["confirm"];
 }
 
-export function createRelocateAdapters(options: RelocateAdapterOptions): RelocateAdapters & {ports:ExactRelocatePorts} {
+export function createRelocateAdapters(options: RelocateAdapterOptions): RelocateAdapters & {ports:ExactRelocatePorts; supervisor:LocalHomeSupervisorPorts} {
   const local=createLocalRuntime(options),journal=createRelocateJournal(options.journal,options.config.hubMachineId);
   const artifactTransport=createV0ArtifactTransport(options.transport,options.config.machineId);
   const hub=options.config.machineId===options.config.hubMachineId && options.config.role==="hub";
@@ -188,5 +189,11 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
       try{const result=await rpc(home.machineId,{version:1,kind:"install",plan,captured,home});if(!result.ok)return result;const installed=object(result.value.installed);parsePlacement(installed.placement);object(installed.session);return {ok:true,value:installed as unknown as InstalledSession};}catch{return refusal("install-failed","The destination install acknowledgement is unavailable.");}
     },
   };
-  return {ports,setHome:shared,supervisor:{machineId:options.config.machineId,clock:options.clock,entries:local.entries,owner:local.owner,stop:id=>local.stop(id),activate:local.activate,start:local.start,report(sessionId,refusal){writeLocal(options.globalDb,"relocate-supervisor-refusal",sessionId??"service",refusal);}},async dispose(){/* Per-call local stores and staging handles are already closed. */}};
+  const supervisor: LocalHomeSupervisorPorts = {
+    machineId:options.config.machineId,clock:options.clock,entries:local.entries,
+    owner:local.owner,stop:id=>local.stop(id),activate:local.activate,start:local.start,
+    report(sessionId,refusal){writeLocal(options.globalDb,"relocate-supervisor-refusal",sessionId??"service",refusal);},
+    clearRefusal(sessionId){writeLocal(options.globalDb,"relocate-supervisor-refusal",sessionId,undefined);},
+  };
+  return {ports,setHome:shared,supervisor,async dispose(){/* Per-call local stores and staging handles are already closed. */}};
 }

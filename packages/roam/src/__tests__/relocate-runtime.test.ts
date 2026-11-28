@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, delimiter } from "node:path";
 import * as hcApi from "@spider/herdr/client/hc";
 import type { CoreIdentity } from "@spider/herdr/contracts";
@@ -16,14 +16,15 @@ import { createReplicaEffects } from "@spider/db-core/roam/effects";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import * as seedApi from "@spider/db-core/roam/seed";
-import { writeLocal } from "@spider/db-core/roam/local-state";
-import type { RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionPlacement } from "../relocate/types";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import type { InstalledSession, RelocateAdapterOptions, RelocateHome, RelocatePlan, RunningHome, SessionId, SessionPlacement } from "../relocate/types";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { createLocalRuntime, createLocalIO, localLaunchEnvironment, seedLocalPlacement, type LocalIO } from "../relocate/local";
+import { createRelocateAdapters } from "../relocate/adapters";
 import { createHomeSupervisor } from "../relocate/supervisor";
 import { createHomeStore } from "../relocate/home";
-import { json } from "../relocate/journal";
+import { json, recordInstalledSession } from "../relocate/journal";
 import { beginLocalMove } from "../relocate/transfer";
 import { inspectSession } from "../session-file";
 import { sessionHome } from "../homes";
@@ -35,10 +36,10 @@ const id = "33333333-3333-4333-8333-333333333333" as SessionId;
 const fixtures: {close():void}[] = [];
 afterEach(()=>{ vi.restoreAllMocks(); vi.unstubAllEnvs(); for(const f of fixtures.splice(0)) f.close(); });
 afterEach(assertSafeHistories);
-function runtimeFixture() {
- const db = createReplica("global", box);fixtures.push(db);
- const home: RunningHome = {sessionId:id,machineId:box,epoch:3,state:"running",destination:null,moveId:"v0-run" as RunningHome["moveId"],updatedAt:1};
- const placement: SessionPlacement = {sessionId:id,machineId:box,repoKey:"repo",workspaceId:"workspace",repository:"/mapped",cwd:"/mapped/sub",file:"/sessions/exact.jsonl",stores:["global"],historyMachine:hub};
+function runtimeFixture(machine = box) {
+ const db = createReplica("global", machine);fixtures.push(db);
+ const home: RunningHome = {sessionId:id,machineId:machine,epoch:3,state:"running",destination:null,moveId:"v0-run" as RunningHome["moveId"],updatedAt:1};
+ const placement: SessionPlacement = {sessionId:id,machineId:machine,repoKey:"repo",workspaceId:"workspace",repository:"/mapped",cwd:"/mapped/sub",file:"/sessions/exact.jsonl",stores:["global"],historyMachine:machine};
  let current: RelocateHome | null = home;
  let lock: Awaited<ReturnType<LocalIO["inspect"]>> = null;
  let probe: Awaited<ReturnType<LocalIO["probe"]>> = {kind:"absent"};
@@ -49,7 +50,7 @@ function runtimeFixture() {
  const journal = openJournal(join(db.root,"journal.db"));
  const run: RelocateAdapterOptions["git"]["run"] = async()=>{throw new Error("unexpected git");};
  const io: LocalIO = {inspect:async()=>lock,probe:async()=>probe,claimFree:async()=>{},signal:async pid=>{signalled.push(pid);},shutdown:async()=>false,pause:async()=>{now+=10;},terminals:async()=>terminals,tree:async()=>({descendants:[],groups:[]}),groupBlockers:async()=>[],writerBlockers:async()=>[],launch:async request=>{launches.push(request);return {terminal:"core:t"};}};
- const options: RelocateAdapterOptions = {root:db.root,globalDb:db.db,homes:{read:async()=>current,list:async()=>current?[current]:[],initialize:async()=>home,compareAndSwap:async()=>({kind:"conflict",home:current})},journal,config:{enabled:false,role:"box",machineId:box,hubMachineId:hub,peers:[],discoveryRoots:[],coreUnit:"core",syncMs:10000,limits:{...DEFAULT_LIMITS,readyMs:30},intercom:disabledIntercom()},sync:{start(){},stop(){},sync:async()=>[],barriers:async()=>true},transport:{resolve:async p=>p,bootstrapProbe:async()=>{throw new Error("unused");},exec:async()=>{throw new Error("unexpected remote");},run:async()=>({terminal:"t"}),read:async()=>Buffer.alloc(0),write:async()=>{}},clock:{now:()=>now,later:(_ms,_fn)=>()=>{}},git:{run,journal,limits:DEFAULT_LIMITS,scratch:join(db.root,"git"),worktreeCommand:null},workspaceImport:{run,journal,limits:DEFAULT_LIMITS,scratch:join(db.root,"git"),worktreeCommand:null,resolveCommonRepository:async()=>null,lastExportedSnapshot:async()=>null,verifiedArtifactPath:async()=>null},limits:{...DEFAULT_LIMITS,readyMs:30}};
+ const options: RelocateAdapterOptions = {root:db.root,globalDb:db.db,homes:{read:async()=>current,list:async()=>current?[current]:[],initialize:async()=>home,compareAndSwap:async()=>({kind:"conflict",home:current})},journal,config:{enabled:false,role:machine === hub ? "hub" : "box",machineId:machine,hubMachineId:hub,peers:[],discoveryRoots:[],coreUnit:"core",syncMs:10000,limits:{...DEFAULT_LIMITS,readyMs:30},intercom:disabledIntercom()},sync:{start(){},stop(){},sync:async()=>[],barriers:async()=>true},transport:{resolve:async p=>p,bootstrapProbe:async()=>{throw new Error("unused");},exec:async()=>{throw new Error("unexpected remote");},run:async()=>({terminal:"t"}),read:async()=>Buffer.alloc(0),write:async()=>{}},clock:{now:()=>now,later:(_ms,_fn)=>()=>{}},git:{run,journal,limits:DEFAULT_LIMITS,scratch:join(db.root,"git"),worktreeCommand:null},workspaceImport:{run,journal,limits:DEFAULT_LIMITS,scratch:join(db.root,"git"),worktreeCommand:null,resolveCommonRepository:async()=>null,lastExportedSnapshot:async()=>null,verifiedArtifactPath:async()=>null},limits:{...DEFAULT_LIMITS,readyMs:30}};
  return {options,io,home,placement,launches,signalled,setHome:(v:typeof current)=>current=v,setLock:(v:typeof lock)=>lock=v,setProbe:(v:typeof probe)=>probe=v,setTerminals:(v:typeof terminals)=>terminals=v};
 }
 const readyClock = {now:Date.now,later(ms:number,fn:()=>void){const timer=setTimeout(fn,ms);return ()=>clearTimeout(timer);}};
@@ -70,7 +71,8 @@ function supervisorRace(f: ReturnType<typeof runtimeFixture>, mismatch?: "sessio
  const local = createLocalRuntime(f.options,f.io);
  let hubStart: Awaited<ReturnType<typeof local.start>> | undefined, signal!:()=>void;
  const started = new Promise<void>(resolve => {signal=resolve;});
- p.start = async (home, placement) => {
+ p.start = async (home, requested) => {
+  const placement = {...requested, historyMachine:home.machineId};
   f.setHome(home);
   const supervisor = createHomeSupervisor({
    machineId:destination, clock:f.options.clock,
@@ -108,25 +110,27 @@ function localCheckout(f: ReturnType<typeof runtimeFixture>) {
  });
  return {file, placement, moving};
 }
-async function launchGateFixture(mode: "relocated" | "returned" | "new" | "restart" = "relocated") {
- const f = runtimeFixture();
+async function launchGateFixture(mode: "relocated" | "returned" | "reassigned" | "new" | "restart" = "relocated") {
+ const machine = mode === "returned" ? hub : box, sourceMachine = mode === "returned" ? box : hub;
+ const f = runtimeFixture(machine);
  f.home.moveId = mode === "new" ? null : "v0-44444444-4444-4444-8444-444444444444" as RunningHome["moveId"];
  if (mode === "new") f.home.epoch = 1;
- const historyMachine = mode === "relocated" ? hub : box;
+ const historyMachine = mode === "new" || mode === "restart" ? machine : hub;
  const checkout = join(f.options.root, "checkout"), file = join(checkout, "session.jsonl");
- const source = createReplica("worktree", hub), global = createReplica("global", hub);
+ const source = createReplica("worktree", sourceMachine), global = createReplica("global", hub);
+ vi.stubEnv("GIT_CEILING_DIRECTORIES", f.options.root);
  fixtures.push(source, global);
- const sourcePlacement = {...f.placement, machineId:hub, repoKey:"fixture-repo", workspaceId:"fixture-workspace",
+ const sourcePlacement = {...f.placement, machineId:sourceMachine, repoKey:"fixture-repo", workspaceId:"fixture-workspace",
   repository:source.root, cwd:source.root, file:join(source.root,"session.jsonl"), stores:[source.storeKey], historyMachine};
- const placement = {...sourcePlacement, machineId:box, repository:checkout, cwd:checkout, file};
+ const placement = {...sourcePlacement, machineId:machine, repository:checkout, cwd:checkout, file};
  mkdirSync(join(checkout, ".spider"), {recursive:true});
  const project = openDb(join(checkout, ".spider", "project.db"));
  fixtures.unshift(project);
- migrate(project, "worktree", {machineId:box, globalRoot:f.options.root});
+ migrate(project, "worktree", {machineId:machine, globalRoot:f.options.root});
  project.prepare("UPDATE roam_meta SET store_key=?").run(source.storeKey);
  f.options.globalDb.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?, ?, ?)")
   .run(placement.repoKey, placement.workspaceId, checkout);
- f.options.homes = createHomeStore({db:f.options.globalDb, hubMachineId:hub, localMachineId:box});
+ f.options.homes = createHomeStore({db:f.options.globalDb, hubMachineId:hub, localMachineId:machine});
  const start = f.io.launch;
  f.io.launch = async request => {
   // Model the startup upsert. If the row is absent, the real DB assigns the local origin.
@@ -138,28 +142,33 @@ async function launchGateFixture(mode: "relocated" | "returned" | "new" | "resta
   {type:"session", version:3, id, cwd:checkout, timestamp},
   {type:"message", id:"entry", parentId:null, timestamp, message:{role:"user", content:[{type:"text",text:"fixture"}]}},
  ].map(line=>JSON.stringify(line)).join("\n")+"\n");
+ let installation: {plan: RelocatePlan; installed: InstalledSession} | undefined;
  if (mode === "relocated" || mode === "returned") {
-  const plan = {moveId:f.home.moveId!, source:{...f.home, machineId:hub, epoch:1, moveId:null}, sourcePlacement,
+  const plan: RelocatePlan = {moveId:f.home.moveId!, source:{...f.home, machineId:sourceMachine, epoch:1, moveId:null}, sourcePlacement,
    destinationPlacement:placement, destinationPrerequisites:[], startedAt:f.home.updatedAt};
   beginLocalMove(plan,f.options);
   const session = await inspectSession(file,id,undefined,f.options.limits);
-  f.options.journal.record(plan.moveId,"relocate-installed",json({installed:{placement,session}}));
+  const installed = {placement,session};
+  recordInstalledSession(f.options.journal,plan.moveId,installed);
+  installation = {plan,installed};
  }
  writeLocal(f.options.globalDb,"relocate-managed",id,placement);
  global.db.exec("UPDATE roam_meta SET capture_enabled=1");
- global.db.prepare("INSERT INTO session_homes VALUES (?, ?, ?, ?, ?, 'running', NULL)")
-  .run(id,box,f.home.epoch,f.home.moveId,f.home.updatedAt);
+ const homeDb = mode === "returned" ? f.options.globalDb : global.db;
+ homeDb.prepare("INSERT INTO session_homes VALUES (?, ?, ?, ?, ?, 'running', NULL)")
+  .run(id,machine,f.home.epoch,f.home.moveId,f.home.updatedAt);
  const importBatch = async (from: typeof source, to: Db) => {
   const batch = await exportBatch(from.db,{after:0,targetBytes:16_384,batchId:`fixture-${from.storeKey}`},{encode:(_entity,body)=>body});
   expect(batch.header.count).toBe(1);
   const now = Date.now();
-  const valid = await validateBatch(batch,{storeKey:from.storeKey,senderMachine:hub,senderStream:batch.header.senderStream,now});
+  const valid = await validateBatch(batch,{storeKey:from.storeKey,senderMachine:from.machineId,senderStream:batch.header.senderStream,now});
   applyBatch(to,valid,{hubMachine:hub,effects:createReplicaEffects(()=>{}),now,sessionHome:key=>sessionHome(f.options.globalDb,key)});
  };
- await importBatch(global,f.options.globalDb);
- const local = createLocalRuntime(f.options,f.io), report = vi.fn();
- const loop = createHomeSupervisor({...local,machineId:box,clock:f.options.clock,report},()=>{});
- return {f,local,project,loop,report,async importSession() {
+ if (mode !== "returned") await importBatch(global,f.options.globalDb);
+ const local = createLocalRuntime(f.options,f.io), supervisor = createRelocateAdapters(f.options).supervisor;
+ const report = vi.fn(supervisor.report);
+ const loop = createHomeSupervisor({...supervisor,...local,report},()=>{});
+ return {f,local,placement,project,loop,report,installation,async importSession() {
   source.db.exec("UPDATE roam_meta SET capture_enabled=1");
   source.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'active')").run(id);
   source.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,1,?)").run(id,historyMachine);
@@ -168,8 +177,8 @@ async function launchGateFixture(mode: "relocated" | "returned" | "new" | "resta
 }
 
 describe("v0 local runtime",()=>{
- it.each([["relocated",hub],["returned",box]] as const)("waits for the committed worktree row for a %s session",async(mode,origin)=>{
-  const {f,loop,report,sessionRow,importSession} = await launchGateFixture(mode);
+ it("waits for the committed worktree row for a relocated session",async()=>{
+  const {f,loop,report,sessionRow,importSession} = await launchGateFixture();
   expect(await f.options.homes.read(id)).toEqual(f.home);
   // Repeated pending passes must not exhaust retries or require advancing the clock.
   for (let pass=0; pass<6; pass++) {
@@ -183,7 +192,15 @@ describe("v0 local runtime",()=>{
   await importSession();
   await loop.tick();
   expect(f.launches).toHaveLength(1);
-  expect(sessionRow()).toEqual({origin_machine:origin,started_at:1});
+  expect(sessionRow()).toEqual({origin_machine:hub,started_at:1});
+ });
+ it("starts a session returned to the origin on the first attempt when its row is already there", async () => {
+  const {f,local,placement,project,sessionRow} = await launchGateFixture("returned");
+  project.prepare("INSERT INTO sessions(id,started_at) VALUES (?,1)").run(id);
+  expect(await local.activate(f.home,placement)).toMatchObject({ok:true});
+  expect(await local.start(f.home,placement)).toMatchObject({ok:true});
+  expect(f.launches).toHaveLength(1);
+  expect(sessionRow()).toEqual({origin_machine:hub,started_at:1});
  });
  it("never starts a relocated session with a conflicting origin",async()=>{
   const {f,project,loop,report,sessionRow} = await launchGateFixture();
@@ -195,6 +212,76 @@ describe("v0 local runtime",()=>{
   }
   expect(report).toHaveBeenCalledExactlyOnceWith(id,expect.objectContaining({code:"home-conflict",message:expect.stringMatching(/different origin/i)}));
  });
+ it.each(["checkout", "mapping"] as const)("refuses a mismatch in the installed %s", async mismatch => {
+  const {f, local, placement, importSession} = await launchGateFixture();
+  await importSession();
+  let requested = placement;
+  if (mismatch === "checkout") requested = {...placement,workspaceId:"wrong-workspace"};
+  else f.options.globalDb.prepare("UPDATE roam_workspace_maps SET path=?").run(join(f.options.root,"other"));
+  const result = await local.start(f.home, requested);
+  expect(result).toMatchObject({ok:false,refusal:{code:"home-conflict",message:expect.stringMatching(
+   mismatch === "checkout" ? /installed session checkout/ : /checkout mapping has changed/),
+   nextStep:expect.stringMatching(/restore the installed checkout/i)}});
+  expect(f.launches).toHaveLength(0);
+ });
+ it("waits when the checkout DB is missing without creating a replacement", async () => {
+  const {f, local, placement, project} = await launchGateFixture();
+  const file = project.raw.name;
+  renameSync(file, `${file}.saved`);
+  try {
+   expect(await local.start(f.home,placement)).toMatchObject({ok:false,refusal:{code:"start-pending",message:expect.stringMatching(/session data has not arrived/i)}});
+   expect(f.launches).toHaveLength(0);
+   expect(existsSync(file)).toBe(false);
+  } finally { renameSync(`${file}.saved`,file); }
+ });
+ it.each(["journal", "database", "mapping"] as const)("names the failed %s check instead of waiting for a launch reply", async broken => {
+  const {f, local, placement, project} = await launchGateFixture();
+  if (broken === "journal") vi.spyOn(f.options.journal,"read").mockImplementation(() => { throw new Error("unreadable journal"); });
+  else if (broken === "database") project.exec("ALTER TABLE sessions RENAME TO inaccessible_sessions");
+  else f.options.globalDb.exec("DELETE FROM roam_workspace_maps");
+  const expected = {journal:["journal-unavailable",/installation journal/i],database:["destination-copy-missing",/checkout database/i],mapping:["repo-unmapped",/workspace mapping/i]} as const;
+  expect(await local.start(f.home,placement)).toMatchObject({ok:false,refusal:{code:expected[broken][0],message:expect.stringMatching(expected[broken][1])}});
+  expect(f.launches).toHaveLength(0);
+ });
+ it("treats a busy checkout DB as pending and tries again after the lock is released", async () => {
+  const {f, local, placement, project, importSession} = await launchGateFixture();
+  expect(await local.activate(f.home,placement)).toMatchObject({ok:true});
+  await importSession();
+  project.pragma("journal_mode = DELETE");
+  project.exec("BEGIN EXCLUSIVE");
+  try {
+   const start = performance.now();
+   const result = await local.start(f.home,placement);
+   expect(result).toMatchObject({ok:false,refusal:{code:"start-pending",message:expect.stringMatching(/checkout database is busy/i)}});
+   expect(performance.now()-start).toBeLessThan(3_000);
+   expect(f.launches).toHaveLength(0);
+  } finally { project.exec("ROLLBACK"); }
+  const started = await local.start(f.home,placement);
+  expect(started,JSON.stringify(started)).toMatchObject({ok:true});
+  expect(f.launches).toHaveLength(1);
+ }, 40_000); // The regression used to spend 30s in SQLite before refusing.
+ it("retries a forced reassignment with no install record without creating a new origin", async () => {
+  const {f,local,placement,sessionRow,importSession} = await launchGateFixture("reassigned");
+  expect(await local.activate(f.home,placement)).toMatchObject({ok:true});
+  expect(await local.start(f.home,placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
+  expect(f.launches).toHaveLength(0);
+  expect(sessionRow()).toBeUndefined();
+  await importSession();
+  const started = await local.start(f.home,placement);
+  expect(started,JSON.stringify(started)).toMatchObject({ok:true});
+  expect(f.launches).toHaveLength(1);
+  expect(sessionRow()).toEqual({origin_machine:hub,started_at:1});
+ });
+ it("clears the stored supervisor refusal after the pending row arrives and Pi starts", async () => {
+  const {f,loop,importSession} = await launchGateFixture();
+  const refusal = () => readLocal(f.options.globalDb,"relocate-supervisor-refusal",id);
+  await loop.tick();
+  expect(refusal()).toMatchObject({code:"start-pending"});
+  await importSession();
+  await loop.tick();
+  expect(f.launches).toHaveLength(1);
+  expect(refusal()).toBeUndefined();
+ });
  it.each(["new","restart"] as const)("starts a %s session without a destination install record on its first pass",async mode=>{
   const {f,loop,report,sessionRow} = await launchGateFixture(mode);
   await loop.tick();
@@ -203,9 +290,12 @@ describe("v0 local runtime",()=>{
   expect(report).not.toHaveBeenCalled();
  });
  it("keeps direct relocate start pending at the readiness deadline while data is missing",async()=>{
-  const {f,local,loop,sessionRow,importSession} = await launchGateFixture();
+  const {f,local,installation,sessionRow,importSession} = await launchGateFixture();
   const p = {...ports(state()), ...local, homes:f.options.homes};
   p.withSession = async (_id,run)=>run();
+  const {plan,installed} = installation!;
+  p.journal.load = async () => ({plan,installed,captured:null,completed:["commit-home"],terminal:null,result:null});
+  p.journal.save = async () => {};
   let enteredConfirm!:()=>void;
   const confirmed = new Promise<void>(resolve=>{enteredConfirm=resolve;});
   p.confirmPending = p.confirm = async (home,placement)=>{
@@ -224,7 +314,9 @@ describe("v0 local runtime",()=>{
    expect(sessionRow()).toBeUndefined();
   } finally { vi.useRealTimers(); }
   await importSession();
-  await loop.tick();
+  p.confirm = async () => ({ok:true,value:{terminal:"core:t"}});
+  expect(await relocate({sessionId:id,destinationMachine:box},p,{clock:readyClock,timeoutMs:1_000}))
+   .toMatchObject({ok:true,value:{disposition:"relocated",home:f.home,terminal:"core:t"}});
   expect(f.launches).toHaveLength(1);
   expect(sessionRow()).toEqual({origin_machine:hub,started_at:1});
  });

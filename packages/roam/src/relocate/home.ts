@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import type { Db } from "@spider/db-core";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { isRoamUuid } from "@spider/db-core/roam/codec";
@@ -9,8 +10,9 @@ import { AwayHomeRecoveryRequired, MacSessionOccupied, MacSourceNotStopped } fro
 import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal, V0Result } from "./types";
 
 type MacSourceCheck = (sessionId: SessionId) => Promise<V0Result<void>>;
-interface HubHomeStore extends HomeStore {
-  compareAndSwap(expected: RelocateHome, next: RelocateHome, checkMacSource?: MacSourceCheck): ReturnType<HomeStore["compareAndSwap"]>;
+export interface HubHomeStore extends HomeStore {
+  compareAndSwap(expected: RelocateHome, next: RelocateHome, checkMacSource?: MacSourceCheck,
+    onApplied?: (home: RelocateHome) => undefined): ReturnType<HomeStore["compareAndSwap"]>;
 }
 
 export const legacyRecordedHomeRefusal: V0Refusal = {
@@ -20,7 +22,6 @@ export const legacyRecordedHomeRefusal: V0Refusal = {
 };
 
 type HomeRow = Record<string, unknown>;
-const COLUMNS = "session_id, machine_id, epoch, move_id, updated_at, state, destination";
 
 function sessionId(value: unknown): asserts value is SessionId {
   if (!validUnicode(value) || !value.trim() || /[\u0000-\u001f\u007f]/.test(value)) throw new Error("Invalid home session ID");
@@ -39,7 +40,8 @@ function moveId(value: unknown): asserts value is RelocateId | null {
 /** State-null rows belong to the unchanged legacy path, not v0 admission. */
 function parseHome(row: HomeRow | undefined): RelocateHome | null {
   if (!row) return null;
-  if (row.state === null && row.destination === null) return null;
+  if ((row.state === null && row.destination === null) ||
+      (row.state === undefined && row.destination === undefined)) return null;
   sessionId(row.session_id); machineId(row.machine_id); epoch(row.epoch); moveId(row.move_id);
   if (typeof row.updated_at !== "number" || !Number.isSafeInteger(row.updated_at) || row.updated_at < 0)
     throw new Error("Invalid home timestamp");
@@ -54,11 +56,24 @@ function parseHome(row: HomeRow | undefined): RelocateHome | null {
   throw new Error("Invalid home state or destination");
 }
 
-function row(home: RelocateHome): HomeRow {
-  return { session_id: home.sessionId, machine_id: home.machineId, epoch: home.epoch,
-    move_id: home.moveId, updated_at: home.updatedAt, state: home.state, destination: home.destination };
+export function decodeManagedHome(home: Record<string, unknown>): RelocateHome {
+  const decoded = parseHome({ session_id: home.sessionId, machine_id: home.machineId, epoch: home.epoch,
+    move_id: home.moveId, updated_at: home.updatedAt, state: home.state, destination: home.destination });
+  if (!decoded) throw new Error("Expected a managed home");
+  return decoded;
 }
-function same(a: RelocateHome | null, b: RelocateHome): boolean {
+
+function findHomeRow(db: Db, id: SessionId): HomeRow | undefined {
+  // Pre-v0 stores have neither state nor destination.
+  return db.prepare("SELECT * FROM session_homes WHERE session_id=?").get(id) as HomeRow | undefined;
+}
+
+export function readManagedHome(db: Db, id: SessionId): RelocateHome | null {
+  sessionId(id);
+  return parseHome(findHomeRow(db, id));
+}
+
+export function sameManagedHome(a: RelocateHome | null, b: RelocateHome): boolean {
   return a !== null && a.sessionId === b.sessionId && a.machineId === b.machineId && a.epoch === b.epoch &&
     a.state === b.state && a.destination === b.destination && a.moveId === b.moveId && a.updatedAt === b.updatedAt;
 }
@@ -83,7 +98,6 @@ async function reserveMacSession(root: string, sessionId: SessionId) {
 export function createHomeStore(options: HomeStoreOptions): HubHomeStore {
   const { db, hubMachineId, localMachineId } = options;
   machineId(hubMachineId); machineId(localMachineId);
-  const find = (id: SessionId) => db.prepare(`SELECT ${COLUMNS} FROM session_homes WHERE session_id=?`).get(id) as HomeRow | undefined;
   function requireHub(): void {
     if (localMachineId !== hubMachineId) throw new Error("Only the hub may mutate homes");
     const meta = db.prepare("SELECT machine_id, store_key FROM roam_meta WHERE id=1").get() as HomeRow | undefined;
@@ -91,16 +105,16 @@ export function createHomeStore(options: HomeStoreOptions): HubHomeStore {
       throw new Error("Home database identity does not match the hub");
   }
   return {
-    async read(id) { sessionId(id); return parseHome(find(id)); },
+    async read(id) { return readManagedHome(db, id); },
     async list() {
-      const rows = db.prepare(`SELECT ${COLUMNS} FROM session_homes ORDER BY session_id`).all() as HomeRow[];
+      const rows = db.prepare("SELECT * FROM session_homes ORDER BY session_id").all() as HomeRow[];
       return rows.map(parseHome).filter((home): home is RelocateHome => home !== null);
     },
     async initialize(id, sourceMachine) {
       sessionId(id); machineId(sourceMachine);
       return db.withRetry(() => db.raw.transaction(() => {
         requireHub();
-        const old = find(id);
+        const old = findHomeRow(db, id);
         if (old) {
           if (old.machine_id !== sourceMachine) throw new Error("Home owner does not match the source");
           const managed = parseHome(old);
@@ -115,32 +129,35 @@ export function createHomeStore(options: HomeStoreOptions): HubHomeStore {
           db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?, ?, 1, NULL, ?, 'running', NULL)")
             .run(id, sourceMachine, Date.now());
         }
-        return parseHome(find(id)) as RunningHome;
+        return readManagedHome(db, id) as RunningHome;
       }).immediate());
     },
-    async compareAndSwap(expected, next, checkMacSource) {
-      if (!parseHome(row(expected)) || !parseHome(row(next))) throw new Error("CAS requires managed homes");
+    async compareAndSwap(expected, next, checkMacSource, onApplied) {
+      decodeManagedHome(expected); decodeManagedHome(next);
       if (expected.sessionId !== next.sessionId || expected.epoch === Number.MAX_SAFE_INTEGER || next.epoch !== expected.epoch + 1)
         throw new Error("Home CAS must increment exactly one safe epoch");
       const apply = () => db.withRetry(() => db.raw.transaction(() => {
         requireHub();
-        const current = parseHome(find(expected.sessionId));
-        if (same(current, next)) return {kind:"already-applied" as const,home:current!};
+        const current = readManagedHome(db, expected.sessionId);
+        if (sameManagedHome(current, next)) return {kind:"already-applied" as const,home:current!};
         const result = db.prepare(`UPDATE session_homes SET machine_id=?, epoch=?, move_id=?, updated_at=?, state=?, destination=?
           WHERE session_id=? AND machine_id=? AND epoch=? AND state=? AND destination IS ? AND move_id IS ? AND updated_at=?`)
           .run(next.machineId,next.epoch,next.moveId,next.updatedAt,next.state,next.destination,
             expected.sessionId,expected.machineId,expected.epoch,expected.state,expected.destination,expected.moveId,expected.updatedAt);
-        const home = parseHome(find(expected.sessionId));
-        return result.changes === 1 ? {kind:"applied" as const,home:home!} : {kind:"conflict" as const,home};
+        const home = readManagedHome(db, expected.sessionId);
+        if (result.changes !== 1) return { kind: "conflict" as const, home };
+        if (!home) throw new Error("Applied CAS did not leave a managed home");
+        onApplied?.(home);
+        return { kind: "applied" as const, home };
       }).immediate());
       if (next.state !== "running") return apply();
       const { sessionId, machineId, epoch, moveId } = next;
       const root = dirname(db.raw.name);
       requireHub();
       return withAwayHomeFenceLock(root, sessionId, async () => {
-        const current = parseHome(find(sessionId));
-        if (same(current, next)) return { kind: "already-applied", home: next };
-        if (!same(current, expected)) return { kind: "conflict", home: current };
+        const current = readManagedHome(db, sessionId);
+        if (sameManagedHome(current, next)) return { kind: "already-applied", home: next };
+        if (!sameManagedHome(current, expected)) return { kind: "conflict", home: current };
         const fence = await readAwayHomeFence(root, sessionId);
         if (fence && expected.epoch <= fence.epoch && !matchesFence(expected, fence) &&
             !(expected.state === "moving" && matchesFence(next, fence))) {

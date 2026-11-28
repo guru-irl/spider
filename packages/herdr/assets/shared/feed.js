@@ -246,6 +246,7 @@ function ipcView(value) {
     && (value.contextWindow === undefined || value.contextWindow === null || ipcCount(value.contextWindow) && value.contextWindow > 0)
     && (value.iconStyle === undefined || ipcOne(value.iconStyle, ['text', 'nerd']))
     && (value.inputBand === undefined || typeof value.inputBand === 'boolean')
+    && (value.accent === undefined || ipcString(value.accent))
     && (value.working === undefined || typeof value.working === 'boolean')
     && (value.creditFactor === undefined || value.creditFactor === null || typeof value.creditFactor === 'number' && Number.isFinite(value.creditFactor) && value.creditFactor >= 0);
 }

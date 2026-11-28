@@ -2,12 +2,14 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
 import { stripTerminalSequences, visibleWidth, type TUI } from '@earendil-works/pi-tui';
+import { initTheme, type Theme } from '@earendil-works/pi-coding-agent';
 import { createPiRunView, type PiRunView } from '../viewers/pi-app.js';
 
 const views: PiRunView[] = [];
 afterEach(() => {
   for (const view of views.splice(0)) view.dispose();
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 function make(requestRender = vi.fn()): PiRunView {
   const ui = { requestRender, setFocus: vi.fn(), terminal: { columns: 100, rows: 30 } } as unknown as TUI;
@@ -38,6 +40,33 @@ test('viewer input uses the shared band and keeps a draft across reconnect', () 
   expect(view.editor).toBeNull();
   view.setState(running);
   expect(view.editor!.getText()).toBe('Keep the retry limit at three.');
+});
+
+test('viewer moon and input band follow the owning session accent', () => {
+  vi.stubEnv('COLORTERM', 'truecolor');
+  const view = make();
+  view.setState(running);
+  view.setRunInfo({ protocol: 2, accent: 'green' });
+  const green = view.render(72).join('\n');
+  expect(green).toContain('\x1b[38;2;80;250;123m▖');
+  expect(green).toContain('\x1b[38;2;80;250;123m◐');
+  view.setRunInfo({ protocol: 2, accent: 'pink' });
+  const pink = view.render(72).join('\n');
+  expect(pink).toContain('\x1b[38;2;255;121;198m▖');
+  expect(pink).toContain('\x1b[38;2;255;121;198m◐');
+});
+
+test('viewer keeps the owner accent when Pi replaces its theme', () => {
+  vi.stubEnv('COLORTERM', 'truecolor');
+  const view = make();
+  view.setState(running);
+  view.setRunInfo({ protocol: 2, accent: 'green' });
+  view.editor!.setText('draft');
+  initTheme('light', false);
+  const active = (globalThis as Record<symbol, Theme>)[Symbol.for('@earendil-works/pi-coding-agent:theme')];
+  const row = view.render(72).find(line => stripTerminalSequences(line).includes('draft'))!;
+  expect(row).toContain(active.getBgAnsi('userMessageBg'));
+  expect(row).toContain('\x1b[38;2;80;250;123m▌');
 });
 
 test('viewer respects the owning session input-band preference without losing its draft', () => {

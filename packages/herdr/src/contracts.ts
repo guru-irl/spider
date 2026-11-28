@@ -377,7 +377,7 @@ export const RUN_VIEW_PROTOCOL = 2;
 export interface RunViewInfo {
   protocol: number; sessionFile?: string | null; model?: string | null; modelName?: string | null;
   thinking?: string | null; contextWindow?: number | null;
-  iconStyle?: 'text' | 'nerd'; inputBand?: boolean; creditFactor?: number | null; working?: boolean;
+  iconStyle?: 'text' | 'nerd'; inputBand?: boolean; creditFactor?: number | null; working?: boolean; accent?: string;
 }
 /** Stream frames are at most 256 KiB; overflow ends a subscription for cursor-based reconnect. */
 export type RunViewFrame =

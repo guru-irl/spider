@@ -22,13 +22,14 @@ export interface SessionReconcilePorts {
 
 export interface SessionReconciler {
   reconcile(home: StoppedHome): Promise<void>;
+  reconcileLocalOnce(home: StoppedHome): Promise<void>;
   afterPeerSync(peer: MachineId): void;
   resume(): void;
   close(): Promise<void>;
 }
 
 type StopRecord = Exclude<SessionTransition, { action: "start" }>;
-type Intent = "publish" | "contact" | "poll";
+type Intent = "publish" | "contact" | "poll" | "local-once";
 type Contact = {
   home: StoppedHome;
   observer: MachineId;
@@ -175,10 +176,13 @@ export function createSessionReconciler(ports: SessionReconcilePorts): SessionRe
     contact.cancelTimer = undefined;
     const { home, observer } = contact;
     const key = keyOf(home, observer);
-    if (closing || !ports.mayContact(observer)) { contacts.delete(key); return; }
+    // A one-shot local recovery may enforce its saved row even when replication is disabled.
+    const localOnce = intent === "local-once" && observer === ports.localMachineId;
+    const mayContact = () => localOnce || ports.mayContact(observer);
+    if (closing || !mayContact()) { contacts.delete(key); return; }
     const initialMode = saved(home)?.mode;
     let expired = false;
-    const active = () => !expired && ports.mayContact(observer);
+    const active = () => !expired && mayContact();
     let cancel!: () => void;
     const deadline = new Promise<undefined>(resolve => {
       cancel = clock.later(ports.readyMs, () => { expired = true; resolve(undefined); });
@@ -188,7 +192,7 @@ export function createSessionReconciler(ports: SessionReconcilePorts): SessionRe
       expired = true; // Ignore replies and queued writes after the budget expires.
       cancel();
       contact.flight = undefined;
-      if (closing || !ports.mayContact(observer)) { contacts.delete(key); return; }
+      if (closing || localOnce || !ports.mayContact(observer)) { contacts.delete(key); return; }
       const record = saved(home);
       if (!record || hasStopProof(home, observer, record)) { contacts.delete(key); return; }
       if (observer === home.machineId && initialMode !== record.mode && contact.sentMode !== record.mode) {
@@ -208,14 +212,17 @@ export function createSessionReconciler(ports: SessionReconcilePorts): SessionRe
     contact.cancelTimer = clock.later(ms, () => { void start(contact, intent).catch(() => {}); });
   }
 
+  function contactFor(home: StoppedHome, observer: MachineId): Contact {
+    const key = keyOf(home, observer);
+    let contact = contacts.get(key);
+    if (!contact) contacts.set(key, contact = { home, observer });
+    return contact;
+  }
+
   function forObservers(record: StopRecord, visit: (contact: Contact) => void, peer?: MachineId) {
     for (const observer of new Set([record.committed.machineId, ...record.displaced])) {
       if (peer !== undefined && peer !== observer || !ports.mayContact(observer)) continue;
-      const home = record.committed;
-      const key = keyOf(home, observer);
-      let contact = contacts.get(key);
-      if (!contact) contacts.set(key, contact = { home, observer });
-      visit(contact);
+      visit(contactFor(record.committed, observer));
     }
   }
 
@@ -227,6 +234,10 @@ export function createSessionReconciler(ports: SessionReconcilePorts): SessionRe
       const rounds: Promise<void>[] = [];
       forObservers(record, contact => rounds.push(start(contact, "publish")));
       await Promise.allSettled(rounds);
+    },
+    async reconcileLocalOnce(home) {
+      if (closing || home.machineId !== ports.localMachineId || !saved(home)) return;
+      await start(contactFor(home, ports.localMachineId), "local-once");
     },
     afterPeerSync(peer) {
       if (closing || !ports.mayContact(peer)) return;

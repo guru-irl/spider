@@ -1,8 +1,12 @@
 import type { RoamConfig } from "../contracts";
 import { AwayHomeRecoveryRequired, MacSessionOccupied, MacSourceNotStopped } from "./home-refusals";
-import type { RunningHome, SetHomePorts, SetHomeRequest, V0Refusal, V0RefusalCode, V0Result } from "./types";
+import type { HomeCasResult, RelocateHome, SetHomePorts, SetHomeRequest, SettledHome, StoppedHome, V0Refusal, V0RefusalCode, V0Result } from "./types";
 
 type ReplicationAvailability = Pick<RoamConfig, "enabled" | "machineId">;
+
+export type ForceHomePorts = SetHomePorts & {
+  commitStopped?(expected: RelocateHome, home: StoppedHome): Promise<HomeCasResult>;
+};
 
 export function setHomeReplicationRefusal(destination: string, replication: ReplicationAvailability): V0Refusal | null {
   return replication.enabled || destination === replication.machineId ? null : {
@@ -17,11 +21,11 @@ export const forceWarning: string = "The old source must not run again. Unsynced
   "systemctl --user disable --now spider-roam-supervisor-v0.service on that box before it reconnects. " +
   "If the legacy unit is still installed, also run systemctl --user disable --now spider-roam-supervisor.service.";
 
-function refuse(code: V0RefusalCode, message: string, nextStep: string): V0Result<RunningHome> {
+function refuse(code: V0RefusalCode, message: string, nextStep: string): V0Result<SettledHome> {
   return {ok:false,refusal:{code,message,nextStep}};
 }
 
-export async function setHome(request: SetHomeRequest, ports: SetHomePorts, replication?: ReplicationAvailability): Promise<V0Result<RunningHome>> {
+export async function setHome(request: SetHomeRequest, ports: ForceHomePorts, replication?: ReplicationAvailability): Promise<V0Result<SettledHome>> {
   const {sessionId,destinationMachine} = request;
   const phrase = `reassign ${sessionId} to ${destinationMachine}; source will not run`;
   if (!request.force || request.confirmation !== phrase) {
@@ -40,11 +44,15 @@ export async function setHome(request: SetHomeRequest, ports: SetHomePorts, repl
         failure = "destination-copy-missing";
         const located = await ports.locate(destinationMachine,sessionId);
         if (!located.ok) return located;
-        const next: RunningHome = {sessionId,machineId:destinationMachine,epoch:current.epoch+1,
-          state:"running",destination:null,moveId:ports.newMoveId(),updatedAt:Date.now()};
+        const next: SettledHome = {sessionId,machineId:destinationMachine,epoch:current.epoch+1,
+          state:current.state === "running" ? "running" : "stopped",destination:null,moveId:ports.newMoveId(),updatedAt:Date.now()};
         failure = "home-unavailable";
-        const changed = await ports.homes.compareAndSwap(current,next);
+        const changed = next.state === "stopped" ? await ports.commitStopped?.(current,next) : await ports.homes.compareAndSwap(current,next);
+        if (!changed) return refuse("home-unavailable", "This service cannot save a stopped home assignment.",
+          "Update the Mac roaming service, then retry set-home --force.");
         if (changed.kind === "conflict") return refuse("home-conflict", "The home changed before reassignment.", "Read the current home and confirm its reassignment again.");
+        // The hub publishes and reconciles this row after releasing the operation lock.
+        if (next.state === "stopped") return {ok:true,value:next};
         failure = "install-failed";
         const activated = await ports.activate(next,located.value);
         if (!activated.ok) return activated;

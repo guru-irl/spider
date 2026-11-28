@@ -7,7 +7,7 @@ import { validUnicode } from "@spider/db-core/roam/hlc";
 import type { MachineId } from "@spider/db-core/roam/types";
 import { publishAwayHomeFence, readAwayHomeFence, withAwayHomeFenceLock, type AwayHomeFence } from "./away-home";
 import { AwayHomeRecoveryRequired, MacSessionOccupied, MacSourceNotStopped } from "./home-refusals";
-import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal, V0Result } from "./types";
+import type { HomeCasResult, HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal, V0Result } from "./types";
 
 type MacSourceCheck = (sessionId: SessionId) => Promise<V0Result<void>>;
 export interface HubHomeStore extends HomeStore {
@@ -150,9 +150,22 @@ export function createHomeStore(options: HomeStoreOptions): HubHomeStore {
         onApplied?.(home);
         return { kind: "applied" as const, home };
       }).immediate());
-      if (next.state !== "running") return apply();
       const { sessionId, machineId, epoch, moveId } = next;
       const root = dirname(db.raw.name);
+      async function withMacReservation(commit: () => HomeCasResult | Promise<HomeCasResult>): Promise<HomeCasResult> {
+        const owner = await reserveMacSession(root, sessionId);
+        try {
+          if (expected.machineId === hubMachineId && checkMacSource) {
+            const stopped = await checkMacSource(sessionId);
+            if (!stopped.ok) throw new MacSourceNotStopped(stopped.refusal);
+          }
+          return await commit();
+        } finally { await owner.release(); }
+      }
+      // Force supplies its own source check, even for an away source. A stopped
+      // assignment must not advance a stale database past a possible running grant.
+      const stoppedForce = next.state === "stopped" && checkMacSource !== undefined;
+      if (next.state !== "running" && !stoppedForce) return apply();
       requireHub();
       return withAwayHomeFenceLock(root, sessionId, async () => {
         const current = readManagedHome(db, sessionId);
@@ -166,17 +179,16 @@ export function createHomeStore(options: HomeStoreOptions): HubHomeStore {
           throw new AwayHomeRecoveryRequired(fence, pendingRelocation);
         }
         if (machineId === hubMachineId) return apply();
+        if (next.state === "stopped") {
+          // Reserve the Mac source without publishing or clearing an away fence.
+          return expected.machineId === hubMachineId ? withMacReservation(apply) : apply();
+        }
         if (!moveId) throw new Error("An away home needs a move ID");
-        const owner = await reserveMacSession(root, sessionId);
-        try {
-          if (current?.machineId === hubMachineId && checkMacSource) {
-            const stopped = await checkMacSource(sessionId);
-            if (!stopped.ok) throw new MacSourceNotStopped(stopped.refusal);
-          }
+        return withMacReservation(async () => {
           // If the process dies or the CAS loses after publication, the fence stays fail-closed.
           await publishAwayHomeFence(root, sessionId, { machineId, epoch, moveId });
-          return await apply();
-        } finally { await owner.release(); }
+          return apply();
+        });
       });
     },
   };

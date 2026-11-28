@@ -14,12 +14,12 @@ import { openOutgoingStaging } from "../staging";
 import { createHomeStore, type HubHomeStore } from "./home";
 import { withV0HomeLifecycle } from "./home-lifecycle";
 import { relocate, type SettledRelocateOutcome, type StoppedPlacementPorts } from "./relocate";
-import { setHome } from "./set-home";
+import { setHome, type ForceHomePorts } from "./set-home";
 import { createSessionOperations, type SessionOperations } from "./session-operations";
 import { createSessionReconciler, type SessionReconciler } from "./session-reconcile";
 import { createStopCommand } from "./session-stop";
 import { createStartCommand } from "./session-start";
-import { createSessionStopStore, hasStopProof, projectSessionStatus } from "./session-stop-store";
+import { createSessionStopStore, displacedByForce, hasStopProof, projectSessionStatus } from "./session-stop-store";
 import type { SessionOutcome, SessionStatus, StartRequest, StopRequest } from "./session-stop-types";
 import { createRelocateAdapters, type StopRelocateAdapters } from "./adapters";
 import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent, refusal } from "./remote";
@@ -27,8 +27,8 @@ import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local"
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
-import { serveV0Control, summarizeSync, type V0HubControlServices, type V0SyncOutcome } from "./service";
-import type { RelocateAdapterOptions, HomeStore, RelocateHome, RunningHome, SessionId, SetHomePorts, V0ControlServices, V0Result } from "./types";
+import { serveV0Control, summarizeSync, type V0HubControlServices, type V0PlacementControlServices, type V0SyncOutcome } from "./service";
+import type { RelocateAdapterOptions, HomeStore, RelocateHome, RunningHome, SessionId, SetHomeRequest, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
   openCore?: (root: string) => LocalCore;
@@ -37,6 +37,7 @@ export interface V0RuntimeOverrides {
   clock?: Clock;
   gitRun?: GitPorts["run"];
   liveHub?: boolean;
+  localRecovery?: true;
 }
 export interface V0Runtime {
   options: RelocateAdapterOptions;
@@ -117,7 +118,8 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     });
     const transport=createV0ArtifactTransport(createV0SyncTransport(raw),config.machineId);
     const localClock=overrides.clock ?? clock;
-    const liveHub = overrides.liveHub && config.role === "hub" && config.machineId === config.hubMachineId;
+    const isHub = config.role === "hub" && config.machineId === config.hubMachineId;
+    const liveHub = overrides.liveHub && isHub;
     let reconciler: SessionReconciler | undefined;
     const sync=createSync({config,globalDb:core.db,transport,journal,clock:localClock,stores,
       ...(liveHub && { onPeerSync(peer) { reconciler?.afterPeerSync(peer.machineId); } }),
@@ -142,10 +144,6 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       },
     }};
     const adapters=createRelocateAdapters(options);
-    const setHomePorts: SetHomePorts = { ...adapters.setHome, homes: {
-      ...homes,
-      compareAndSwap: (expected, next) => homes.compareAndSwap(expected, next, id => checkMacSourceWriters(id, options)),
-    } };
     const relocatePorts = {
       ...adapters.ports,
       async unlabelledLocalRunner(home: RunningHome) {
@@ -161,6 +159,19 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     const operations = createSessionOperations();
     // The operation binding and transition must be on the home CAS connection.
     const stopStore = createSessionStopStore(core.db);
+    const checkMacSource = (id: SessionId) => checkMacSourceWriters(id, options);
+    const setHomePorts: ForceHomePorts = {
+      ...adapters.setHome,
+      homes: { ...homes, compareAndSwap: (expected, next) => homes.compareAndSwap(expected, next, checkMacSource) },
+      commitStopped(expected, home) {
+        const operationId = home.moveId;
+        if (!operationId) throw new Error("A stopped force requires a move ID");
+        return homes.compareAndSwap(expected, home, checkMacSource, () => stopStore.write({
+          action: "force", operationId, expected, committed: home, mode: "graceful",
+          displaced: displacedByForce(expected, home, stopStore.current(home.sessionId)), observations: [], contactReason: null,
+        }));
+      },
+    };
     const stopPorts = { operations, store: stopStore, homes, withSession: adapters.ports.withSession,
       clock: localClock, readyMs: config.limits.readyMs };
     const start = liveHub ? createStartCommand({ ...stopPorts, ...adapters.start, localMachineId: config.machineId, enabled: () => config.enabled }) : undefined;
@@ -188,12 +199,12 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         }));
       },
     } : undefined;
-    reconciler = liveHub ? createSessionReconciler({ ...stopPorts, machines: adapters.stop, localMachineId: config.machineId,
+    reconciler = isHub ? createSessionReconciler({ ...stopPorts, machines: adapters.stop, localMachineId: config.machineId,
       mayContact: machine => config.enabled && (machine === config.machineId || config.peers.some(peer => peer.machineId === machine)),
       reconcileStart: start?.reconcile,
     }) : undefined;
-    const stop = reconciler && createStopCommand({ ...stopPorts, enabled: () => config.enabled,
-      reconcile: reconciler.reconcile, subscribe: stopStore.subscribe });
+    const stop = liveHub && reconciler ? createStopCommand({ ...stopPorts, enabled: () => config.enabled,
+      reconcile: reconciler.reconcile, subscribe: stopStore.subscribe }) : undefined;
     let closing:Promise<void>|undefined;
     const revokedDestination = { ok: false, refusal: forgottenDestinationRefusal } as const;
     return {options,adapters,homes,operations,sync,services:{
@@ -240,7 +251,7 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         // Reconciliation may queue writes for this session. Wait only after
         // releasing the turn and the operation's process lock.
         const home = outcome.ok ? outcome.value.home : outcome.home;
-        if (reconciler && home?.state === "stopped" &&
+        if (liveHub && reconciler && home?.state === "stopped" &&
             (outcome.ok || outcome.step !== "check" && outcome.moveId !== null && outcome.moveId === home.moveId)) {
           await reconciler.reconcile(home);
           if (outcome.ok && "stop" in outcome.value)
@@ -248,11 +259,17 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         }
         return outcome;
       },
-      setHome(request) {
-        return operations.enqueue(request.sessionId, async () => {
+      async setHome(request) {
+        const result = await operations.enqueue(request.sessionId, async () => {
           if (forgotten(request.destinationMachine)) return revokedDestination;
           return setHome(request,setHomePorts,config);
         });
+        if (result.ok && result.value.state === "stopped") {
+          // Reconciliation can take both locks to save evidence. The assignment is already durable.
+          if (overrides.localRecovery || !config.enabled) await reconciler?.reconcileLocalOnce(result.value);
+          else await reconciler?.reconcile(result.value);
+        }
+        return result;
       },
     },
       async stopSession(request) {
@@ -264,7 +281,7 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       return start(request);
     },
     async sessionStatus(id) { return cachedStatus(await homes.read(id), id); },
-    resumeSessionStops() { reconciler?.resume(); },
+    resumeSessionStops() { if (liveHub) reconciler?.resume(); },
     close() {return closing ??= (async()=>{
       sync.stop();
       try {
@@ -312,14 +329,14 @@ async function withV0HubLock<T>(root: string, run: () => Promise<T>): Promise<T>
   }
 }
 
-export async function recoverMacHomeWithoutHub(root: string, request: Parameters<V0ControlServices["setHome"]>[0]): ReturnType<V0ControlServices["setHome"]> {
+export async function recoverMacHomeWithoutHub(root: string, request: SetHomeRequest): ReturnType<V0PlacementControlServices["setHome"]> {
   return withV0HubLock(root, async () => {
     const config = readLocalIdentity(root);
     if (config.enabled || config.role !== "hub" || config.machineId !== config.hubMachineId || request.destinationMachine !== config.machineId) {
       return {ok:false,refusal:{code:"home-unavailable",message:"Local reassignment requires disabled roaming on the Mac.",
         nextStep:"If roaming is enabled, start the v0 hub on the Mac and retry set-home --force."}};
     }
-    const runtime = createV0Runtime(root);
+    const runtime = createV0Runtime(root, { localRecovery: true });
     try { return await runtime.services.setHome(request); }
     finally { await runtime.close(); }
   });

@@ -2,6 +2,7 @@ import type { Db } from "@spider/db-core";
 import { isRoamUuid } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import type { MachineId } from "@spider/db-core/roam/types";
 import { decodeManagedHome, sameManagedHome } from "./home";
 import type { OperationBinding, SessionStatus, SessionStopStore, SessionTransition, StopBlocker, StopMode, StopObservation } from "./session-stop-types";
 import type { RelocateHome, SessionId, StoppedHome } from "./types";
@@ -166,6 +167,15 @@ function confirmedExit(observation: StopObservation | undefined): boolean {
 export function hasStopProof(home: StoppedHome, observer: string, record: { observations: readonly StopObservation[] }): boolean {
   const observation = record.observations.find(item => item.machineId === observer);
   return !!observation && observation.sessionId === home.sessionId && sameManagedHome(observation.home, home) && confirmedExit(observation);
+}
+
+export function displacedByForce(expected: RelocateHome, home: StoppedHome, record: SessionTransition | null): MachineId[] {
+  const prior = record && record.action !== "start" ? record : null;
+  const displaced = new Set(prior?.displaced.filter(machine => !hasStopProof(prior.committed, machine, prior)));
+  const sourceConfirmed = expected.state === "stopped" && prior && sameManagedHome(prior.committed, expected) &&
+    hasStopProof(expected, expected.machineId, prior);
+  if (expected.machineId !== home.machineId && !sourceConfirmed) displaced.add(expected.machineId);
+  return [...displaced];
 }
 
 function describeBlocker(blocker: StopBlocker): string {

@@ -29,7 +29,7 @@ type Child = Identity & { kind: "verified" | "run" | "detached" | "unclassified"
 // Earlier proofs marked only verified subagent children as "run".
 const verifiedChild = (child: Child) => child.kind === "verified" || child.kind === "run";
 type Capture = { owner: OwnerGeneration; terminal: string | null; children: Child[] };
-type Proof = { home: StoppedHome; bootId: string; observedAt: number; evidence: Evidence; capture: Capture | null };
+type Proof = { home: StoppedHome; bootId: string; observedAt: number; evidence: Evidence; capture: Capture | null; carried?: readonly Identity[] };
 type ModeRecord = { home: StoppedHome; mode: StopMode };
 type Location = { file: string | null; cwd: string | null; local: boolean };
 type Owner = { generation: OwnerGeneration; terminal: string | null; admitted: boolean };
@@ -45,22 +45,26 @@ const knownText = (value: unknown): value is string => typeof value === "string"
 class StopCheck extends Error {}
 class WindowEnded extends Error {}
 
-function readProof(db: Db, home: StoppedHome, bootId: string): Proof | null {
+function readProof(db: Db, home: StoppedHome, bootId: string, scope: "exact" | "include-earlier" = "exact"): Proof | null {
   const proof = readLocal<Proof>(db, proofState, home.sessionId);
   if (proof === undefined) return null;
   if (!proof || !knownText(proof.bootId)) throw new StopCheck(unavailable);
-  if (!sameManagedHome(decodeManagedHome(object(proof.home)), home) || proof.bootId !== bootId) return null;
+  const savedHome = decodeManagedHome(object(proof.home));
+  if (proof.bootId !== bootId || savedHome.state !== "stopped" || savedHome.sessionId !== home.sessionId ||
+      (!sameManagedHome(savedHome, home) && !(scope === "include-earlier" && savedHome.epoch < home.epoch))) return null;
   const identity = (value: Identity) => safePid(value?.pid) && knownText(value?.startIdentity);
   const owner = (value: OwnerGeneration) => identity(value) && value.bootId === bootId;
   if (!Number.isSafeInteger(proof.observedAt) || proof.observedAt < 0 || !proof.evidence ||
       (proof.evidence.kind === "confirmed" ? proof.evidence.owner !== null && !owner(proof.evidence.owner)
         : proof.evidence.kind === "pending" ? !knownText(proof.evidence.reason) || !Array.isArray(proof.evidence.blockers)
         : proof.evidence.kind !== "checking") ||
+      proof.carried !== undefined && (!Array.isArray(proof.carried) || !proof.carried.every(identity) ||
+        proof.evidence.kind === "confirmed" && proof.carried.length > 0) ||
       proof.capture !== null && (!owner(proof.capture.owner) ||
         proof.capture.terminal !== null && !knownText(proof.capture.terminal) || !Array.isArray(proof.capture.children) ||
         !proof.capture.children.every(child => identity(child) && child.pid !== proof.capture!.owner.pid &&
           ["verified", "run", "detached", "unclassified"].includes(child.kind)))) throw new StopCheck(unavailable);
-  return proof;
+  return { ...proof, home: savedHome };
 }
 
 /** This transaction does not take the session lock, so it can upgrade a wait in progress. */
@@ -151,6 +155,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
     const time = budget(clock, options.limits.readyMs);
     let home: RelocateHome | null = null, bootId: string | null = null;
     let capture: Capture | null = null;
+    let carried: readonly Identity[] = [];
     let proofUnreadable = false;
     const observation = (evidence: Evidence, observedAt = clock.now()): StopObservation => ({ sessionId: id, machineId, home, bootId, observedAt, evidence });
     const mismatch = () => new StopCheck(home ? "The local home differs from the requested stopped home." : "The stopped home is missing locally.");
@@ -172,6 +177,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       if (boot !== bootId) {
         bootId = boot || null;
         capture = null;
+        carried = [];
         throw new StopCheck("The local boot changed during the stop check.");
       }
       await readHome(until);
@@ -187,7 +193,9 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
         // capture. Malformed storage can prevent even that replacement, but
         // must not prevent enforcement of the exact stopped home.
         if (proofUnreadable && !capture) return;
-        try { writeLocal(db, proofState, id, { home: expected, bootId, observedAt: at, evidence, capture } satisfies Proof); }
+        try { writeLocal(db, proofState, id, { home: expected, bootId, observedAt: at, evidence, capture,
+          ...(carried.length ? { carried } : {}),
+        } satisfies Proof); }
         catch (error) { if (!proofUnreadable) throw error; }
       }).immediate();
       return observation(evidence, at);
@@ -396,6 +404,12 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
         if (child.kind !== "detached" || !jobs.blockers.some(blocker => blocker.kind === "job"))
           blockers.push(check(`A captured process is still present or unverified (PID ${child.pid}).`));
       }
+      const stillCarried: Identity[] = [];
+      for (const identity of carried) if (!await gone(identity)) {
+        stillCarried.push(identity);
+        blockers.push(check(`A captured process is still present or unverified (PID ${identity.pid}).`));
+      }
+      carried = stillCarried;
       const latest = await currentOwner(location);
       if (latest.owner || !latest.terminalsKnown) blockers.push(check("The owner or labelled terminals are not verified absent."));
       if (blockers.length) return save(pending("Local session work has not been verified absent.", [...new Map(blockers.map(b => [JSON.stringify(b), b])).values()]));
@@ -408,15 +422,24 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       try {
         await readInitialState();
         let prior: Proof | null = null;
-        try { prior = readProof(db, expected, bootId!); }
+        try { prior = readProof(db, expected, bootId!, "include-earlier"); }
         catch {
           proofUnreadable = true;
           recordBlockers.push(check("The local stop proof could not be read."));
         }
-        if (prior?.evidence.kind === "confirmed" && await shortCheck().catch(() => false))
+        const exact = prior && sameManagedHome(prior.home, expected);
+        if (prior?.evidence.kind === "confirmed" && exact && await shortCheck().catch(() => false))
           return observation(prior.evidence, prior.observedAt);
-        // A new launch contradicts confirmation. Never reuse that old tree.
-        capture = prior?.evidence.kind === "confirmed" ? null : prior?.capture ?? null;
+        carried = prior?.carried ?? [];
+        if (prior?.capture && prior.evidence.kind !== "confirmed") {
+          if (exact) capture = prior.capture;
+          else {
+            // A new stopped epoch does not make the old tree disappear. Its
+            // process identities can block exit, but cannot authorize a signal.
+            const previous = [...carried, prior.capture.owner, ...prior.capture.children];
+            carried = [...new Map(previous.map(({ pid, startIdentity }) => [JSON.stringify([pid, startIdentity]), { pid, startIdentity }])).values()];
+          }
+        }
         const displaced = expected.machineId !== machineId;
         let location: Location;
         try { location = locateRecords(options, id, displaced); }

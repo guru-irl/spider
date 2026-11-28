@@ -8,7 +8,7 @@ import { isMachineId } from "../machine-id";
 import { privateDirectory } from "../staging";
 import { decodeManagedHome } from "./home";
 import type { SettledRelocateOutcome } from "./relocate";
-import type { RelocateRequest, SetHomeRequest, V0ControlServices } from "./types";
+import type { RelocateRequest, SetHomeRequest, SettledHome, V0ControlServices, V0Result } from "./types";
 
 export async function runV0Service(start: () => Promise<{ stop(): Promise<void> }>): Promise<void> {
   let signal!: () => void;
@@ -26,8 +26,9 @@ const MAX_REQUEST = 32 * 1024, MAX_REPLY = 1024 * 1024;
 const CONTROL_TIMEOUT = 30 * 60_000;
 type SyncRequest = { machineId?: MachineId };
 export type V0SyncOutcome = Outcome<{ outcomes: readonly Outcome<ApplyReceipt>[] }>;
-export type V0PlacementControlServices = Omit<V0ControlServices, "relocate"> & {
+export type V0PlacementControlServices = Omit<V0ControlServices, "relocate" | "setHome"> & {
   relocate(request: RelocateRequest): Promise<SettledRelocateOutcome>;
+  setHome(request: SetHomeRequest): Promise<V0Result<SettledHome>>;
 };
 export type V0HubControlServices = V0PlacementControlServices & { sync(request: SyncRequest): Promise<V0SyncOutcome> };
 
@@ -214,6 +215,6 @@ export function requestV0Services(root: string): V0HubControlServices {
   return {
     async sync(request) { return await call({ version: 1, kind: "sync", request }) as V0SyncOutcome; },
     async relocate(request) { return await call({ version: 1, kind: "relocate", request }) as SettledRelocateOutcome; },
-    async setHome(request) { return await call({ version: 1, kind: "set-home", request }) as Awaited<ReturnType<V0ControlServices["setHome"]>>; },
+    async setHome(request) { return await call({ version: 1, kind: "set-home", request }) as V0Result<SettledHome>; },
   };
 }

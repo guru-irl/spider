@@ -6,7 +6,7 @@ import { forgottenDestinationRefusal } from "../revocation";
 import { forceWarning, setHomeReplicationRefusal } from "./set-home";
 import type { StoppedRelocateSuccess } from "./relocate";
 import type { V0PlacementControlServices } from "./service";
-import type { RelocateSuccess, RunningHome, SessionId, V0CommandIO, V0PublicControl, V0Refusal, V0Result } from "./types";
+import type { RelocateSuccess, SessionId, SettledHome, V0CommandIO, V0PublicControl, V0Refusal, V0Result } from "./types";
 
 export async function readV0Confirmation(prompt: string, streams: {
   input: Readable & { isTTY?: boolean }; output: Writable & { isTTY?: boolean };
@@ -33,7 +33,7 @@ export function parseV0Control(argv: readonly string[]): V0PublicControl | null 
 export async function runV0Control(control: V0PublicControl, config: RoamConfig,
   catalog: readonly { id: string; name: string | null }[], services: V0PlacementControlServices,
   io: V0CommandIO, options: { json?: boolean; isForgotten?: (machineId: string) => boolean } = {}): Promise<number> {
-  const emit = (result: V0Result<RelocateSuccess | StoppedRelocateSuccess | RunningHome>): number => {
+  const emit = (result: V0Result<RelocateSuccess | StoppedRelocateSuccess | SettledHome>): number => {
     if (options.json) io.out(`${JSON.stringify(result)}\n`);
     else if (!result.ok) io.err(`${result.refusal.message}\n${result.refusal.nextStep}\n`);
     else if ("stop" in result.value) {
@@ -51,7 +51,9 @@ export async function runV0Control(control: V0PublicControl, config: RoamConfig,
     }
     else {
       io.out(`Home assigned to ${result.value.machineId}.\n`);
-      if (result.value.machineId === config.hubMachineId) {
+      if (result.value.state === "stopped") {
+        io.out(`Check \`spider roam status\` for Stop confirmation. After confirmation, run \`spider roam start ${result.value.sessionId}\`.\n`);
+      } else if (result.value.machineId === config.hubMachineId) {
         if (!config.enabled) io.out("Run spider roam enable on the Mac first.\n");
         io.out(`Run spider roam relocate ${result.value.sessionId} mac to start the session.\n`);
       }

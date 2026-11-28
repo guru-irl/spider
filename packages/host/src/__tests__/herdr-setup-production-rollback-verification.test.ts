@@ -17,12 +17,6 @@ vi.mock('node:child_process', async importOriginal => {
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 const fastFixture = () => focusedSetupFixture();
 
-test('doctor rejects an older runtime when the current package requires new bytes', async () => {
-  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
-  const path = join(f.root, 'dist/herdr/remote-runtime.mjs'); await writeFile(path, (await readFile(path, 'utf8')) + '\n// new runtime\n');
-  expect((await (await f.ports.doctorParts(f.request)).inspect('runtime-digest', f.request)).failures.length).toBeGreaterThan(0);
-});
-
 test('doctor reports mod loading not verified with fenced headless commands', async () => {
   const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const parts = await f.ports.doctorParts(f.request);

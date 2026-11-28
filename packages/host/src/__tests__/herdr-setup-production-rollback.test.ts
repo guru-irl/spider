@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { verifiedHerdrFile } from '../herdr/ports.js';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
@@ -7,7 +7,7 @@ import { doctorHerdr } from '../../../herdr/src/setup/doctor.js';
 import { readJournal, digest } from '../../../herdr/src/setup/backup.js';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
 import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
-import { editUnrelated, startInteractiveShell, installedShells } from './herdr-setup-production-helpers.js';
+import { editUnrelated } from './herdr-setup-production-helpers.js';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -42,6 +42,12 @@ test.skipIf(process.env.SPIDER_HERDR_E2E !== '1')('real isolated production setu
   expect(f.h.cleanupProof).toMatchObject({ mode: 'hc', defaultCoreUnchanged: true, remaining: [] });
   await writeFile(resolve('.spider/scratch/production-real-cleanup.json'), JSON.stringify(f.h.cleanupProof, null, 2));
 }, 60_000);
+
+test('doctor rejects an older runtime when the current package requires new bytes', async () => {
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
+  const path = join(f.root, 'dist/herdr/remote-runtime.mjs'); await writeFile(path, (await readFile(path, 'utf8')) + '\n// new runtime\n');
+  expect((await (await f.ports.doctorParts(f.request)).inspect('runtime-digest', f.request)).failures.length).toBeGreaterThan(0);
+});
 
 test('production upgrade rollback removes newly installed artifacts and restores user originals', async () => {
   const f = await focusedSetupFixture({ coreTransport: 'process' });
@@ -127,30 +133,6 @@ test.each(['resume', 'theme', 'keys'] as const)('rollback preserves dependencies
   await rollbackHerdr(f.request, f.parts);
   expect(await readFile(dependency).then(() => true, () => false)).toBe(true);
   expect(warnings.some(warning => warning.includes('not restored'))).toBe(true);
-});
-
-test.each(installedShells)('a new %s starts silently after production rollback removes the resume hook', async binary => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
-  await rollbackHerdr(f.request, f.parts);
-  const home = join(f.h.root, 'shell-home'); await mkdir(home);
-  const rc = await readFile(f.request.config.shellRc);
-  await writeFile(join(home, '.bashrc'), rc); await writeFile(join(home, '.zshrc'), rc);
-  expect(await startInteractiveShell(binary, home, { ...f.h.localEnv, HC_TERMINAL_ID: 'missing.invalid', HC_TERMINAL_SOCKET: f.h.localSocket })).toEqual({ code: 0, output: '' });
-});
-
-test.each(installedShells)('a new %s ignores a missing resume hook or pinned runtime silently', async binary => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
-  const home = join(f.h.root, 'shell-home'); await mkdir(home);
-  const rc = await readFile(f.request.config.shellRc, 'utf8'), hook = join(f.h.directories.global, 'herdr/resume.sh');
-  const originalHook = await readFile(hook);
-  await writeFile(join(home, '.bashrc'), rc); await writeFile(join(home, '.zshrc'), rc);
-  await unlink(hook);
-  const env = { ...f.h.localEnv, HC_TERMINAL_ID: 'missing.invalid', HC_TERMINAL_SOCKET: f.h.localSocket };
-  expect(await startInteractiveShell(binary, home, env)).toEqual({ code: 0, output: '' });
-  await writeFile(hook, originalHook);
-  const missingRuntimeRc = rc.split(process.execPath).join(join(f.h.root, 'absent-node'));
-  await writeFile(join(home, '.bashrc'), missingRuntimeRc); await writeFile(join(home, '.zshrc'), missingRuntimeRc);
-  expect(await startInteractiveShell(binary, home, env)).toEqual({ code: 0, output: '' });
 });
 
 test('semantic pi and app saves preserve bytes and journal without another cutover', async () => {

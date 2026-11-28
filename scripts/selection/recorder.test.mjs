@@ -670,6 +670,41 @@ for (const [label, ready, exited, complete] of [
   });
 }
 
+test('a Node image reached through a clean shell is not complete without startup evidence', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', cpuMs: 100, ended: true, paths: [] }],
+    trackedInputs: ['shell.txt'],
+    kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 clone(child_stack=NULL, flags=SIGCHLD) = 4
+4 execve("/bin/sh", ["sh"], 0x0) = 0
+4 execve(${JSON.stringify(process.execPath)}, ["node", "script.cjs"], 0x0) = 0
+4 open("shell.txt", O_RDONLY) = 8<$ROOT/shell.txt>
+4 +++ exited with 0 +++
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+  });
+  assert.deepEqual(records[id].reads, ['shell.txt']);
+  assert.equal(records[id].incomplete, true);
+});
+
+test('native reads of a generated bundle retain the unresolved bundle fallback', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', cpuMs: 100, ended: true, paths: [] }],
+    kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 clone(child_stack=NULL, flags=SIGCHLD) = 4
+4 open("dist/reference.mjs", O_RDONLY) = 8<$ROOT/dist/reference.mjs>
+4 +++ exited with 0 +++
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+  });
+  assert.equal(records[id].ranBundle, true);
+  assert.deepEqual(records[id].unresolved, ['dist/reference.mjs']);
+});
+
 test('records non-code file reads through Node fs APIs in a child with a replacement environment', t => {
   const paths = fixture(t);
   const { root, raw, workspace, installed } = paths;

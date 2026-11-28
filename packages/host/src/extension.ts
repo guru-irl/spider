@@ -934,7 +934,6 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
-  if (pi.registerCommand) registerAccentPicker(pi as unknown as ExtensionAPI);
   if (ports.inputBand) registerInputBand(pi as unknown as ExtensionAPI, ports.inputBand, cwd => {
     const values = configValues(cwd);
     return { "ui.inputBand": values.config["ui.inputBand"], "ui.icons": values.config["ui.icons"] };
@@ -976,6 +975,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       else process.stderr.write(message + "\n");
     });
   }
+  if (pi.registerCommand) registerAccentPicker(pi as unknown as ExtensionAPI);
   let scheduler: SessionScheduler | undefined;
   const autoReload = registerAutoReload(pi as unknown as ExtensionAPI, loadedBundle, cwd => controlConfig("get", cwd, "reload.auto") !== false, ordinaryWorkAllowed, reloadWouldInterrupt,
     () => activity.busy() || !!intercom?.hasPendingInboundAsks() || !!scheduler?.blocksReload() || organism.blocksReload(), activity);

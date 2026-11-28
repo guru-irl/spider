@@ -281,6 +281,28 @@ test('moves layout-scoped keys and restores their old section on upgrade undo', 
   expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ global: { 'cmd-alt-a': 'user.action' }, 'layout:spider-glass': bindings });
 });
 
+test.each(['undo', 'rollback'] as const)('renames named layout switches and %s restores the exact bindings', async command => {
+  const f = await fixture(); await f.upgrade('personal');
+  const keys = {
+    global: {
+      'cmd-alt-s': { command: 'layout.switch', args: { name: 'spider-glass' } },
+      'cmd-alt-t': 'app.theme:spider-glass', 'cmd-alt-l': 'layout.switch',
+    },
+    'layout:spider-glass': { 'cmd-alt-g': 'layout.switch:spider-glass' },
+    'layout:personal': { 'cmd-alt-p': 'layout.switch:personal' },
+  };
+  const path = await withLegacyKeys(f, keys);
+  await setupHerdr(f.request, f.parts);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+    global: { ...keys.global, 'cmd-alt-s': { command: 'layout.switch', args: { name: 'Spider' } } },
+    'layout:Spider': { 'cmd-shift-e': 'spider-pane.park', 'cmd-alt-g': 'layout.switch:Spider' },
+    'layout:personal': keys['layout:personal'],
+  });
+  expect(await setupHerdr(f.request, f.parts)).toMatchObject({ writes: [], journalChanged: false });
+  await f[command]();
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(keys);
+});
+
 test('refuses to merge competing user keys across the two layout sections', async () => {
   const f = await fixture(); await f.upgrade('spider-glass');
   const path = await withLegacyKeys(f, { 'layout:spider-glass': { 'cmd-k': 'old.action' }, 'layout:Spider': { 'cmd-k': 'new.action' } });

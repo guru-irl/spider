@@ -8,7 +8,13 @@ export interface GlassLayout { [key: string]: unknown }
 
 const removedNodeIds: readonly string[] = edits.remove;
 
-export function buildGlassLayout(currentMain: unknown, names: CloneNames): GlassLayout {
+function cellBackgroundOpacity(layout: unknown): number | undefined {
+  if (!layout || typeof layout !== 'object' || !('cell_background_opacity' in layout)) return undefined;
+  const value = layout.cell_background_opacity;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+export function buildGlassLayout(currentMain: unknown, names: CloneNames, installed?: unknown): GlassLayout {
   const root = structuredClone(object(currentMain));
   const nodes: Record<string, unknown>[] = [];
   const walk = (node: Record<string, unknown>): void => {
@@ -52,7 +58,7 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
     }
   }
   Object.assign(root, edits.root, {
-    cell_background_opacity: root.cell_background_opacity ?? edits.root.cell_background_opacity,
+    cell_background_opacity: cellBackgroundOpacity(installed) ?? cellBackgroundOpacity(root) ?? edits.root.cell_background_opacity,
     colors: { ...object(root.colors ?? {}), ...edits.root.colors },
   });
   delete root.window_blur;

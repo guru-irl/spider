@@ -108,7 +108,8 @@ test('late saved history does not replace the live context with an older respons
   const view = make();
   view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });
   view.live({ type: 'message_end', message });
-  view.addEntries([{ type: 'message', timestamp: '2026-10-02T11:59:58Z', message: {
+  view.addEntries([{ type: 'compaction', timestamp: '2026-10-02T11:59:57Z', summary: 'Earlier turns', firstKeptEntryId: 'old', tokensBefore: 90000 },
+    { type: 'message', timestamp: '2026-10-02T11:59:58Z', message: {
     ...message, timestamp: message.timestamp - 2000, usage: { ...message.usage, input: 1000, output: 0, cacheRead: 0, totalTokens: 1000 },
   } }, { type: 'message', timestamp: '2026-10-02T11:59:59Z', message: {
     role: 'user', content: 'y'.repeat(4000), timestamp: message.timestamp - 1000,

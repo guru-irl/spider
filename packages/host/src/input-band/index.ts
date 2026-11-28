@@ -6,7 +6,9 @@ import { installTranscriptBands } from "./transcript.js";
 type Pi = typeof import("@earendil-works/pi-coding-agent");
 type PiTui = typeof import("@earendil-works/pi-tui");
 export type InputBandHost = Pick<Pi, "CustomEditor"> & Partial<Pick<Pi,
-  "UserMessageComponent" | "ToolExecutionComponent" | "CustomMessageComponent"> & Pick<PiTui, "Box" | "Text" | "Markdown">>;
+  "UserMessageComponent" | "ToolExecutionComponent" | "CustomMessageComponent" |
+  "BranchSummaryMessageComponent" | "CompactionSummaryMessageComponent" | "SkillInvocationMessageComponent"> &
+  Pick<PiTui, "Box" | "Text" | "Markdown">>;
 
 export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandHost, readConfig: (cwd: string) => Record<string, unknown>): void {
   const BandEditor = createBandEditor(host.CustomEditor);

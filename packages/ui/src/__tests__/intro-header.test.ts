@@ -30,7 +30,7 @@ function click(x: number, y: number, overrides?: Partial<TuiMouseEvent>): TuiMou
 afterEach(() => vi.useRealTimers());
 
 describe("Hinge startup header", () => {
-  it.each([120, 80, 60])("keeps the approved hierarchy and all counts at %i columns", width => {
+  it.each([120, 80, 60])("keeps the approved hierarchy and resource summary at %i columns", width => {
     const { view } = makeHeader();
     const rendered = view.render(width), lines = plain(rendered);
     expect(rendered.every(line => visibleWidth(line) <= width)).toBe(true);
@@ -50,17 +50,25 @@ describe("Hinge startup header", () => {
     for (const command of ["/spider", "/agents", "/todos"]) expect(lines.join("\n")).toContain(command);
     const resourceRows = lines.filter(line => line.includes("Loaded resources"));
     expect(resourceRows).toHaveLength(1);
-    expect(resourceRows[0]).toMatch(/(?:Context|Ctx) ?1.*Skills 60.*(?:Extensions|Ext) ?≥2.*(?:Prompts|Tmpl) ?0.*(?:System prompt|Sys) ~8\.9k/);
+    if (width === 120) expect(resourceRows[0]).toContain("Context 1 · Skills 60 · Extensions ≥2 · Prompts 0 · System prompt ~8.9k tokens");
+    else if (width === 80) expect(resourceRows[0]).toContain("Ctx 1 · Skills 60 · Ext ≥2 · Tmpl 0 · Sys ~8.9k");
+    else {
+      expect(resourceRows[0]).toContain("Ctx 1 · Skills 60 · Ext ≥2 · Tmpl 0");
+      expect(resourceRows[0]).not.toContain("Sys");
+    }
     expect(resourceRows[0]!.includes("Alt+O")).toBe(width > 60);
     expect(resourceRows[0]).toContain("→");
     expect(rendered.join("").split(highlight)).toHaveLength(3);
   });
 
-  it("keeps all five resource values in view at 60 columns as the inventory grows", () => {
+  it("drops trailing resources rather than squeezing spaces as the inventory grows", () => {
     const { view } = makeHeader();
     view.update({ ...facts, resources: { context: 11, skills: 350, extensions: 18, prompts: 15, promptTokens: 26_800 } });
-    expect(plain(view.render(60)).find(line => line.includes("Loaded resources")))
-      .toMatch(/Ctx11.*350.*≥18.*15.*~26\.8k.*→/);
+    const row = plain(view.render(60)).find(line => line.includes("Loaded resources"))!;
+    expect(row).toContain("Ctx 11 · Skills 350 · Ext ≥18");
+    expect(row).not.toContain("Tmpl");
+    expect(row).not.toContain("Sys");
+    expect(row).toContain("→");
   });
 
   it("takes only left clicks inside the resources box, including its border", () => {

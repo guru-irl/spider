@@ -52,7 +52,7 @@ describe("agent footer rows", () => {
     expect(rendered).toHaveLength(Math.min(count, 3));
     expect(names(rendered)).toEqual(expected);
     if (summary) {
-      expect(rendered[2]).toContain(`${count} running`);
+      expect(rendered[2]).not.toContain("running");
       expect(rendered[2]).toContain(summary);
     } else expect(rendered.join("\n")).not.toContain("more");
   });
@@ -66,7 +66,8 @@ describe("agent footer rows", () => {
       ["agent-3", "agent-2"], ["agent-2", "agent-1"]]) {
       await wheel("down");
       expect(names(lines())).toEqual(pair);
-      expect(lines()[2]).toContain("7 running · +5 more");
+      expect(lines()[2]).toContain("+5 more");
+      expect(lines()[2]).not.toContain("running");
     }
     await wheel("down");
     expect(names(lines())).toEqual(["agent-2", "agent-1"]);
@@ -105,10 +106,12 @@ describe("agent footer rows", () => {
     }
     await host.settle();
     expect(names(lines())).toEqual(["agent-5", "agent-4"]);
-    expect(lines()[2]).toContain("2 running · 1 queued · 1 paused · 1 done · +3 more");
+    expect(lines()[2]).toContain("+3 more");
+    expect(lines()[2]).not.toMatch(/running|queued|paused|done/);
     await wheel("down", true);
     expect(names(lines())).toEqual(["agent-4", "agent-1"]);
-    expect(lines()[2]).toContain("2 running · 1 queued · 1 paused · 1 done · +3 more");
+    expect(lines()[2]).toContain("+3 more");
+    expect(lines()[2]).not.toMatch(/running|queued|paused|done/);
   });
 
   it("keeps wheel scrolling usable while the selector is open", async () => {

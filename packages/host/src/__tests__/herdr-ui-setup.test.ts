@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 test('production setup creates private feed folders and repairs a deleted folder on unchanged setup', async () => {
-  const f = await fixture();
+  const f = await fixture('fake', false, { coreTransport: 'socket' });
   const root = join(f.h.directories.global, 'herdr'), sessions = join(root, 'sessions');
   await setupHerdr(f.request, f.parts);
   expect((await lstat(sessions)).mode & 0o777).toBe(0o700);
@@ -31,7 +31,7 @@ test('production setup creates private feed folders and repairs a deleted folder
 }, 120000);
 
 test('production setup refuses a symlinked feed folder without changing its target', async () => {
-  const f = await fixture();
+  const f = await fixture('fake', false, { coreTransport: 'socket' });
   const root = join(f.h.directories.global, 'herdr'), sessions = join(root, 'sessions'), outside = join(f.h.root, 'outside');
   await mkdir(root, { recursive: true }); await mkdir(outside, { mode: 0o755 }); await symlink(outside, sessions);
   const mode = (await lstat(outside)).mode;
@@ -40,7 +40,7 @@ test('production setup refuses a symlinked feed folder without changing its targ
 }, 120000);
 
 test('production setup refuses a wrong-owner feed folder on an unchanged setup', async () => {
-  const f = await fixture();
+  const f = await fixture('fake', false, { coreTransport: 'socket' });
   await setupHerdr(f.request, f.parts);
   const owner = process.getuid!();
   vi.spyOn(process, 'getuid').mockReturnValue(owner + 1);

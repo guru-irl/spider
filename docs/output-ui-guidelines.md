@@ -8,31 +8,40 @@ Use `▄` and `▀` for the half-row edges, with no background behind the
 unfilled half. Draw the bar in the left half of column zero for the full band
 height: `▖` on the top edge, `▌` on text rows, and `▘` on the bottom edge.
 The rest of column zero uses the default background, leaving a half-cell gap
-before the strip starts in column one. The bar uses `accent` (`#82aaff`) or
-`bashMode`, regardless of thinking level. The remaining edge cells use the strip
+before the strip starts in column one. The bar uses the current `accent` or
+`bashMode`, regardless of thinking level. Spider blue (`#82aaff`) is the default
+accent in `dracula-plus-glass`. The remaining edge cells use the strip
 color. Scrolled edges show a dim hidden-line count beside the half-cell bar.
 Keep Pi's cursor, completion menu, and keys.
 
 Sent messages have no bar. Place the accent `❯` before the first text row and
-align wrapped text under that row's text. Show the message's local timestamp
-at the right of that row in dim text. Wrap Markdown before the timestamp and
-omit the timestamp if the terminal is too narrow. Keep Pi's Markdown and OSC
-133 markers. `ui.inputBand: false` restores Pi's editor and sent messages.
+align wrapped text under that row's text. Keep Pi's Markdown and OSC 133
+markers. `ui.inputBand: false` restores Pi's editor and message styling.
 
 Queued steering and follow-up messages use the same strip and half-cell bar as
 input, with a dim bar and hourglass in place of the sent-message caret. Keep
 Pi's queue ordering, truncation, spacer, and edit hint below the bands.
 
-The hover frame around replies uses rounded lines in `borderMuted`, without
-fill. Copy actions and the timestamp stay on the bottom edge. Keep the copy
-label's one-space pad and let Pi handle clicks outside the actions.
+When copy buttons are enabled in fullscreen, sent messages and replies use a
+hover frame with rounded lines in `borderMuted`, without fill. Keep the local timestamp at the left of the
+bottom edge, visible only on hover. Reserve the frame space at rest so hover
+does not move the message. Omit the timestamp if it does not fit. Replies keep
+their copy actions at the right of the bottom edge. Sent messages have no copy
+buttons. Keep the copy label's one-space pad and let Pi handle clicks outside
+the actions.
+
+In fullscreen, mouse selection uses a blue background (`#264f78`) while keeping
+text foregrounds. Hide selected block and bar glyphs so the highlight stays
+rectangular. Keep the original characters for Pi's clipboard copy. If the
+host selection method is not recognized, leave Pi's selection unchanged.
 
 ## Card layout
 
 1. Pi owns the transcript spacer and the default tool box. Notification renderers
    return their box without another spacer. Consecutive tool cards with half
-   edges have no blank row between them. Keep the spacer between a tool card and
-   other content. Use Pi's `outputPad` when supplied. The fallback is one column.
+   edges have no blank row between them, including across empty assistant turns.
+   Keep the spacer between a tool card and visible or unboxed content. Use Pi's
+   `outputPad` when supplied. The fallback is one column.
    Replace blank top and bottom padding with half edges; remove blank content
    rows next to the edges. Keep one cell of fill on each side by default, with
    no outline.
@@ -201,6 +210,12 @@ Text mode uses a pulsing `◇` while running. See [Patched Nerd Fonts](guide/con
 Full screens and overlays such as `/todos` and pickers use the active theme, a
 subtle heading rule, spacing between groups, a context line, and a footer with
 key hints. The `card()` frame is for standalone views only.
+
+`/color` previews the accent in a full-height left overlay. Use an `██` swatch,
+name, and hex value on each row. Highlight the selected row with 8% white over
+`#161618`. Use Pi's `│` track and `┃` thumb when the palette needs to scroll.
+The picker changes `accent`, `borderAccent`, and `customMessageLabel`. Status,
+thinking, role, syntax, and neutral background colors stay unchanged.
 
 ## Tests
 

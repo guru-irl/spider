@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 
-type Registry = Pick<ExtensionContext["modelRegistry"], "find" | "getAll">;
+type Registry = Pick<ExtensionContext["modelRegistry"], "find" | "getAll" | "getAvailable">;
 
 /** Resolve labels at render time so provider catalog refreshes remain visible. */
 export function modelName(registry: Registry | undefined, ref: string): string | undefined {
@@ -11,9 +11,15 @@ export function modelName(registry: Registry | undefined, ref: string): string |
     const slash = ref.indexOf("/");
     const qualified = slash >= 0 ? registry.find?.(ref.slice(0, slash), ref.slice(slash + 1)) : undefined;
     if (qualified) return clean(qualified.name) || undefined;
-    const matches = (registry.getAll?.() ?? []).filter(model => model.id === ref);
-    const names = new Set(matches.map(model => clean(model.name)).filter((name): name is string => !!name));
-    return names.size === 1 ? [...names][0] : undefined;
+    for (const getModels of [() => registry.getAvailable?.() ?? [], () => registry.getAll?.() ?? []]) {
+      for (const model of getModels()) {
+        if (model.id === ref) {
+          const name = clean(model.name);
+          if (name) return name;
+        }
+      }
+    }
+    return undefined;
   } catch {
     return undefined;
   }

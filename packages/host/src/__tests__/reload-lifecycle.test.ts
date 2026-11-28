@@ -82,7 +82,7 @@ it.each([false, true])("registers every command, shortcut, tool, renderer and ha
   const first = host();
   await first.emit("session_shutdown");
   const second = host();
-  const expectedCommands = ["agents", "bind", "compaction", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", ...(enabled ? ["move"] : []), "search", "spider", "stats", "todos", "usage"];
+  const expectedCommands = ["agents", "bind", "color", "compaction", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", "search", "spider", "stats", "todos", "usage"];
   for (const pi of [first, second]) {
     expect([...pi.commands.keys()].sort()).toEqual(expectedCommands);
     expect(pi.commands.has("spider-reload")).toBe(false);

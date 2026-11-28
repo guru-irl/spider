@@ -84,7 +84,7 @@ export default async function spider(pi: unknown): Promise<unknown> {
     ? { host: { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, copy } : undefined;
   const inputBand = typeof piHost.CustomEditor === "function" ? {
     CustomEditor: piHost.CustomEditor, InteractiveMode: piHost.InteractiveMode, UserMessageComponent: piHost.UserMessageComponent,
-    CustomMessageComponent: piHost.CustomMessageComponent, ToolExecutionComponent,
+    AssistantMessageComponent, CustomMessageComponent: piHost.CustomMessageComponent, ToolExecutionComponent,
     CompactionSummaryMessageComponent: piHost.CompactionSummaryMessageComponent,
     BranchSummaryMessageComponent: piHost.BranchSummaryMessageComponent,
     SkillInvocationMessageComponent: piHost.SkillInvocationMessageComponent,

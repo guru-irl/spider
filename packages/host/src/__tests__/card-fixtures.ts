@@ -99,7 +99,7 @@ export function cardFixtures(): CardFixture[] {
     tool("run thinking notice", { action: "run", agent: "worker" }, { run: { ...run, status: "running", result: null }, thinkingDiagnostics: [{ requested: "max", effective: "high", notice: "thinking capped to high" }] }, { runIds: [runId] }),
     tool("run parallel", { action: "run", tasks: [{ agent: "worker" }, { agent: "reviewer" }] }, {
       runs: [run, { id: secondRunId, name: "audit", agent: "reviewer", status: "running", model: "github-copilot/claude-opus-5.5", task: "Check the package contents against the manifest." }],
-    }, { runIds: [runId, secondRunId], groups: 2, itemBoundary: /^ ● running/u, taskStarts: ["Check the package contents against the manifest."] }),
+    }, { runIds: [runId, secondRunId], groups: 2, itemBoundary: /^● audit/u, taskStarts: ["Check the package contents against the manifest."] }),
     tool("run chain", { action: "run", chain: [{ agent: "worker" }] }, { runs: [{ ...run, status: "running", result: null }] }, { runIds: [runId] }),
     tool("run pipeline", { action: "run", pipeline: [{ agent: "worker" }] }, { runs: [{ ...run, status: "running", result: null }] }, { runIds: [runId] }),
     tool("index", { action: "index", path: "docs/release.md" }, { source: "release guide", chunkCount: 12 }),

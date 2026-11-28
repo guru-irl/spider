@@ -1,7 +1,5 @@
 import { MoveSetupError } from "@spider/roam/setup-failure";
 import { createMoveActivation } from "./roam/move-activation";
-import { registerMoveCommand } from "./roam/move-command";
-import { requestHubControl } from "@spider/roam/control-socket";
 import { readLocalIdentity } from "@spider/roam/runtime";
 import { createV0Intercom, hasV0IntercomConfig } from "@spider/roam/relocate/intercom";
 import { fileURLToPath } from "node:url";
@@ -47,6 +45,7 @@ import { registerCompaction } from "./compaction/index.js";
 import { registerCopyButtons, type CopyButtonsHost } from "./copy-buttons/index.js";
 import { registerInputBand, type InputBandHost } from "./input-band/index.js";
 import { registerCompactionReader } from "./input-band/compaction-reader.js";
+import { registerAccentPicker } from "./accent/index.js";
 import { HostOrganismRuntime } from "./organism-runtime";
 import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
@@ -244,16 +243,16 @@ export const SPIDER_PARAMETERS = {
     supersedes: { type: "array", items: { type: "string" }, description: "Remember: active memory UUIDs or unique UUID prefixes in the write scope to replace. Credit their size against the cap and archive atomically with the new entry, including when review is unavailable. Unknown, ambiguous, inactive or cross-scope targets reject without a write. Explicit supersedes is not supported for staged/auto writes." },
     // run / subagents
     agent: { type: "string", description: "SINGLE-mode agent/role for action 'run' (e.g. 'scout','worker','reviewer')." },
-    name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task); loop/schedule: case-sensitive trigger name (1 to 40 letters, digits, dots, underscores or hyphens; start with a letter or digit). Defaults: loop and wakeup. Replaces only that independent name; also the skill name for action='skill' (op add/view/approve/reject)." },
+    name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task). Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst). loop/schedule: case-sensitive trigger name (1 to 40 letters, digits, dots, underscores or hyphens; start with a letter or digit). Defaults: loop and wakeup. Replaces only that independent name; also the skill name for action='skill' (op add/view/approve/reject)." },
     task: { type: "string", description: "SINGLE-mode task text for action 'run'." },
     tasks: {
       type: "array",
-      description: "PARALLEL-mode: subagents to run concurrently. Give each a short descriptive `name`.",
+      description: "PARALLEL-mode: subagents to run concurrently. Give each a `name`. Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst).",
       items: {
         type: "object",
         properties: {
           agent: { type: "string" },
-          name: { type: "string", description: "Short display name surfaced in the UI." },
+          name: { type: "string", description: "Display name surfaced in the UI. Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst)." },
           task: { type: "string" },
           count: { type: "integer", minimum: 1 },
           model: { type: "string", description: "Per-item model override for this task." },
@@ -270,7 +269,7 @@ export const SPIDER_PARAMETERS = {
         type: "object",
         properties: {
           agent: { type: "string" },
-          name: { type: "string", description: "Short display name surfaced in the UI." },
+          name: { type: "string", description: "Display name surfaced in the UI. Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst)." },
           task: { type: "string" },
           model: { type: "string", description: "Per-item model override for this chain step." },
           thinking: { type: "string", enum: THINKING_LEVELS as readonly string[], description: "Per-item reasoning/thinking level for this chain step; overrides the resolved model suffix." },
@@ -946,23 +945,18 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       const values = configValues(cwd);
       return { "copyButtons.enabled": values.config["copyButtons.enabled"], "ui.icons": values.config["ui.icons"] };
     }, ports.copyButtons.copy);
-  let moveEnabled = false, legacyIntercomEnabled = true, hasRoamIdentity = false;
+  let roamingEnabled = false, legacyIntercomEnabled = true, hasRoamIdentity = false;
   try {
     const config = readLocalIdentity(paths.globalRoot);
-    moveEnabled = config.enabled;
+    roamingEnabled = config.enabled;
     legacyIntercomEnabled = config.intercom.enabled;
     hasRoamIdentity = true;
-  } catch { /* Missing or unreadable configuration leaves the command unregistered. */ }
-  if (moveEnabled) registerMoveCommand(activity.pi, async request => {
-    const reply = await requestHubControl(path.join(paths.globalRoot, "roam", "hub.sock"), { op: "move", session: request.sessionId, machine: request.destinationMachine });
-    return { ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null,
-      value: reply.value as unknown as import("@spider/roam/contracts").MoveResult | null };
-  });
+  } catch { /* Missing or unreadable configuration leaves roaming disabled. */ }
   let intercom: ReturnType<typeof registerIntercomOnce> | undefined;
   try {
     const v0Factory = ports.v0Intercom ?? { hasConfig: hasV0IntercomConfig, create: createV0Intercom };
     const v0Configured = hasRoamIdentity && !legacyIntercomEnabled && v0Factory.hasConfig(paths.globalRoot);
-    const v0Intercom = v0Configured && moveEnabled ? v0Factory.create(paths.globalRoot) : undefined;
+    const v0Intercom = v0Configured && roamingEnabled ? v0Factory.create(paths.globalRoot) : undefined;
     const v0 = v0Intercom ? {
       prepare: v0Intercom.prepare,
       prepareReply: v0Intercom.prepareReply,
@@ -983,6 +977,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       else process.stderr.write(message + "\n");
     });
   }
+  if (pi.registerCommand) registerAccentPicker(pi as unknown as ExtensionAPI);
   let scheduler: SessionScheduler | undefined;
   const autoReload = registerAutoReload(pi as unknown as ExtensionAPI, loadedBundle, cwd => controlConfig("get", cwd, "reload.auto") !== false, ordinaryWorkAllowed, reloadWouldInterrupt,
     () => activity.busy() || !!intercom?.hasPendingInboundAsks() || !!scheduler?.blocksReload() || organism.blocksReload(), activity);

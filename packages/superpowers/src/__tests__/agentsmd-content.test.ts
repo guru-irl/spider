@@ -51,6 +51,11 @@ superpowers skills above; they replace none of them.
     expect(b.match(/<!-- spider:end -->/g)!.length).toBe(1);
   });
 
+  it("guides subagent names in the managed run instructions", () => {
+    const runBullet = buildSpiderBlock().split("- `spider run`")[1].split("- `spider todo`")[0].replace(/\s+/g, " ");
+    expect(runBullet).toContain("Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst).");
+  });
+
   it("reserves notify for a person who must act, not completion", () => {
     expect(SPIDER_BLOCK_BODY).toContain("spider notify");
     expect(SPIDER_BLOCK_BODY.replace(/\s+/g, " ")).toMatch(/only when a person must act, never for completion/i);

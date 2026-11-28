@@ -671,7 +671,6 @@
   "packages/host/src/roam/__tests__/roam-intercom-reconcile.test.ts": 5,
   "packages/host/src/roam/__tests__/roam-launch-observation.test.ts": 613,
   "packages/host/src/roam/__tests__/roam-live.test.ts": 207,
-  "packages/host/src/roam/__tests__/roam-move-command.test.ts": 48,
   "packages/host/src/roam/__tests__/roam-move-composition.test.ts": 1941,
   "packages/host/src/roam/__tests__/roam-move-readiness.test.ts": 177,
   "packages/host/src/roam/__tests__/roam-placement-composition.test.ts": 167,

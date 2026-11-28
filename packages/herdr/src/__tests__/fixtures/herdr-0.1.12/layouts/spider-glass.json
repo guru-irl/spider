@@ -197,6 +197,7 @@
   "theme": "spider-glass",
   "ui_font": "Google Sans Flex",
   "terminal_opacity": 0,
+  "cell_background_opacity": 0.6,
   "colors": {
     "chrome": "#00000000",
     "canvas": "#00000000",

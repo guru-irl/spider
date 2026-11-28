@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, posix } from "node:path";
 import { openDb, openDbReadOnly, type Db } from "@spider/db-core";
 import { parseLocationStores } from "@spider/db-core/roam/catalog";
 import { readLocal } from "@spider/db-core/roam/local-state";
+import { localRunPredicate } from "@spider/db-core/roam/run-origin";
 import { openRoamPathReadOnly, roamReplicaPath, roamStorePath } from "@spider/db-core/roam/reads";
 import type { StoreKey } from "@spider/db-core/roam/types";
 import { isHerdrConnectivityFailure } from "@spider/herdr/client/availability";
@@ -26,10 +27,13 @@ import type { StopBlocker } from "./session-stop-types";
 import type { RelocateAdapterOptions, SessionId } from "./types";
 
 export interface StopWorkPorts {
+  inventory(id: SessionId): Promise<{ runs: readonly StopRunIdentity[]; excludedRoots: readonly number[]; complete: boolean }>;
   inspect(id: SessionId): Promise<{ blockers: readonly StopBlocker[]; excludedRoots: readonly number[]; complete: boolean }>;
   settleRuns(id: SessionId, proveAbsent: (row: Readonly<RunRow>) => Promise<boolean>): Promise<readonly StopBlocker[]>;
+  freezeMembership(id: SessionId, epoch: number, beforeWrite: () => Promise<void>): Promise<void>;
 }
 
+type StopRunIdentity = { pid: number; host_pid: number; pid_start_time: string };
 type JobBlocker = Extract<StopBlocker, { kind: "job" }>;
 const check = (reason: string): StopBlocker => ({ kind: "check", reason });
 const errorCode = (error: unknown) => (error as { code?: string } | null)?.code;
@@ -243,6 +247,31 @@ function jobReadConnections(options: RelocateAdapterOptions) {
 
 export function createStopWork(options: RelocateAdapterOptions): StopWorkPorts {
   return {
+    async inventory(id) {
+      const { checkouts, files, blockers } = await sessionWorkLocations(id, options);
+      let complete = !blockers.length;
+      const runs: StopRunIdentity[] = [], excludedRoots = new Set<number>();
+      for (const [file, store] of files) {
+        try {
+          const db = await openRunStore(file, store, options);
+          if (db) try {
+            runs.push(...db.prepare(`SELECT pid, host_pid, pid_start_time FROM runs r WHERE r.session_id=?
+              AND pid IS NOT NULL AND host_pid IS NOT NULL AND pid_start_time IS NOT NULL AND ${localRunPredicate(db)}`).all(id) as StopRunIdentity[]);
+          } finally { db.close(); }
+        } catch { complete = false; }
+      }
+      // Only local manifests can name a local detached process tree. Herdr
+      // job journals are checked separately for exit, not signal authority.
+      for (const checkout of checkouts) {
+        try {
+          for (const job of await inspectLocalBackgroundJobs(id, checkout, true)) {
+            complete &&= job.complete;
+            for (const pid of job.excludedRoots) excludedRoots.add(pid);
+          }
+        } catch { complete = false; }
+      }
+      return { runs, excludedRoots: [...excludedRoots], complete };
+    },
     async inspect(id) {
       const { checkouts, files, blockers } = await sessionWorkLocations(id, options);
       let complete = !blockers.length;
@@ -310,6 +339,24 @@ export function createStopWork(options: RelocateAdapterOptions): StopWorkPorts {
         } catch { blockers.push(check(storeUnavailable)); }
       }
       return [...new Map(blockers.map(blocker => [JSON.stringify(blocker), blocker])).values()];
+    },
+    async freezeMembership(id, epoch, beforeWrite) {
+      const { files, blockers } = await sessionWorkLocations(id, options);
+      if (blockers.length) throw new Error("Recorded membership locations are unavailable");
+      for (const [file, location] of files) {
+        const db = await openRunStore(file, location, options, true);
+        if (!db) continue;
+        try {
+          await beforeWrite();
+          db.raw.transaction(() => {
+            const row = db.prepare("SELECT epoch FROM roam_sessions WHERE session_id=?").get(id) as { epoch: number } | undefined;
+            if (row && row.epoch > epoch) throw new Error("Local membership has a newer epoch");
+            // No insert or seed: retiring a Stop never reopens admission.
+            db.prepare("UPDATE roam_sessions SET epoch=?, state='frozen' WHERE session_id=? AND state IN ('active','frozen') AND epoch<=?")
+              .run(epoch, id, epoch);
+          }).immediate();
+        } finally { db.close(); }
+      }
     },
   };
 }

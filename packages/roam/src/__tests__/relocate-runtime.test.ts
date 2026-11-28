@@ -114,7 +114,7 @@ describe("v0 local runtime",()=>{
    throw new Error("unexpected native request");
   });
   const signal = f.io.signal, pause = f.io.pause;
-  f.io.signal = async pid => { await signal(pid); f.setProbe({kind:"absent"}); f.setLock(null); };
+  f.io.signal = async (pid, kind) => { await signal(pid, kind); f.setProbe({kind:"absent"}); f.setLock(null); };
   f.io.pause = async ms => { await pause(ms); terminalExited = true; };
   const local = createLocalRuntime(f.options,{...f.io,terminals:createLocalIO(f.options).terminals});
   expect(await local.stop(id,moving)).toEqual({ok:true,value:undefined});
@@ -141,7 +141,7 @@ describe("v0 local runtime",()=>{
     return {terminals: argv.includes("--label") || stopped ? [] : [{address:"t12",state:"live",agent:"pi",pid:42,labels:{}}]};
    });
    const signal = f.io.signal;
-   f.io.signal = async pid => { await signal(pid); stopped = true; f.setProbe({kind:"absent"}); f.setLock(null); };
+   f.io.signal = async (pid, kind) => { await signal(pid, kind); stopped = true; f.setProbe({kind:"absent"}); f.setLock(null); };
    const native = createLocalIO(f.options);
    const local = createLocalRuntime(f.options,{...f.io,terminals:native.terminals,writerBlockers:native.writerBlockers});
    expect(await local.stop(id,moving)).toMatchObject({ok:false,refusal:{code:"session-busy",message:expect.stringContaining(`PID ${child.pid} (pi)`)}});
@@ -363,7 +363,7 @@ describe("v0 local runtime",()=>{
   f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
   f.setTerminals([{terminal:"core:t",state:"live",pid:42,owned:true}]);
   const signal = f.io.signal;
-  f.io.signal = async pid => { await signal(pid); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
+  f.io.signal = async (pid, kind) => { await signal(pid, kind); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
   const loop = createHomeSupervisor({...local,machineId:box,clock:f.options.clock,report() {}}, () => {});
   await loop.tick();
   expect(f.signalled).toEqual([]);
@@ -376,7 +376,7 @@ describe("v0 local runtime",()=>{
   f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
   f.setTerminals([{terminal:"core:t",state:"live",pid:42,owned:true}]);
   const signal = f.io.signal;
-  f.io.signal = async pid => { await signal(pid); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
+  f.io.signal = async (pid, kind) => { await signal(pid, kind); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
   const loop = createHomeSupervisor({...local,machineId:box,clock:f.options.clock,report() {}}, () => {});
   await loop.tick();
   expect(f.signalled).toEqual([]);

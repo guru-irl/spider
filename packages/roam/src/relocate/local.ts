@@ -17,21 +17,24 @@ import { inspectIdLock, claimIdLock, localBootId, type IdLockObservation } from 
 import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { safeLaunchEnvironment, type PiSpawnRequest } from "@spider/herdr/sessions/launcher";
-import type { SessionId as HerdrSessionId } from "@spider/herdr/contracts";
+import { HERDR_KINDS, type SessionId as HerdrSessionId } from "@spider/herdr/contracts";
 import { invokeCli, observeCoreIdentity } from "@spider/herdr/client/hc";
 import { hubCoreSelection } from "../launchd";
 import { loadHerdrConfig } from "../host-config";
 import type { Operation, Clock } from "../contracts";
 import { createLocalExactHc, resolveParticipantPi } from "../launcher";
+import { createLocalStop } from "./local-stop";
+import type { StopObservation } from "./session-stop-types";
 import { requestSessionControl } from "../session-socket";
-import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, SupervisorEntry, V0Result, RelocatePlan } from "./types";
+import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, StoppedHome, SupervisorEntry, V0Result, RelocatePlan } from "./types";
 import { refusal } from "./remote";
 import { insideDirectory, isPiTitle, localProcessTree, localGroupBlockers, locklessPiInCheckout, processName, type SessionProcessTree } from "./local-process";
 import { localWriterBlockers } from "./local-writers";
 import { piLaunchArgv, toolPath } from "./launch-environment";
 
 type LocalLaunch = { sessionId: string; machineId: string; epoch: number; cwd: string; file: string };
-type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true; launch?: LocalLaunch };
+type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true; labelled?: true; launch?: LocalLaunch };
+const auxiliaryKinds = new Set<string>([...Object.values(HERDR_KINDS).filter(kind => kind !== HERDR_KINDS.session), "roam-proxy"]);
 function finishedTerminal(terminal: string, row: Record<string,unknown>): LocalTerminal {
   const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
   if (row.reason === "exited" && !Number.isSafeInteger(row.exit_code) && !signaled) throw new Error("Invalid terminal exit");
@@ -46,10 +49,12 @@ export interface LocalIO {
   tree(pid: number): Promise<SessionProcessTree>;
   groupBlockers(groups: readonly number[]): Promise<readonly string[]>;
   writerBlockers(sessionId: SessionId, placement?: SessionPlacement, requireCheckout?: boolean): Promise<readonly string[]>;
-  signal(pid: number): Promise<void>;
-  shutdown(operation: Operation): Promise<boolean>;
+  signal(pid: number, signal: "SIGTERM" | "SIGKILL"): Promise<void>;
+  shutdown(operation: Operation, timeoutMs?: number): Promise<boolean>;
+  bootId?(): Promise<string>;
+  fileLease?(file: string): Promise<{ pid: number; startIdentity: string; bootId?: string } | null>;
   pause(ms: number): Promise<void>;
-  terminals(sessionId: string, admittedPid?: number, includeLaunch?: boolean): Promise<readonly LocalTerminal[]>;
+  terminals(sessionId: string, admittedPid?: number, includeLaunch?: boolean, stop?: { timeoutMs: number }): Promise<readonly LocalTerminal[]>;
   launch(request: {home:RunningHome;placement:SessionPlacement}): Promise<{terminal:string}>;
 }
 export function exactHome(a: RelocateHome | null, b: RelocateHome): boolean {
@@ -133,12 +138,13 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
       const held = await claimIdLock(lockRoot,id,{pid:process.pid,startIdentity},probeLocalProcess,{bootId:localBootId});
       await held.release();
     },
-    async signal(pid) { process.kill(pid,"SIGTERM"); },
-    async shutdown(operation) { try { return (await requestSessionControl(join(options.root,"roam","s"),operation,{timeoutMs:options.limits.controlMs})).code === 0; } catch { return false; } },
+    async signal(pid, signal) { process.kill(pid,signal); },
+    async shutdown(operation, timeoutMs = options.limits.controlMs) { try { return (await requestSessionControl(join(options.root,"roam","s"),operation,{timeoutMs})).code === 0; } catch { return false; } },
     pause:ms=>delay(ms),
-    async terminals(id,admittedPid,includeLaunch) {
-      async function list(args: readonly string[], pidFilter?: number): Promise<LocalTerminal[]> {
-        const reply = await invokeCli(binary,args,env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
+    async terminals(id,admittedPid,includeLaunch,stop) {
+      const timeoutMs = stop?.timeoutMs ?? options.limits.controlMs;
+      async function list(args: readonly string[], pidFilter?: number, labelled = false): Promise<LocalTerminal[]> {
+        const reply = await invokeCli(binary,args,env,options.limits.replyBytes,undefined,{timeoutMs});
         if (!reply || typeof reply !== "object" || !("terminals" in reply) || !Array.isArray(reply.terminals)) throw new Error("Terminal list unavailable");
         return (await Promise.all(reply.terminals.map(async (value: unknown) => {
           if (!value || typeof value !== "object") throw new Error("Invalid terminal");
@@ -151,7 +157,7 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
           if (pidFilter !== undefined && pid !== null && pid !== pidFilter) return null;
           let labels: unknown = row.labels, detail: Record<string,unknown> | undefined;
           if (pid === null || labels == null || includeLaunch) {
-            detail = object(await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs}));
+            detail = object(await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs}));
             if (detail.address !== row.address) throw new Error("Terminal identity changed");
             if (detail.state === "finished" && "reason" in detail) return pidFilter === undefined ? finishedTerminal(row.address,detail) : null;
             if (detail.state !== "live" || !("pid" in detail)) throw new Error("Terminal identity changed");
@@ -162,8 +168,14 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
           if (pid !== null && (!Number.isSafeInteger(pid) || (pid as number) <= 0)) throw new Error("Unknown terminal process");
           if (pidFilter !== undefined && pid !== pidFilter) return null;
           const terminal: LocalTerminal = {terminal:row.address,state:"live",pid:pid as number|null};
+          if (includeLaunch && labelled) terminal.labelled = true;
           if (labels && typeof labels === "object") {
             const tags = labels as Record<string,unknown>;
+            const kind = tags["spider.kind"];
+            // Views and job terminals may share the session label. They are
+            // never pi authority; a claim on the ID-lock PID is a conflict.
+            if (stop && pid !== admittedPid && typeof kind === "string" && auxiliaryKinds.has(kind) && !("spider.roam.epoch" in tags)) return null;
+            if (includeLaunch && ("spider.session" in tags || "spider.roam.epoch" in tags || kind === "session")) terminal.labelled = true;
             if (tags["spider.kind"] === "session" && tags["spider.session"] === id && tags["spider.machine"] === options.config.machineId &&
                 typeof tags["spider.roam.epoch"] === "string" && /^[1-9]\d*$/.test(tags["spider.roam.epoch"]) &&
                 !("spider.roam.operation" in tags)) terminal.owned = true;
@@ -178,7 +190,7 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
           return terminal;
         }))).filter(terminal => terminal !== null);
       }
-      const tagged = await list(["ls","--all","--json","--label",`spider.session=${id}`]);
+      const tagged = await list(["ls","--all","--json","--label",`spider.session=${id}`],undefined,true);
       if (admittedPid === undefined || tagged.some(terminal=>terminal.pid === admittedPid)) return tagged;
       return [...tagged,...await list(["ls","--json"],admittedPid)];
     },
@@ -265,13 +277,13 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
         const member = await io.probe(child.pid);
         if (member.kind === "unknown") return busy([processName(child)]);
         if (member.kind !== "live" || member.startIdentity !== child.startIdentity) continue;
-        try { await io.signal(child.pid); }
+        try { await io.signal(child.pid,"SIGTERM"); }
         catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
       }
       const shutdown = observed && moving && await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});
       if (!shutdown && (await io.probe(pid)).kind !== "absent") {
         if (!await stillOwned()) return busy([processName(root)]);
-        try { await io.signal(pid); }
+        try { await io.signal(pid,"SIGTERM"); }
         catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
       }
       for (;;) {
@@ -430,11 +442,14 @@ export interface LocalRuntime extends SessionMachinePorts {
   owner(id: SessionId, placement?: SessionPlacement): Promise<SessionOwner>;
   stop(id: SessionId, moving?: MovingHome | null, beforeOrdinaryCapture?: boolean): Promise<V0Result<void>>;
   entries(): Promise<readonly SupervisorEntry[]>;
+  enforceStopped(home: StoppedHome): Promise<StopObservation>;
+  observeStopped(home: StoppedHome): Promise<StopObservation>;
 }
 export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO = createLocalIO(options)): LocalRuntime {
-  function withSessionState<T>(id: SessionId, run: () => Promise<T>): Promise<T> {
-    return withProcessLock(join(options.root,"herdr"),`v0-state:${id}`,run);
+  function withSessionState<T>(id: SessionId, run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return withProcessLock(join(options.root,"herdr"),`v0-state:${id}`,run,{ signal });
   }
+  const stopped = createLocalStop(options, io, withSessionState);
   async function inspectOwner(id: SessionId, placement?: SessionPlacement): Promise<{owner:SessionOwner;blockers?:readonly string[]}> {
     try {
       const lock = await io.inspect(id), terminals = await io.terminals(id), live = terminals.filter(t=>t.state === "live");
@@ -583,7 +598,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     }
     return result;
   }
-  return {owner,start,confirm,stop,locate,publishHome,activate,entries};
+  return {owner,start,confirm,stop,locate,publishHome,activate,entries,...stopped};
 }
 export function createLocalSessionMachinePorts(options: RelocateAdapterOptions): SessionMachinePorts {
   const local=createLocalRuntime(options);

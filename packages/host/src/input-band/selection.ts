@@ -1,7 +1,7 @@
 import type { TUI } from "@earendil-works/pi-tui";
 
-// 33% of the spider accent (#82aaff) over its glass base (#161618).
-const BACKGROUND = "\x1b[48;2;58;71;100m";
+// The selection blue Copilot CLI draws in the same terminal (#264f78).
+const BACKGROUND = "\x1b[48;2;38;79;120m";
 const PATCH = Symbol.for("spider.selection.highlight");
 const SEQUENCE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\x07|\x1b\\)|_[\s\S]*?(?:\x07|\x1b\\))/gu;
 const BLOCKS = /[▀▄▖▗▘▝▌▐█]+/gu;

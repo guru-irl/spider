@@ -21,7 +21,7 @@ import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local"
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
-import { serveV0Control } from "./service";
+import { serveV0Control, summarizeSync, type V0HubControlServices, type V0SyncOutcome } from "./service";
 import type { RelocateAdapterOptions, RelocateAdapters, HomeStore, RunningHome, SetHomePorts, V0ControlServices, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
@@ -36,8 +36,11 @@ export interface V0Runtime {
   adapters: RelocateAdapters;
   homes: HomeStore;
   sync: ReturnType<typeof createSync>;
-  services: V0ControlServices;
+  services: V0HubControlServices;
   close(): Promise<void>;
+}
+function syncRefusal(code: 1 | 2, reason: string): V0SyncOutcome {
+  return { code, reason, operationId: "", home: null, epoch: null, repairCommand: null, value: null };
 }
 const clock: Clock = { now: Date.now, later(ms, fn) { const timer=setTimeout(fn,ms);return ()=>clearTimeout(timer); } };
 const runGit: GitPorts["run"] = (cwd, argv, options) => new Promise((done, reject) => {
@@ -142,6 +145,15 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     let closing:Promise<void>|undefined;
     const revokedDestination = { ok: false, refusal: forgottenDestinationRefusal } as const;
     return {options,adapters,homes,sync,services:{
+      async sync({ machineId }) {
+        if (config.role !== "hub" || config.machineId !== config.hubMachineId) return syncRefusal(1, "mac-hub-required");
+        if (!config.enabled) return syncRefusal(1, "roaming-disabled");
+        if (machineId !== undefined) {
+          if (forgotten(machineId)) return syncRefusal(1, "machine-revoked");
+          if (config.peers.filter(peer => peer.machineId === machineId).length !== 1) return syncRefusal(2, "machine-not-enrolled");
+        }
+        return summarizeSync(await sync.sync(machineId));
+      },
       async relocate(request) {
         if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };
         if (!config.enabled) return { ok: false, step: "check", home: null, moveId: null, refusal: {
@@ -238,7 +250,10 @@ async function startLockedV0Hub(root: string, overrides: V0RuntimeOverrides): Pr
     };
     checkConfig();
     let stopping:Promise<void>|undefined;
-    return {stop(){return stopping ??= (async()=>{cancelConfigCheck?.();try{await socket.close();}finally{await runtime.close();}})();}};
+    return {stop(){return stopping ??= (async()=>{
+      cancelConfigCheck?.(); runtime.sync.stop();
+      try{await socket.close();}finally{await runtime.close();}
+    })();}};
   } catch(error) {await runtime.close();throw error;}
 }
 export async function startV0Supervisor(root: string, overrides: V0RuntimeOverrides = {}): Promise<{stop():Promise<void>}> {

@@ -11,6 +11,7 @@ import { HERDR_LABELS, type SpaceId, type TabId, type TerminalAddress } from '..
 import { claimIdLock } from '../../src/sessions/id-lock.js';
 import { mapWorkspace } from '@spider/db-core/roam/repo-map';
 import { createParticipantAdmission } from '../../../host/src/roam/readiness.js';
+import { requestHubControl } from '../../../roam/src/control-socket.js';
 import { createRunningIntentAuthority } from '@spider/roam/session-control';
 import { handleSessionOperation } from '@spider/roam/participant-runtime';
 import { openJournal } from '@spider/roam/journal';
@@ -104,7 +105,10 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
       if (service.child.exitCode !== null) throw new Error(await readFile(join(suite.root, 'logs/roam-hub.log'), 'utf8'));
       return existsSync(join(hub, 'roam/hub.sock'));
     }, Boolean, deadline(20_000));
-    const sync = async () => { const result = await suite.invoke(process.execPath, [cli, 'roam', 'sync', cores.machine], env); expect(result.exitCode, result.stderr + result.stdout).toBe(0); };
+    const sync = async () => {
+      const result = await requestHubControl(join(hub, 'roam', 'hub.sock'), { op: 'sync', machine: BOX });
+      expect(result.code, result.reason).toBe(0);
+    };
     await sync();
     const queueDb = openDb(join(hub, 'spider.db'));
     try { expect(readLocal(queueDb, 'hub-placement', BOX)).toEqual([{ ...readiness, terminal: address }]); } finally { queueDb.close(); }

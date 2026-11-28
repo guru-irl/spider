@@ -34,9 +34,8 @@ export async function readLegacyLayout(home: string, journalRoot: string, journa
   return { aliases, legacy: { ...legacy, bytes: legacy.bytes }, replaceLegacy: changed };
 }
 
-export async function readLayoutTargets(home: string, journalRoot: string, journal: SetupJournal, replaceChanged?: boolean) {
+export async function readLayoutTargets(home: string, journalRoot: string, journal: SetupJournal, { aliases, legacy, replaceLegacy }: Awaited<ReturnType<typeof readLegacyLayout>>) {
   const directory = join(home, 'layouts');
-  const { aliases, legacy, replaceLegacy } = await readLegacyLayout(home, journalRoot, journal, replaceChanged);
   const path = spiderLayoutPath(home);
   if (aliases.some(name => name !== SPIDER_LAYOUT_FILE) || aliases.length && !journal.entries.some(entry => entry.path === path && entry.after !== null))
     throw new HerdrError('layout-name-conflict', `Setup cannot use ${SPIDER_LAYOUT_FILE}: ${join(directory, aliases.join(', '))} is not a layout installed by setup. Move it out of layouts or rename it to a different stem, then rerun setup.`);

@@ -199,6 +199,16 @@ test.each([
   expect(f.selections).toEqual([]);
 });
 
+test('replacement refuses a recorded backup whose bytes no longer match', async () => {
+  const f = await fixture(); await f.upgrade('personal', true);
+  const journal = await readJournal(f.request.journalRoot), backup = journal.entries.find(entry => entry.path === f.legacy)!.backup!;
+  await writeFile(backup, 'corrupted backup'); await writeFile(f.legacy, 'user edit');
+  await expect(setupHerdr({ ...f.request, replaceChanged: true }, f.parts)).rejects.toMatchObject({ code: 'backup-verification-failed' });
+  expect(await readFile(f.legacy, 'utf8')).toBe('user edit');
+  expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
+  await expect(stat(f.checkpoint)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
 test.each(['undo', 'rollback'] as const)('%s restores the exact edited layout after authorized replacement', async (command) => {
   const f = await fixture(); await f.upgrade('personal', true);
   const old = 'broken layout\n'; await writeFile(f.legacy, old); await chmod(f.legacy, 0o644);
@@ -239,7 +249,7 @@ async function withLegacyKeys(f: Awaited<ReturnType<typeof fixture>>, current: o
   return path;
 }
 
-test.each(['after writing Spider.json', 'after moving keys'] as const)('resumes a migration interrupted %s, and undo still restores it', async (interruption) => {
+test.each(['after writing Spider.json', 'after moving keys', 'after saving selection'] as const)('resumes a migration interrupted %s, and undo still restores it', async (interruption) => {
   const f = await fixture(); await f.upgrade('spider-glass');
   const bindings = { 'cmd-shift-e': 'spider-pane.park', 'cmd-alt-x': 'user.action' };
   const path = await withLegacyKeys(f, { 'layout:spider-glass': bindings });
@@ -250,13 +260,16 @@ test.each(['after writing Spider.json', 'after moving keys'] as const)('resumes 
       await apply(root, files.filter(file => file.path === f.spider), journal, didWrite);
       throw new Error('test interruption');
     }) : undefined;
-  if (!abortBatch) f.parts.selectApp = async () => { throw new Error('test interruption'); };
+  if (!abortBatch) f.parts.selectApp = async (request, mode) => {
+    if (interruption === 'after saving selection') await select(request, mode);
+    throw new Error('test interruption');
+  };
   try { await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('test interruption'); }
   finally { abortBatch?.mockRestore(); f.parts.selectApp = select; }
   expect(await readFile(f.spider)).toEqual(newLook);
   expect(await readFile(f.legacy)).toEqual(oldLook);
   expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ [abortBatch ? 'layout:spider-glass' : 'layout:Spider']: bindings });
-  expect(JSON.parse(await readFile(f.shared, 'utf8')).layout).toBe('spider-glass');
+  expect(JSON.parse(await readFile(f.shared, 'utf8')).layout).toBe(interruption === 'after saving selection' ? 'Spider' : 'spider-glass');
 
   await setupHerdr(f.request, f.parts);
   expect(await readdir(f.layouts)).toEqual(['Spider.json']);
@@ -267,6 +280,16 @@ test.each(['after writing Spider.json', 'after moving keys'] as const)('resumes 
   expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
   expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ 'layout:spider-glass': bindings });
   expect(JSON.parse(await readFile(f.shared, 'utf8')).layout).toBe('spider-glass');
+});
+
+test.each(['legacy', 'spider'] as const)('refuses to resume if the %s layout differs from the migration record', async which => {
+  const f = await fixture(); await f.upgrade('spider-glass', true);
+  f.parts.selectApp = async () => { throw new Error('test interruption'); };
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('test interruption');
+  await writeFile(f[which], 'user edit');
+  const before = await Promise.all([f.legacy, f.spider, f.checkpoint, f.journalPath].map(path => readFile(path)));
+  await expect(setupHerdr({ ...f.request, replaceChanged: true }, f.parts)).rejects.toMatchObject({ code: 'layout-name-conflict' });
+  expect(await Promise.all([f.legacy, f.spider, f.checkpoint, f.journalPath].map(path => readFile(path)))).toEqual(before);
 });
 
 test('moves layout-scoped keys and restores their old section on upgrade undo', async () => {

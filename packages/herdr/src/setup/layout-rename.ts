@@ -16,7 +16,12 @@ async function layoutFileNames(home: string): Promise<string[]> {
 export async function hasLegacyLayout(home: string): Promise<boolean> {
   return (await layoutFileNames(home)).includes(LEGACY_SPIDER_LAYOUT_FILE);
 }
-export async function readLegacyLayout(home: string, journalRoot: string, journal: SetupJournal, replaceChanged?: boolean) {
+interface LegacyLayoutState {
+  aliases: string[];
+  legacy: (FileSnapshot & { bytes: Buffer }) | null;
+  replaceLegacy: boolean;
+}
+export async function readLegacyLayout(home: string, journalRoot: string, journal: SetupJournal, replaceChanged?: boolean): Promise<LegacyLayoutState> {
   const names = await layoutFileNames(home);
   const aliases = names.filter(name => name.toLowerCase() === SPIDER_LAYOUT_FILE.toLowerCase());
   const path = legacySpiderLayoutPath(home);
@@ -34,7 +39,7 @@ export async function readLegacyLayout(home: string, journalRoot: string, journa
   return { aliases, legacy: { ...legacy, bytes: legacy.bytes }, replaceLegacy: changed };
 }
 
-export async function readLayoutTargets(home: string, journalRoot: string, journal: SetupJournal, { aliases, legacy, replaceLegacy }: Awaited<ReturnType<typeof readLegacyLayout>>) {
+export async function readLayoutTargets(home: string, journalRoot: string, journal: SetupJournal, { aliases, legacy, replaceLegacy }: LegacyLayoutState): Promise<{ legacy: LegacyLayoutState['legacy']; target: FileSnapshot; replaceLegacy: boolean }> {
   const directory = join(home, 'layouts');
   const path = spiderLayoutPath(home);
   if (aliases.some(name => name !== SPIDER_LAYOUT_FILE) || aliases.length && !journal.entries.some(entry => entry.path === path && entry.after !== null))

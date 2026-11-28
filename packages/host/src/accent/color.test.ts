@@ -184,7 +184,7 @@ it("accepts named colors regardless of case, rejects unknown colors, and resets 
   expect(stored()["ui.accent"]).toBe("plus-purple");
   await s.command("reset");
   expect(s.color()).toBe("#82aaff");
-  expect(stored()).toMatchObject({ "ui.icons": "nerd" });
+  expect(stored()).toEqual({ "ui.icons": "nerd" });
   const other = session();
   await other.start();
   expect(other.color()).toBe("#82aaff");

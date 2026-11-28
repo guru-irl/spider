@@ -173,7 +173,7 @@ function createV0PeerCaller(root: string, deps: V0IntercomDeps) {
         });
         if (!Buffer.isBuffer(output) || output.length > V0_INTERCOM_BYTES) throw new Error("Invalid intercom reply size");
         const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
-        const reply = parseV0AgentReply(raw);
+        const reply = parseV0AgentReply(raw, wire.version === 2 && wire.thread?.kind === "reply");
         if (!reply || reply.requestId !== request.requestId || reply.machineId !== peer.machineId ||
             wire.version === 1 && reply.kind === "refused" && reply.code === "reply-only")
           throw new Error("Uncorrelated intercom reply");
@@ -598,7 +598,7 @@ function createV0AgentReceiver(root: string, broker: typeof requestV0Broker) {
       } catch { return envelope(refused(signal?.aborted || performance.now() >= deliveryDeadline ? "unreachable" : "home-unreadable")); }
     }
     const answer = envelope(result);
-    return parseV0AgentReply(answer) ? answer : envelope(request.kind === "lookup"
+    return parseV0AgentReply(answer, thread?.kind === "reply") ? answer : envelope(request.kind === "lookup"
       ? refused("incomplete") : { kind: "unknown", id: request.message.id });
   };
 }

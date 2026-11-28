@@ -113,7 +113,7 @@ export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?:
         try { writeMessage(socket, outbound); } catch { finish(failure()); }
         return;
       }
-      const response = parseV0BrokerReply(value);
+      const response = parseV0BrokerReply(value, op.kind === "deliver" && op.thread?.kind === "reply");
       if (!response || response.requestId !== requestId) { finish(failure()); return; }
       const { type: _type, requestId: _requestId, ...result } = response;
       if (result.kind === "refused") { finish(result); return; }

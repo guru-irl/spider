@@ -10,7 +10,7 @@ import { installReloadBand } from "./reload.js";
 type Pi = typeof import("@earendil-works/pi-coding-agent");
 type PiTui = typeof import("@earendil-works/pi-tui");
 export type InputBandHost = Pick<Pi, "CustomEditor"> & Partial<Pick<Pi,
-  "InteractiveMode" | "UserMessageComponent" | "ToolExecutionComponent" | "CustomMessageComponent" |
+  "InteractiveMode" | "UserMessageComponent" | "AssistantMessageComponent" | "ToolExecutionComponent" | "CustomMessageComponent" |
   "BranchSummaryMessageComponent" | "CompactionSummaryMessageComponent" | "SkillInvocationMessageComponent"> &
   Pick<PiTui, "Box" | "Text" | "Markdown" | "Spacer" | "TruncatedText">>;
 

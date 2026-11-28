@@ -71,7 +71,13 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
     const rows = render.call(this, width);
     const Tool = host.ToolExecutionComponent;
     if (!Tool) return rows;
-    return joinToolCards(this, rows, width, child => child instanceof Tool, isHalfEdge);
+    const Assistant = host.AssistantMessageComponent;
+    return joinToolCards(this, rows, width, child => child instanceof Tool, isHalfEdge, {
+      Spacer: host.Spacer,
+      // Only reset sequences are stripped: colors, underlines and images draw.
+      isBlank: Assistant ? (child, part) => child instanceof Assistant &&
+        part.every(row => /^[ \t]*$/u.test(row.replace(/\x1b\[(?:(?:0|22|23|24|27|29|39|49)(?:;|(?=m)))*m/gu, ""))) : undefined,
+    });
   }));
   // Pi passes entry metadata on restore, but live components only receive text.
   // Its message_start event precedes the synchronous component construction.

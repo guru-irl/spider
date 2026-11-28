@@ -11,10 +11,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '26.4.0'
-      - run: command -v strace || { sudo apt-get update && sudo apt-get install -y strace; }
+      - name: Check tracing facilities
+        run: |
+          command -v strace || { sudo apt-get update && sudo apt-get install -y strace; }
+          if sudo test -r /sys/kernel/tracing/events/io_uring/io_uring_submit_req/format; then
+            sudo head -40 /sys/kernel/tracing/events/io_uring/io_uring_submit_req/format
+          else
+            findmnt -t tracefs,debugfs || true
+            sudo ls -ld /sys/kernel/tracing /sys/kernel/tracing/instances /sys/kernel/debug/tracing || true
+          fi
       - run: >-
           node --test --test-concurrency=1
-          --test-name-pattern 'kernel trace attributes|Node test supervisor|nested recorder keeps'
+          --test-name-pattern 'kernel trace attributes|Node test supervisor|nested recorder keeps|treats io_uring'
           scripts/selection/recorder.test.mjs
       - uses: actions/upload-artifact@v4
         if: always()

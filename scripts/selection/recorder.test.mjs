@@ -61,6 +61,7 @@ function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', laun
     execFileSync('git', ['init', '-q'], { cwd: root });
     for (const file of trackedInputs) writeFileSync(join(root, file), 'fixture');
     if (trackedInputs.length) execFileSync('git', ['add', '--', ...trackedInputs], { cwd: root });
+    writeFileSync(join(raw, 'kernel-mode'), 'linux-strace-v2\n');
     writeFileSync(`${raw}.linux-trace`, kernelTrace.replaceAll('$ROOT', root));
   }
   if (launches.length) writeFileSync(join(raw, 'launches.ndjson'), launches.map(row => JSON.stringify(row)).join('\n') + '\n');
@@ -703,6 +704,26 @@ for (const [label, ready, exited, complete] of [
     assert.equal(record.incomplete, !complete);
     assert.equal(record.cpuMs, 132);
     if (complete) assert.deepEqual(record.reads, ['src/worker.ts']);
+  });
+}
+
+for (const [label, flags, submissions, complete] of [
+  ['a ring allocated but not used to submit work', 'IORING_SETUP_NO_SQARRAY', 0, true],
+  ['a ring that submits without entering the kernel explicitly', 'IORING_SETUP_SQPOLL', 0, false],
+  ['a ring used to submit work that strace cannot see', 'IORING_SETUP_NO_SQARRAY', 1, false],
+]) {
+  test(`treats io_uring as an input gap only when operations may be submitted: ${label}`, t => {
+    const { records } = fixtureRecords(t, {
+      results: [{ name: id }],
+      snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', cpuMs: 100, ended: true, paths: [] }],
+      kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 io_uring_setup(256, {flags=${flags}, sq_thread_cpu=0}) = 10
+3 io_uring_enter(10, ${submissions}, 0, IORING_ENTER_GETEVENTS, NULL, 0) = ${submissions}
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+    });
+    assert.equal(records[id].incomplete, !complete);
   });
 }
 

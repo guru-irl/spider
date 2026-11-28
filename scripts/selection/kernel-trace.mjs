@@ -40,7 +40,7 @@ const fileOpen = new Set(['open', 'openat', 'openat2', 'creat', 'open_by_handle_
 const exec = new Set(['execve', 'execveat']);
 const directories = new Set(['getdents', 'getdents64']);
 const descriptors = new Set(['recvmsg', 'recvmmsg']);
-const unsupported = new Set(['io_uring_setup', 'unshare', 'setns', 'chroot', 'pivot_root', 'mount', 'umount2']);
+const unsupported = new Set(['unshare', 'setns', 'chroot', 'pivot_root', 'mount', 'umount2']);
 
 export function readKernelTrace(file, { root, tracked, owners }) {
   const tasks = new Map();
@@ -98,9 +98,20 @@ export function readKernelTrace(file, { root, tracked, owners }) {
     const call = /^(\w+)\((.*)\)\s+=\s+(-?\d+|\?)(.*)$/.exec(body);
     if (!call) { tracee.gaps.add('unrecognized syscall'); continue; }
     const [, name, args, status, result] = call;
+    if (name === 'io_uring_enter') {
+      // Waiting for completions does not enqueue work. Neither strace nor the
+      // JS hook can identify an arbitrary operation enqueued in a native ring.
+      const submitted = /^\d+(?:<.*>)?, (\d+), /.exec(args)?.[1];
+      if (submitted !== '0') tracee.gaps.add('io_uring submission');
+      continue;
+    }
     if (status === '?') { tracee.gaps.add('unknown syscall result'); continue; }
     if (Number(status) < 0) continue;
-    if (creation.has(name)) {
+    if (name === 'io_uring_setup') {
+      const flags = /\{flags=([^,}]+)[,}]/.exec(args)?.[1];
+      // A polling ring can enqueue operations without io_uring_enter.
+      if (!flags || /IORING_SETUP_SQPOLL|0x/.test(flags)) tracee.gaps.add('io_uring polling or unknown flags');
+    } else if (creation.has(name)) {
       if (Number(status) <= 0) continue;
       const child = task(Number(status));
       if (child.parent !== undefined) return { error: 'PID reused in trace' };

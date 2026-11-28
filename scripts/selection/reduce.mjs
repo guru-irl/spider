@@ -197,12 +197,17 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
   // A journal without its startup checkpoint cannot be attributed to a test.
   stats.malformedSnapshots += journals.size;
   const traceFile = `${resolve(rawDir)}.linux-trace`;
+  const traceMode = join(rawDir, 'kernel-mode');
   let trace;
-  if (existsSync(traceFile)) {
-    const owners = new Map([...groups].flatMap(([file, entry]) => [...entry.workerPids].map(pid => [pid, file])));
-    trace = readKernelTrace(traceFile, { root: checkout, tracked: trackedPaths(), owners });
-  } else if (existsSync(join(rawDir, 'kernel-mode'))) trace = { error: 'expected Linux trace missing' };
-  if (trace) stats.kernelTrace = trace.error ?? 'observed';
+  if (existsSync(traceMode)) {
+    if (readFileSync(traceMode, 'utf8').trim() !== 'linux-strace-v2') trace = { error: 'unknown Linux trace format' };
+    else if (!existsSync(traceFile)) trace = { error: 'expected Linux trace missing' };
+    else {
+      const owners = new Map([...groups].flatMap(([file, entry]) => [...entry.workerPids].map(pid => [pid, file])));
+      trace = readKernelTrace(traceFile, { root: checkout, tracked: trackedPaths(), owners });
+    }
+    stats.kernelTrace = trace.error ?? 'observed';
+  }
   const reportedFiles = [...outcomes.keys()].sort();
   const failedFiles = [];
   const records = {};

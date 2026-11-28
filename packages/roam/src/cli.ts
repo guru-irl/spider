@@ -647,11 +647,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     const peer = peers[0];
     try {
       if (peer && readPeerRevocation(root, peer.machineId)) return emitOutcome(io, outcome(1, "machine-revoked"), jsonOutput, "That machine was forgotten.\n");
-      const reply = await requestV0Services(root).sync(peer ? { machineId: peer.machineId } : {});
-      // Public receipts use whole milliseconds. Leave the adapter's timing and socket receipt untouched.
-      const result = reply.value === null ? reply : { ...reply, value: { outcomes: reply.value.outcomes.map(row =>
-        !row.value || row.value.applyMs === null ? row : { ...row, value: { ...row.value, applyMs: Math.round(row.value.applyMs) } }),
-      } };
+      const result = await requestV0Services(root).sync(peer ? { machineId: peer.machineId } : {});
       const safe = safeControlOutcome(result), value = safe.value as { outcomes?: Array<{ code: number; reason: string; operationId: string; operationKind?: string; causeCode?: string }> } | null;
       const outcomes = value?.outcomes ?? [];
       const failure = outcomes.map(row => row.code === 1 && isPeerFailureReason(row.reason) ? row.reason : null).find(Boolean);

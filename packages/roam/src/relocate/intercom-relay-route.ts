@@ -8,12 +8,13 @@ export async function configuredRelayLinks(routes: V0Routes, signal?: AbortSigna
   return (await listV0RelayLinks(routes.agentDir, signal)).filter(link => routes.relays.includes(link.relay.machineId));
 }
 
-export async function routeV0Relay(routes: V0Routes, targetLabel: string, submit: RelaySubmit, signal?: AbortSignal): Promise<V0RouteResult> {
+export async function routeV0Relay(routes: V0Routes, localMachineId: string, targetLabel: string, submit: RelaySubmit, signal?: AbortSignal): Promise<V0RouteResult> {
   const links = await configuredRelayLinks(routes, signal);
   const relaySkips: NonNullable<V0RouteResult["relaySkips"]>[number][] = [];
   const details = { targetMachine: targetLabel, relaySkips };
   let anyUp = false;
   for (const id of routes.relays) {
+    if (id === localMachineId) continue;
     const link = links.find(view => view.relay.machineId === id);
     const alias = routes.sendTo.find(peer => peer.machineId === id)?.alias ??
       routes.acceptFrom.find(peer => peer.machineId === id)?.alias ?? link?.relay.alias ?? id;

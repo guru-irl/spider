@@ -372,7 +372,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
 
     function submit(current: V0Routes, target: RelayTarget, message: V0Text, deadline: number, abort?: AbortSignal) {
       const budget = AbortSignal.timeout(Math.max(0, Math.floor(deadline - performance.now())));
-      return routeV0Relay(current, machineLabel(target.machineId), { type: "submit", kind: "send", from: sourceWire, target, message },
+      return routeV0Relay(current, machineId, machineLabel(target.machineId), { type: "submit", kind: "send", from: sourceWire, target, message },
         abort ? AbortSignal.any([abort, budget]) : budget);
     }
 

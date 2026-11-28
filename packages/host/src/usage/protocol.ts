@@ -2,7 +2,7 @@ import type { UsageRoots } from "./discovery.js";
 import type { LedgerHealth } from "./ledger.js";
 import type { CounterState } from "./counter.js";
 import type { CalibrationResult, SourceErrorRow, Period } from "./dashboard-contract.js";
-import type { Pace } from "./dashboard-v4-contract.js";
+import type { Pace, Value } from "./dashboard-v4-contract.js";
 
 export const PANEL_USAGE_INTERVAL_MS = 30000;
 
@@ -11,6 +11,7 @@ export type PanelUsage = { monthCost: { credits: number | null; label: string };
 export type UsageWorkerCommand =
   | { type: "start"; roots: UsageRoots; owner: string; child: boolean; poll: boolean; calibration?: "auto" | "off"; metadataBackfillBytesPerPass?: number; responseMetadataBytesPerPass?: number; dashboardMode?: boolean; sessionId?: string | null }
   | { type: "panel-usage"; requestId: number; now: number; sessionId: string; budget?: number }
+  | { type: "visit-usage"; requestId: number; sessionId: string; from: number; to: number }
   | { type: "refresh" }
   | { type: "configure"; poll: boolean; calibration?: "auto" | "off" }
   | { type: "stop" };
@@ -26,6 +27,7 @@ export type UsageProgress = { sourcesCompleted: number; sourcesTotal: number; so
 export type SourceErrorDiagnostics = { rows: readonly SourceErrorRow[]; truncated: boolean };
 export type UsageWorkerEvent =
   | { type: "panel-usage"; requestId: number; data: PanelUsage | null }
+  | { type: "visit-usage"; requestId: number; data: Value | null }
   | { type: "snapshot"; responseMetadataBackfill?: BackfillState; responseMetadataProgress?: UsageProgress; metadataBackfill?: BackfillState; metadataProgress?: UsageProgress; monthUsed?: number | null; monthPeriod?: Period; collector?: UsageCollector; sourceErrorDiagnostics?: SourceErrorDiagnostics; calibration?: CalibrationResult; health: LedgerHealth; counter: CounterState; backfill: BackfillState; reconciliation: ReconciliationView; progress?: UsageProgress; ingestRole?: "owner" | "follower" | "standby" }
   | { type: "error"; code: string }
   | { type: "standby" }

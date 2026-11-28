@@ -115,16 +115,7 @@ export class AgentFooter implements Component {
       const padding = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
       lines.push(truncateToWidth(left + this.theme.fg("muted", padding + right), width, "…"));
     } else if (model.overflow) {
-      const o = model.overflow;
-      const seg: string[] = [];
-      if (o.running) seg.push(`${o.running} running`);
-      if (o.queued) seg.push(`${o.queued} queued`);
-      if (o.paused) seg.push(`${o.paused} paused`);
-      if (o.done) seg.push(`${o.done} done`);
-      if (o.failed) seg.push(`${o.failed} failed`);
-      if (o.cancelled) seg.push(`${o.cancelled} cancelled`);
-      seg.push(`+${o.hidden} more`);
-      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} ` + seg.join(" · ")), width, "…"));
+      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} +${model.overflow.hidden} more`), width, "…"));
     }
     return lines.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width, "…") : l));
   }

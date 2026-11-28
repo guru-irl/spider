@@ -9,13 +9,21 @@ afterEach(() => {
   for (const view of views.splice(0)) view.dispose();
   vi.useRealTimers();
 });
-function make(): PiRunView {
-  const ui = { requestRender: vi.fn(), setFocus: vi.fn(), terminal: { columns: 100, rows: 30 } } as unknown as TUI;
+function make(requestRender = vi.fn()): PiRunView {
+  const ui = { requestRender, setFocus: vi.fn(), terminal: { columns: 100, rows: 30 } } as unknown as TUI;
   const view = createPiRunView({ ui, runName: 'retry-check', ownerName: 'planner', cwd: '/fixture', themeName: 'dark' });
   views.push(view);
   return view;
 }
 const running = { status: 'running', steerable: true, reachable: true, readOnlyReason: null } as const;
+const message = {
+  role: 'assistant', content: [{ type: 'text', text: 'Finished checking the retry path.' }],
+  provider: 'github-copilot', model: 'gpt-6.1-sol', api: 'openai-responses', stopReason: 'stop',
+  timestamp: Date.parse('2026-10-02T12:00:00Z'),
+  usage: { input: 1200, output: 340, cacheRead: 40000, cacheWrite: 0, totalTokens: 41540,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0123 } },
+};
+const entry = { type: 'message', timestamp: '2026-10-02T12:00:00Z', message };
 
 test('viewer input uses the shared band and keeps a draft across reconnect', () => {
   const view = make();
@@ -30,4 +38,67 @@ test('viewer input uses the shared band and keeps a draft across reconnect', () 
   expect(view.editor).toBeNull();
   view.setState(running);
   expect(view.editor!.getText()).toBe('Keep the retry limit at three.');
+});
+
+test('viewer footer shows calibrated run credits, context, cache and the model display name', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', modelName: 'GPT-6.1 Sol',
+    thinking: 'xhigh', contextWindow: 200000, creditFactor: 0.5 } as never);
+  view.setState(running);
+  view.live({ type: 'message_end', message });
+  view.addEntries([entry]); // The persisted copy of the live message must not double count.
+  const lines = view.footerLines(120).map(stripTerminalSequences);
+  const footer = lines.join('\n');
+  expect(footer).toContain('retry-check');
+  expect(footer).toContain('planner');
+  expect(footer).toContain('20.8%/200k');
+  expect(footer).toContain('0.5 AIC');
+  expect(footer).toContain('CH97.1%');
+  expect(footer).toContain('R40k W0');
+  expect(footer).toContain('GPT-6.1 Sol · xhigh');
+  expect(footer).not.toMatch(/↑|↓|\$|month|R80k|running/);
+  for (let width = 1; width <= 160; width++) {
+    expect(view.footerLines(width).every(row => visibleWidth(row) <= width), `width ${width}`).toBe(true);
+  }
+});
+
+test('viewer footer does not claim zero credits or context when usage is unpriced', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'unknown/model', thinking: 'high' });
+  view.addEntries([{ ...entry, message: { ...message, provider: 'unknown', model: 'model' } }]);
+  const footer = view.footerLines(120).map(stripTerminalSequences).join('\n');
+  expect(footer).toContain('? AIC');
+  expect(footer).toContain('42k context');
+  view.addEntries([{ type: 'compaction', summary: 'Earlier turns', firstKeptEntryId: 'x', tokensBefore: 41540 }]);
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('context unknown');
+});
+
+test('viewer moon advances while working and stops on agent end, stale state and disposal', () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(0);
+  const requestRender = vi.fn();
+  const view = make(requestRender);
+  view.setState(running);
+  const moon = () => stripTerminalSequences(view.footerLines(120)[1])[0];
+  expect(moon()).toBe('◐');
+  requestRender.mockClear();
+  vi.advanceTimersByTime(250);
+  expect(moon()).toBe('◓');
+  expect(requestRender).toHaveBeenCalled();
+  view.live({ type: 'agent_end' });
+  expect(moon()).toBe('○');
+  requestRender.mockClear();
+  vi.advanceTimersByTime(500);
+  expect(moon()).toBe('○');
+  expect(requestRender).not.toHaveBeenCalled();
+  view.live({ type: 'agent_start' });
+  expect(moon()).toBe('◐');
+  view.setState({ ...running, statusIsStale: true, steerable: false });
+  expect(moon()).toBe('○');
+  view.setState(running);
+  expect(moon()).toBe('◐');
+  view.dispose();
+  requestRender.mockClear();
+  vi.advanceTimersByTime(1000);
+  expect(requestRender).not.toHaveBeenCalled();
 });

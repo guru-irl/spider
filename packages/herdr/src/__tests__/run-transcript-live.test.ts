@@ -19,7 +19,10 @@ function fixture() {
   const dbPath = scratchDbPath('viewer-live'); const db = openDbAt(dbPath, 'worktree'); const store = new RunStore(db);
   const owner = { sessionId: 'live-owner', generation: 'activation', cwd: root } as Owner;
   const id = store.create({ sessionId: owner.sessionId, agent: 'worker', model: 'example/model-one', thinking: 'high' }).id as RunId; store.start(id);
-  const source = createRunTranscriptSource({ owner: () => owner, pollMs: 50, resolveDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), transcriptRoots: () => [root], modelContextWindow: model => model === 'example/model-one' ? 200000 : undefined });
+  const source = createRunTranscriptSource({ owner: () => owner, pollMs: 50, resolveDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), transcriptRoots: () => [root],
+    modelContextWindow: model => model === 'example/model-one' ? 200000 : undefined,
+    modelName: model => model === 'example/model-one' ? 'Model One' : undefined,
+    iconStyle: 'nerd', inputBand: false, creditFactor: () => 0.5 } as never);
   cleanups.push(() => { source.dispose(); db.close(); rmSync(root, { recursive: true, force: true }); });
   return { source, id, store, root, db };
 }
@@ -50,10 +53,20 @@ test('the pi snapshot identifies the saved session file, even for a finished run
   expect(frames.at(-1)).toMatchObject({ kind: 'end', data: { reason: 'finished' } });
 });
 
-test('the owner supplies model, thinking and context-window metadata in pi snapshots', () => {
+test('the owner supplies model, appearance and calibration metadata in pi snapshots', () => {
   const f = fixture(); const frames: RunViewFrame[] = [];
   f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
-  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { model: 'example/model-one', thinking: 'high', contextWindow: 200000 } } });
+  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { model: 'example/model-one', modelName: 'Model One',
+    thinking: 'high', contextWindow: 200000, iconStyle: 'nerd', inputBand: false, creditFactor: 0.5 } } });
+});
+
+test('agent working transitions reach the matching rich viewer without the completed message list', () => {
+  const f = fixture(); const frames: RunViewFrame[] = [];
+  f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
+  publishLiveRunEvent(f.id, { type: 'agent_start' });
+  publishLiveRunEvent(f.id, { type: 'agent_end', messages: [{ secret: 'not sent' }] });
+  expect(frames.flatMap(frame => frame.kind === 'live' ? [frame.data.event] : []))
+    .toEqual([{ type: 'agent_start' }, { type: 'agent_end' }]);
 });
 
 test('a pi viewer without a saved file still receives recorded fallback events', () => {

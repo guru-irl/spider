@@ -106,9 +106,9 @@ function renderBody(width: number, theme: IntroTheme, facts: StartupFacts, pose:
   return rows;
 }
 
-function renderResources(width: number, theme: IntroTheme, facts: StartupFacts): string[] {
+function renderResources(width: number, theme: IntroTheme, resources: StartupResourceCounts, iconStyle: IconStyle | undefined): string[] {
   const inner = width - 2;
-  const { context, skills, extensions, prompts, promptTokens } = facts.resources;
+  const { context, skills, extensions, prompts, promptTokens } = resources;
   const counts = [knownCount(context), String(skills), `≥${extensions}`, String(prompts), promptTokens === undefined ? "—" : `~${compactCount(promptTokens)}`];
   const labels = ["Context", "Skills", "Extensions", "Prompts", "System prompt"];
   const abbreviated = ["Ctx", "Skills", "Ext", "Tmpl", "Sys"];
@@ -118,7 +118,7 @@ function renderResources(width: number, theme: IntroTheme, facts: StartupFacts):
     const joined = mode === 3 || (mode === 2 && i !== 1 && i !== 4);
     return `${label}${joined ? "" : " "}${n}${mode === 0 && i === 4 ? " tokens" : ""}`;
   }).join(mode >= 2 ? " " : " · ");
-  const title = "Loaded resources", arrow = icon(facts.iconStyle, "arrowRight"), hotkey = `Alt+O ${arrow}`;
+  const title = "Loaded resources", arrow = icon(iconStyle, "arrowRight"), hotkey = `Alt+O ${arrow}`;
   const modes = [[0, 2, 2], [1, 2, 2], [1, 1, 1], [2, 1, 1], [2, 1, 0], [3, 1, 0]] as const;
   const choice = modes.map(([mode, pad, endPad]) => ({ counts: inventory(mode), action: mode >= 2 ? arrow : hotkey, pad, endPad }))
     .find(({ counts, action, pad, endPad }) => title.length + counts.length + visibleWidth(action) + 2 * pad + endPad + 1 <= inner);
@@ -138,10 +138,11 @@ export class StartupHeader implements Component {
   private pose: number;
   private readonly timers: ReturnType<typeof setTimeout>[] = [];
   private hit?: { top: number; width: number };
-  private cache?: { width: number; lines: string[] };
+  private cache?: { width: number; resources: StartupResourceCounts; lines: string[] };
+  private disposed = false;
 
   constructor(private readonly theme: IntroTheme, private facts: StartupFacts,
-    private readonly options: { requestRender(): void; openResources(): void; reducedMotion?: boolean }) {
+    private readonly options: { requestRender(): void; openResources(): void; reducedMotion?: boolean; readResources?(): StartupResourceCounts }) {
     this.pose = options.reducedMotion ? REST_POSE : 0;
     if (options.reducedMotion) return;
     COUNTERWEIGHT.slice(1).forEach(({ at }, i) => {
@@ -153,17 +154,23 @@ export class StartupHeader implements Component {
 
   update(facts: StartupFacts): void { this.facts = facts; this.invalidate(); this.options.requestRender(); }
   invalidate(): void { this.cache = undefined; }
-  dispose(): void { for (const timer of this.timers.splice(0)) clearTimeout(timer); this.hit = undefined; }
+  dispose(): void {
+    for (const timer of this.timers.splice(0)) clearTimeout(timer);
+    this.hit = undefined;
+    if (this.cache) this.facts = { ...this.facts, resources: this.cache.resources };
+    this.disposed = true;
+  }
 
   render(width: number): string[] {
-    if (this.cache?.width === width) return this.cache.lines;
+    const resources = (!this.disposed && width >= 12 ? this.options.readResources?.() : undefined) ?? this.facts.resources;
+    if (this.cache?.width === width && this.cache.resources === resources) return this.cache.lines;
     const lines = renderBody(width, this.theme, this.facts, this.pose);
     this.hit = undefined;
     if (width >= 12) {
-      this.hit = { top: lines.length, width: width - 2 };
-      lines.push(...renderResources(width - 2, this.theme, this.facts).map(line => " " + line));
+      if (!this.disposed) this.hit = { top: lines.length, width: width - 2 };
+      lines.push(...renderResources(width - 2, this.theme, resources, this.facts.iconStyle).map(line => " " + line));
     }
-    this.cache = { width, lines };
+    this.cache = { width, resources, lines };
     return lines;
   }
 

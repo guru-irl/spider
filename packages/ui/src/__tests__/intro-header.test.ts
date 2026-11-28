@@ -127,8 +127,8 @@ describe("Docked receipt", () => {
     expect(text).toMatch(/AI credits\s+~7\.29/);
     expect(text).toMatch(/15m 20s/);
     expect(text).toMatch(/Tokens in\s+↑ 72\.0k/);
-    expect(text).toMatch(/46\.9k cached, 25\.1k written/);
-    expect(text).toMatch(/Tokens out\s+↓ 531 \(53 reasoning\)/);
+    expect(text).toMatch(/46\.9k cached, 25\.1k\s+written/);
+    expect(text).toMatch(/Tokens out\s+↓ 531\s+\(53 reasoning\)/);
     expect(text).toMatch(/Compactions\s+3/);
     expect(text).not.toMatch(/pi --session|[\u2801-\u28ff]/u);
     expect(rows.join("").split(highlight)).toHaveLength(3);

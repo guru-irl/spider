@@ -13,7 +13,7 @@ env:
 jobs:
   hunt:
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         lane: [1, 2, 3, 4]
     runs-on: ubuntu-latest

@@ -30,6 +30,21 @@ trial() {
     "$dir/herdr-setup-production-install.test.ts" \
     "$dir/herdr-setup-production-rollback.test.ts" 2>&1 | tee "$output.log" || rc=$?
   printf '%s\n' "$rc" > "$output.exit"
+  if (( rc != 0 )); then return "$rc"; fi
+  node - "$output.json" <<'NODE'
+const fs = require('node:fs');
+const result = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+let exceeded = false;
+for (const suite of result.testResults) {
+  for (const test of suite.assertionResults) {
+    if (typeof test.duration === 'number' && test.duration >= 15000) {
+      console.error(`STOP: ${suite.name}: ${test.fullName}: ${test.duration} ms`);
+      exceeded = true;
+    }
+  }
+}
+if (exceeded) process.exit(1);
+NODE
 }
 
 pair() {
@@ -41,7 +56,7 @@ case "$phase" in
   first) pair 1 ;;
   rest) pair 2; trial after 3; trial after 4 ;;
   after-first) trial after 1 ;;
-  after-rest) trial after 2; trial after 3; trial after 4 ;;
+  after-rest) trial after 2 ;;
   *) printf 'Unknown phase: %s\n' "$phase" >&2; exit 2 ;;
 esac
 

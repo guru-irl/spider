@@ -773,6 +773,65 @@ test('a Node image reached through a clean shell is not complete without startup
   assert.equal(records[id].incomplete, true);
 });
 
+test('recovers the tracked directory from a split getdents64 call', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, cpuMs: 100, ended: true, paths: [] }],
+    trackedInputs: ['packages/example/src/native.txt', 'unrelated.txt'],
+    kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 getdents64(21<$ROOT/packages/example/src> <unfinished ...>
+3 <... getdents64 resumed>, 0x7f000 /* 3 entries */, 32768) = 80
+3 getdents64(22</usr/lib> <unfinished ...>
+3 <... getdents64 resumed>, 0x7f000 /* 0 entries */, 32768) = 0
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+  });
+  assert.deepEqual(records[id].reads, ['packages/example/src/native.txt']);
+  assert.equal(records[id].incomplete, false);
+});
+
+test('joins written pathnames and resolved fd targets without discarding tracked aliases', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, cpuMs: 100, ended: true, paths: [] }],
+    trackedInputs: ['packages/example/src/relative', 'packages/example/src/alias', 'native.txt'],
+    kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 openat(AT_FDCWD<$ROOT/packages/example/src>, "relative", O_RDONLY) = 5<$ROOT/packages/example/src/relative>
+3 openat(8<$ROOT/packages/example/src>, "alias", O_RDONLY) = 9</usr/lib/resolved>
+3 openat(AT_FDCWD<$ROOT>, "/proc/self/fd/6", O_RDONLY) = 10<$ROOT/native.txt>
+3 openat(AT_FDCWD<$ROOT>, "/proc/self/fd/7", O_RDONLY) = 11<pipe:[111]>
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+  });
+  assert.deepEqual(records[id].reads, ['native.txt', 'packages/example/src/alias', 'packages/example/src/relative']);
+  assert.equal(records[id].incomplete, false);
+});
+
+for (const [label, open, reads] of [
+  ['recorded cwd', 'openat(AT_FDCWD<$ROOT>, "native.txt", O_RDONLY) = 7', ['native.txt']],
+  ['recorded dirfd', 'openat(8<$ROOT>, "native.txt", O_RDONLY) = 7', ['native.txt']],
+  ['unknown cwd', 'openat(AT_FDCWD, "native.txt", O_RDONLY) = 7', []],
+  ['proc fd with unknown target', 'openat(AT_FDCWD<$ROOT>, "/proc/self/fd/8", O_RDONLY) = 7', []],
+  ['a real syscall using a node: spelling', 'openat(AT_FDCWD, "node:internal", O_RDONLY) = 7', []],
+]) {
+  test(`keeps the input gap when the opened target is unknown: ${label}`, t => {
+    const { records } = fixtureRecords(t, {
+      results: [{ name: id }],
+      snapshots: [{ test: id, worker: true, pid: 3, cpuMs: 100, ended: true, paths: [] }],
+      trackedInputs: ['native.txt'],
+      kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 ${open}
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+    });
+    assert.deepEqual(records[id].reads, reads);
+    assert.equal(records[id].incomplete, true);
+  });
+}
+
 test('native reads of a generated bundle retain the unresolved bundle fallback', t => {
   const { records } = fixtureRecords(t, {
     results: [{ name: id }],

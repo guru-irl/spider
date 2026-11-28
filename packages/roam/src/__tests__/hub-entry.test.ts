@@ -498,18 +498,10 @@ it.each([false, true])("box controls preserve disabled-first and Mac-only guards
     f.env.HOME = box; f.env.SPIDER_GLOBAL_ROOT = box;
     const configFile = join(box, "roam", "config.json");
     writeFileSync(configFile, JSON.stringify({ ...JSON.parse(readFileSync(configFile, "utf8")), enabled }), { mode: 0o600 });
-    for (const args of [["roam", "memory", "tag", "global", "box-note", "all"], ["move", "session-1", "box-1.invalid"],
-      ["roam", "provision", "box-1.invalid"], ["roam", "recover", "session-1"], ["roam", "cancel", "operation-1"],
-      ["roam", "forget", "box-1.invalid", "--confirm", "destroyed box-1.invalid"], ["roam", "claim", "session-1", "box-1.invalid"],
-      ["roam", "stop", "session-1"], ["roam", "resume", "session-1"]]) {
-      const result = await command(f, args);
-      expect(result.code, args.join(" ")).toBe(1);
-      if (args[0] === "move") expect(result.err).toMatch(/replaced.*spider roam relocate/i);
-      else {
-        const hubOnlyWhileDisabled = ["provision", "forget", "stop"].includes(args[1]);
-        expect(result.err, args.join(" ")).toMatch(enabled || hubOnlyWhileDisabled ? /Mac hub/i : /roaming-disabled/);
-      }
-    }
+    // The old-path commands are deleted by roam steps 3D and 4 (old-path inventory row 86).
+    const result = await command(f, ["roam", "memory", "tag", "global", "box-note", "all"]);
+    expect(result.code).toBe(1);
+    expect(result.err).toMatch(enabled ? /Mac hub/i : /roaming-disabled/);
     const inspect = openDb(join(box, "spider.db"));
     try { expect(inspect.prepare("SELECT machine_id FROM global_memory WHERE uuid='box-note'").get()).toEqual({ machine_id: BOX }); }
     finally { inspect.close(); }

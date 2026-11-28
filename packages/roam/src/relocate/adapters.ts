@@ -3,23 +3,35 @@ import { join } from "node:path";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { isMachineId } from "../machine-id";
 import { writeLocal } from "@spider/db-core/roam/local-state";
+import type { MachineId } from "@spider/db-core/roam/types";
 import { resolveParticipantPi } from "../launcher";
 import { pullArtifact, stageArtifact, transferArtifact } from "../artifacts";
 import { storedManifestLimits } from "../artifact-layout";
 import type { Peer } from "../contracts";
 import { createRelocateJournal, parseCaptured, parseHome, parsePlacement, parsePlan, text, object } from "./journal";
-import { callV0, createV0ArtifactTransport, handleRelocateAgent, refusal } from "./remote";
-import { createLocalRuntime, exactHome, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, captureOrdinarySource, SessionSeedBusy, seedBusyRefusal, type LocalSource } from "./local";
+import { callV0, createV0ArtifactTransport, decodeStopObservation, handleRelocateAgent, refusal } from "./remote";
+import { createLocalRuntime, exactHome, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, captureOrdinarySource, requestLocalStop, SessionSeedBusy, seedBusyRefusal, type LocalSource } from "./local";
 import { captureLocalSession, installLocalSession, stagingRoot } from "./transfer";
-import { legacyRecordedHomeRefusal } from "./home";
-import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePorts, SessionId, SessionPlacement, SettledHome, V0Result, RelocatePlan, CapturedSession, RunningHome, InstalledSession } from "./types";
+import { legacyRecordedHomeRefusal, sameManagedHome } from "./home";
+import type { StopMode, StopObservation } from "./session-stop-types";
+import type { StopSupervisorPorts } from "./supervisor";
+import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePorts, SessionId, SessionPlacement, SettledHome, V0Result, RelocatePlan, CapturedSession, RunningHome, StoppedHome, InstalledSession } from "./types";
 
 export interface ExactRelocatePorts extends RelocatePorts {
   confirm(home: RunningHome, placement: SessionPlacement, exact?: true): Promise<V0Result<{terminal:string}>>;
   confirmPending: RelocatePorts["confirm"];
 }
 
-export function createRelocateAdapters(options: RelocateAdapterOptions): RelocateAdapters & {ports:ExactRelocatePorts} {
+export interface StopMachinePorts {
+  stopCapability(machineId: MachineId): Promise<V0Result<"supported" | "old-agent">>;
+  ensureStopped(home: StoppedHome, mode: StopMode): Promise<V0Result<void>>;
+  observe(machineId: MachineId, home: StoppedHome): Promise<V0Result<StopObservation>>;
+  publishStopped(home: StoppedHome, observer: MachineId): Promise<V0Result<void>>;
+  enforceLocal(home: StoppedHome): Promise<StopObservation>;
+}
+export type StopRelocateAdapters = RelocateAdapters & { ports: ExactRelocatePorts; supervisor: StopSupervisorPorts; stop: StopMachinePorts };
+
+export function createRelocateAdapters(options: RelocateAdapterOptions): StopRelocateAdapters {
   const local=createLocalRuntime(options),journal=createRelocateJournal(options.journal,options.config.hubMachineId);
   const artifactTransport=createV0ArtifactTransport(options.transport,options.config.machineId);
   const hub=options.config.machineId===options.config.hubMachineId && options.config.role==="hub";
@@ -110,6 +122,56 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
     try {const results=await options.sync.sync(machineId);return results.every(result=>result.code===0)?{ok:true,value:undefined}:refusal("sync-failed","The final row synchronization did not complete.");}
     catch{return refusal("sync-failed","The peer row synchronization could not complete.");}
   }
+  const stopUnreachable = () => refusal("source-unreachable", "The box v0 agent is unreachable.", "Restore contact with the box, then retry Stop.");
+  const invalidStopReply = () => refusal("home-unavailable", "The v0 Stop reply could not be verified.", "Check roaming on the box, then retry Stop.");
+  const sourceMachine = options.config.machineId;
+  const stop: StopMachinePorts = {
+    async stopCapability(machineId) {
+      if (machineId === sourceMachine) return { ok: true, value: "supported" };
+      try {
+        const reply = await rpc(machineId, { version: 1, kind: "hello" });
+        if (!reply.ok) return reply;
+        if (reply.value.machineId !== machineId || reply.value.spider !== true || typeof reply.value.pi !== "boolean") return invalidStopReply();
+        if (reply.value.sessionStopVersion === undefined) return { ok: true, value: "old-agent" };
+        return reply.value.sessionStopVersion === 1 ? { ok: true, value: "supported" } : invalidStopReply();
+      } catch { return stopUnreachable(); }
+    },
+    async ensureStopped(home, mode) {
+      if (home.machineId === sourceMachine) return requestLocalStop(home, mode, options);
+      try {
+        const reply = await rpc(home.machineId, { version: 1, kind: "ensure-stopped", sourceMachine, home, mode });
+        if (!reply.ok) return reply;
+        return reply.value.pending === true ? { ok: true, value: undefined } : invalidStopReply();
+      } catch { return stopUnreachable(); }
+    },
+    async observe(machineId, home) {
+      try {
+        if (machineId === sourceMachine) return { ok: true, value: await local.observeStopped(home) };
+        const reply = await rpc(machineId, { version: 1, kind: "session-observation", sourceMachine, sessionId: home.sessionId, home });
+        if (!reply.ok) return reply;
+        try { return { ok: true, value: decodeStopObservation(reply.value.observation, machineId, home) }; }
+        catch { return invalidStopReply(); }
+      } catch { return stopUnreachable(); }
+    },
+    async publishStopped(home, observer) {
+      let disabled = false;
+      if (observer !== sourceMachine) {
+        // A separate store can fail after global has already applied the row.
+        try { disabled = (await options.sync.sync(observer)).some(result => result.code === 1 && result.reason === "roaming-disabled"); }
+        catch { /* Read back the home anyway. */ }
+      }
+      try {
+        // Use the existing read so publication also works on older v0 agents.
+        const reply = await rpc(observer, { version: 1, kind: "home", sessionId: home.sessionId });
+        if (!reply.ok) return reply;
+        const observed = reply.value.home === null ? null : parseHome(reply.value.home);
+        if (sameManagedHome(observed, home)) return { ok: true, value: undefined };
+      } catch { /* A missing read-back cannot prove publication. */ }
+      if (disabled) return refusal("replication-disabled", "The box has disabled roaming replication.", "Run spider roam enable on the box, then retry Stop.");
+      return refusal("sync-failed", "The observer has not reported the exact stopped home.", "Restore replication and retry Stop.");
+    },
+    enforceLocal: local.enforceStopped,
+  };
   const machines={
     async locate(machineId:string,id:SessionId):Promise<V0Result<SessionPlacement>> {
       if(machineId===options.config.machineId)return local.locate(machineId,id);
@@ -188,5 +250,8 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
       try{const result=await rpc(home.machineId,{version:1,kind:"install",plan,captured,home});if(!result.ok)return result;const installed=object(result.value.installed);parsePlacement(installed.placement);object(installed.session);return {ok:true,value:installed as unknown as InstalledSession};}catch{return refusal("install-failed","The destination install acknowledgement is unavailable.");}
     },
   };
-  return {ports,setHome:shared,supervisor:{machineId:options.config.machineId,clock:options.clock,entries:local.entries,owner:local.owner,stop:id=>local.stop(id),activate:local.activate,start:local.start,report(sessionId,refusal){writeLocal(options.globalDb,"relocate-supervisor-refusal",sessionId??"service",refusal);}},async dispose(){/* Per-call local stores and staging handles are already closed. */}};
+  return {ports,setHome:shared,stop,supervisor:{machineId:sourceMachine,clock:options.clock,entries:local.entries,owner:local.owner,
+    stop:id=>local.stop(id),stopStopped:local.enforceStopped,activate:local.activate,start:local.start,
+    report(sessionId,refusal){writeLocal(options.globalDb,"relocate-supervisor-refusal",sessionId??"service",refusal);}},
+    async dispose(){/* Per-call local stores and staging handles are already closed. */}};
 }

@@ -7,6 +7,7 @@ import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { discoverOrdinarySource } from "./ordinary-source";
 import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { inspectSession } from "../session-file";
 import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { createStorePort } from "../stores";
@@ -23,8 +24,9 @@ import { hubCoreSelection } from "../launchd";
 import { loadHerdrConfig } from "../host-config";
 import type { Operation, Clock } from "../contracts";
 import { createLocalExactHc, resolveParticipantPi } from "../launcher";
-import { createLocalStop } from "./local-stop";
-import type { StopObservation } from "./session-stop-types";
+import { readManagedHome, sameManagedHome } from "./home";
+import { createLocalStop, queueStopMode } from "./local-stop";
+import type { StopMode, StopObservation } from "./session-stop-types";
 import { requestSessionControl } from "../session-socket";
 import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, StoppedHome, SupervisorEntry, V0Result, RelocatePlan } from "./types";
 import { refusal } from "./remote";
@@ -226,7 +228,8 @@ export async function checkMacSourceWriters(id: SessionId, options: RelocateAdap
 const terminalName = (t: LocalTerminal): string => t.pid === null ? `terminal ${t.terminal} (PID unavailable)` : `PID ${t.pid} (pi)`;
 
 /** A free lock alone cannot clear an ordinary pi or a detached Spider job. */
-export async function stopLocalSession(sessionId: SessionId, moving: MovingHome | null, io: LocalIO, clock: Clock, timeoutMs: number): Promise<V0Result<void>> {
+export async function stopLocalSession(sessionId: SessionId, moving: MovingHome | null, io: LocalIO, clock: Clock, timeoutMs: number,
+  beforeSignal?: () => Promise<V0Result<void> | undefined>): Promise<V0Result<void>> {
   try {
     const deadline = clock.now() + timeoutMs;
     let observed = await io.inspect(sessionId);
@@ -277,12 +280,14 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
         const member = await io.probe(child.pid);
         if (member.kind === "unknown") return busy([processName(child)]);
         if (member.kind !== "live" || member.startIdentity !== child.startIdentity) continue;
+        if (beforeSignal) { const blocked = await beforeSignal(); if (blocked) return blocked; }
         try { await io.signal(child.pid,"SIGTERM"); }
         catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
       }
       const shutdown = observed && moving && await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});
       if (!shutdown && (await io.probe(pid)).kind !== "absent") {
         if (!await stillOwned()) return busy([processName(root)]);
+        if (beforeSignal) { const blocked = await beforeSignal(); if (blocked) return blocked; }
         try { await io.signal(pid,"SIGTERM"); }
         catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
       }
@@ -437,6 +442,23 @@ export async function captureOrdinarySource(plan: RelocatePlan, options: Relocat
   await seedLocalPlacement(plan.sourcePlacement, plan.source.epoch, options);
   recordLocation(options.globalDb, { sessionId: plan.source.sessionId, stores: plan.sourcePlacement.stores, home: { sessionId: plan.source.sessionId, machineId: plan.source.machineId, epoch: plan.source.epoch, moveId: null, updatedAt: plan.source.updatedAt }, file: plan.sourcePlacement.file, cwd: plan.sourcePlacement.cwd });
 }
+/** Check and queue on the same connection so replication cannot change the row between them. */
+export function requestLocalStop(home: StoppedHome, mode: StopMode, options: RelocateAdapterOptions): V0Result<void> {
+  const { config, globalDb: db } = options;
+  const conflict = () => refusal("home-conflict", "The exact stopped home is not present on its named machine.",
+    "Publish the stopped home before requesting Stop again.");
+  if (home.machineId !== config.machineId) return conflict();
+  try {
+    return db.raw.transaction(() => {
+      if (!sameManagedHome(readManagedHome(db, home.sessionId), home)) return conflict();
+      queueStopMode(db, home, mode);
+      return { ok: true, value: undefined } as const;
+    }).immediate();
+  } catch {
+    return refusal("home-unavailable", "The stopped replica or its mode could not be saved locally.", "Check local roaming storage, then retry Stop.");
+  }
+}
+
 export interface LocalRuntime extends SessionMachinePorts {
   confirm(home: RunningHome, placement: SessionPlacement, exact?: true): Promise<V0Result<{terminal:string}>>;
   owner(id: SessionId, placement?: SessionPlacement): Promise<SessionOwner>;
@@ -541,16 +563,24 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     }); } catch (error) {return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("install-failed","Local capture membership could not be activated.");}
   }
   async function stop(id: SessionId,moving: MovingHome|null=null,beforeOrdinaryCapture=false): Promise<V0Result<void>> {
-    try { return await withSessionState(id,async()=>{
-      const current = await options.homes.read(id).catch(error => {
-        if (moving) throw error;
-        return null; // An unreadable home does not authorize a managed pi to run.
-      });
-      if (moving && !exactHome(current,moving)) return refusal("home-conflict","The source moving home changed before shutdown.");
-      if (!moving && current?.state === "running" && current.machineId === options.config.machineId) {
+    async function checkGenericStop(): Promise<V0Result<void> | undefined> {
+      // An unreadable home does not authorize a managed pi to run.
+      const current = await options.homes.read(id).catch(() => null);
+      if (current?.state === "stopped") {
+        return refusal("home-conflict", "This session now has a stopped home; generic shutdown did not signal pi.",
+          "Wait for the local stopped-home check, or retry Stop on the Mac.");
+      }
+      if (current?.state === "running" && current.machineId === options.config.machineId) {
         return refusal("home-conflict","This machine is now the running home; the supervisor did not stop pi.","Leave the session open. To move it, run spider roam relocate.");
       }
-      const stopped=await stopLocalSession(id,moving,io,options.clock,options.limits.readyMs);if(!stopped.ok)return stopped;
+    }
+    try { return await withSessionState(id,async()=>{
+      if (moving) {
+        if (!exactHome(await options.homes.read(id),moving)) return refusal("home-conflict","The source moving home changed before shutdown.");
+      } else {
+        const blocked = await checkGenericStop(); if (blocked) return blocked;
+      }
+      const stopped=await stopLocalSession(id,moving,io,options.clock,options.limits.readyMs,moving ? undefined : checkGenericStop);if(!stopped.ok)return stopped;
       const known=readLocal<unknown>(options.globalDb,"relocate-managed",id);
       const row=options.globalDb.prepare("SELECT stores_json,file,cwd FROM roam_locations WHERE session_id=?").get(id) as {stores_json:string;file:string|null;cwd:string|null}|undefined;
       // A first-time ordinary source may be cataloged by mapWorkspace before
@@ -569,6 +599,29 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       return refusal("stop-timeout","The stopped source membership could not be frozen.");
     }
   }
+  function retainedLocalCopy(id: SessionId): boolean {
+    const db = options.globalDb;
+    try {
+      const row = db.prepare("SELECT file,cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as
+        {file: string | null; cwd: string | null; stores_json: string} | undefined;
+      if (!row) return false;
+      if (row.file !== null && row.cwd !== null) return true;
+      for (const key of parseLocationStores(JSON.parse(row.stores_json), { allowEmpty: true })) {
+        if (!key.startsWith("worktree:")) continue;
+        try {
+          const store = openRoamStoreReadOnly(db, key);
+          if (!store) continue;
+          try {
+            const meta = store.prepare("SELECT machine_id, store_key FROM roam_meta WHERE id=1").get() as
+              {machine_id: string; store_key: string | null} | undefined;
+            if (meta?.machine_id === options.config.machineId && (meta.store_key === null || meta.store_key === key) &&
+                store.prepare("SELECT 1 FROM roam_sessions WHERE session_id=? AND state IN ('active','frozen')").get(id)) return true;
+          } finally { store.close(); }
+        } catch { /* An unreadable store does not establish local provenance. */ }
+      }
+    } catch { /* Leave an unknown foreign copy unconfirmed. */ }
+    return false;
+  }
   async function entries(): Promise<readonly SupervisorEntry[]> {
     const homes=await options.homes.list(), byId=new Map(homes.map(home=>[home.sessionId,home]));
     const placements = new Map<SessionId, SessionPlacement | null>();
@@ -583,10 +636,19 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       }
       placements.set(id,placement);
     }
-    const ids=new Set([...placements.keys(),...homes.filter(home=>home.machineId===options.config.machineId || home.state === "moving" && home.destination===options.config.machineId).map(home=>home.sessionId)]);
+    const machine = options.config.machineId;
+    const ids = new Set(placements.keys());
+    for (const home of homes) {
+      if (home.machineId === machine || home.state === "moving" && home.destination === machine ||
+          home.state === "stopped" && !ids.has(home.sessionId) && retainedLocalCopy(home.sessionId)) ids.add(home.sessionId);
+    }
     const result: SupervisorEntry[]=[];
     for(const sessionId of ids) {
       const home = byId.get(sessionId) ?? null;
+      if (home?.state === "stopped") {
+        result.push({sessionId,home,placement:null});
+        continue;
+      }
       const saved = placements.get(sessionId);
       if (saved === null) {
         result.push({sessionId,home,placement:null,placementRefusal:{code:"destination-copy-missing",

@@ -16,14 +16,14 @@ import { withV0HomeLifecycle } from "./home-lifecycle";
 import { relocate } from "./relocate";
 import { setHome } from "./set-home";
 import { createSessionOperations, type SessionOperations } from "./session-operations";
-import { createRelocateAdapters } from "./adapters";
+import { createRelocateAdapters, type StopRelocateAdapters } from "./adapters";
 import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
 import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local";
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
 import { serveV0Control, summarizeSync, type V0HubControlServices, type V0SyncOutcome } from "./service";
-import type { RelocateAdapterOptions, RelocateAdapters, HomeStore, RunningHome, SetHomePorts, V0ControlServices, V0Result } from "./types";
+import type { RelocateAdapterOptions, HomeStore, RunningHome, SetHomePorts, V0ControlServices, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
   openCore?: (root: string) => LocalCore;
@@ -34,7 +34,7 @@ export interface V0RuntimeOverrides {
 }
 export interface V0Runtime {
   options: RelocateAdapterOptions;
-  adapters: RelocateAdapters;
+  adapters: StopRelocateAdapters;
   homes: HubHomeStore;
   operations: SessionOperations;
   sync: ReturnType<typeof createSync>;

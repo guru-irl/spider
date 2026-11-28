@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [1, 2, 3, 4]
+        lane: [1]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -39,17 +39,15 @@ jobs:
       - name: Run the first candidate trial
         env:
           LANE: ${{ matrix.lane }}
-        run: bash scripts/hsr-trials.sh "$LANE" after-first
+        run: |
+          python3 scripts/hsr-look-profile.py
+          bash scripts/hsr-trials.sh "$LANE" after-first
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: hsr-preview-${{ matrix.lane }}
           path: hsr-results
           if-no-files-found: warn
-      - name: Run the remaining trials
-        env:
-          LANE: ${{ matrix.lane }}
-        run: bash scripts/hsr-trials.sh "$LANE" after-rest
       - uses: actions/upload-artifact@v4
         if: always()
         with:

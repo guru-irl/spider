@@ -75,8 +75,6 @@ else console.log(JSON.stringify({spaces:[]}));\n`);
   const context: SetupContext = { labelContract: HerdrLabelContract, modProps: ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome'].map(name => ({ directory: join(h.directories.app, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(h.directories.global, 'herdr'), cliPath: join(root, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath, labelContract: HerdrLabelContract } })), installed: {}, retiredTerminals: [], priorCutover: null, recordCutover: async () => {} };
   const bootstraps: string[] = [];
   const bootstrap = parts.bootstrapRuntime;
-  const ensureRuntime = parts.ensureRuntime; let planned: Awaited<ReturnType<typeof ensureRuntime>> = [];
-  parts.ensureRuntime = async (r, c) => { planned = await ensureRuntime(r, c); return planned; };
-  parts.bootstrapRuntime = async (r, c) => { await bootstrap(r, c); for (const runtime of planned) { expect(await parts.hc.fileRead(runtime.machine, runtime.path)).toEqual(runtime.bytes); bootstraps.push(runtime.path); } };
+  parts.bootstrapRuntime = async (r, c, runtimes) => { await bootstrap(r, c, runtimes); for (const runtime of runtimes) { expect(await parts.hc.fileRead(runtime.machine, runtime.path)).toEqual(runtime.bytes); bootstraps.push(runtime.path); } };
   return { h, root, ports, request, parts, context, bootstraps };
 }

@@ -33,8 +33,12 @@ test('production CLI plan lists assets without changing files or launching probe
   expect(errors).toEqual([]);
   expect(output.join('')).toContain(`write ${join(f.h.directories.app, 'mods/spider-panel/main.js')}`);
   expect(output.join('')).toContain('Plan only');
+  expect(output.join('')).not.toContain('skip runtime');
   expect(await fingerprint()).toEqual(before);
-  expect((await f.h.calls()).slice(calls.length).filter(call => call.argv[0] !== 'get' && !(call.argv[0] === 'server' && call.argv[1] === 'status'))).toEqual([]);
+  const planCalls = (await f.h.calls()).slice(calls.length).map(call => call.argv);
+  expect(planCalls.filter(argv => argv[0] !== 'get' && !(argv[0] === 'server' && argv[1] === 'status'))).toEqual([
+    ['machine', 'ls', '--json'],
+  ]);
 });
 
 test('production installs each theme where its consumer reads it', async () => {

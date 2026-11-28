@@ -4,9 +4,10 @@ import type { HcClient, HcRunRequest, CoreOnlyHerdrConfig, FullHerdrConfig, Herd
 import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
+import { isHerdrConnectivityFailure } from '../client/availability.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
 import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, discardModStages, unpublishNewMods, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction, type SetupJournal } from './backup.js';
-import { probeLaunch, type DoctorReport } from './doctor.js';
+import { probeLaunch, type DoctorReport, type RuntimeInventory } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
 import { chmod, lstat, mkdir } from 'node:fs/promises';
@@ -175,23 +176,24 @@ export interface SetupParts {
   paneEndpointPlan?(request: SetupRequest): Promise<{ paths: readonly string[]; changed: boolean; files?: readonly InstallFile[] }>;
   /** Explicit setup may stage only this machine’s owned installed endpoint. */
   stagePaneEndpoint?(request: SetupRequest): Promise<readonly string[]>;
+  runtimeInventory?(request: SetupRequest): Promise<RuntimeInventory>;
   ensureRuntime(request: SetupRequest, context: SetupContext): Promise<readonly RuntimeFile[]>;
-  bootstrapRuntime(request: SetupRequest, context: SetupContext): Promise<void>;
+  bootstrapRuntime(request: SetupRequest, context: SetupContext, runtimes: readonly RuntimeFile[]): Promise<void>;
   runtimeRootsHealthy?(request: SetupRequest, runtimes: readonly RuntimeFile[]): Promise<boolean>;
-  runtimeRootProbes?(request: SetupRequest): readonly RuntimeRootObservation[];
+  runtimeRootProbes?(request: SetupRequest, runtimes: readonly RuntimeFile[]): readonly RuntimeRootObservation[];
   hc: Pick<HcClient, 'fileRead' | 'fileWrite'>;
   cutover(request: SetupRequest, context: SetupContext): Promise<CutoverResult>;
   /** Recheck existing owners without repeating initial app selection. */
   reconcileCutover?(request: SetupRequest, context: SetupContext): Promise<CutoverResult>;
   persistCutover?(request: SetupRequest): Promise<CutoverResult>;
   selectApp?(request: SetupRequest): Promise<void>;
-  verify(request: SetupRequest): Promise<DoctorReport>;
+  verify(request: SetupRequest, deferredRuntimes: ReadonlySet<MachineName>): Promise<DoctorReport>;
   rollback(result: CutoverResult, options?: { preserve?: CutoverResult; beforeClose?: () => Promise<void> }): Promise<void>;
   warn(message: string): void;
 }
 export interface SetupResult {
   journalChanged?: boolean;
-  plan?: { files: readonly FileAction[]; cutover: readonly string[] };
+  plan?: { files: readonly FileAction[]; cutover: readonly string[]; skippedRuntimes: readonly MachineName[] };
   writes: readonly string[];
   probes: readonly NodeObservation[];
   cutover: CutoverResult | null;
@@ -273,12 +275,6 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         }
         await recordWrites(changed);
       }
-    };
-    const recordRuntimeRootProbes = (): boolean => {
-      const observations = parts.runtimeRootProbes?.(request);
-      if (!observations || JSON.stringify(observations) === JSON.stringify(journal.runtimeRootProbes)) return false;
-      journal.runtimeRootProbes = [...observations];
-      return true;
     };
     const reconcilingCutover = journal.cutoverPending;
     let needsAppSelection = !journal.verified;
@@ -449,57 +445,95 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       const file = files.find(file => file.path === plannedAppSettings(request).path)!;
       if (file.snapshotOnly) file.bytes = Buffer.from(JSON.stringify(plannedAppSettings(request).planned));
     }
+    const inventory = await parts.runtimeInventory?.(request);
+    if (inventory?.missing.length)
+      throw new HerdrError('machine-not-found', `No unique entry in the local core inventory for: ${inventory.missing.join(', ')}`);
+    const deferred = new Set(inventory?.unreachable);
     if (request.dryRun) {
       const cutover = [...(cutoverNeeded ? preflight.cutoverActions ?? ['Recheck recorded sessions and open only closed selections'] : []), ...(needsAppSelection ? ['Select the installed layout and theme'] : [])];
-      return { plan: { files: fileActions, cutover }, writes: [], probes: [], cutover: journal.cutover, doctor: { failures: [], warnings: [], probes: [] } };
+      const skippedRuntimes = [...deferred].sort();
+      return { plan: { files: fileActions, cutover, skippedRuntimes }, writes: [], probes: [], cutover: journal.cutover, doctor: { failures: [], warnings: [], probes: [] } };
     }
+    const priorPending = new Set(journal.pendingRuntimes);
+    const onMachine = async (machine: MachineName, work: () => Promise<void>, explain?: (error: unknown) => HerdrError) => {
+      if (deferred.has(machine)) return;
+      try { await work(); }
+      catch (error) {
+        if (!isHerdrConnectivityFailure(error)) throw explain ? explain(error) : error;
+        deferred.add(machine);
+      }
+    };
     const runtimes = await parts.ensureRuntime(request, context);
-    const priorRuntimes = [...journal.runtimes];
-    const runtimePlans: {
-      runtime: RuntimeFile;
-      before: string | null;
-    }[] = [];
+    const priorRuntimes = journal.runtimes, priorProbes = journal.probes, priorRootProbes = journal.runtimeRootProbes;
+    const runtimeKey = (entry: Pick<RuntimeFile, 'machine' | 'path'>) => JSON.stringify([entry.machine, entry.path]);
+    const recordedRuntimes = new Map(priorRuntimes.map(entry => [runtimeKey(entry), entry]));
+    const recordedRuntime = (runtime: RuntimeFile) => recordedRuntimes.get(runtimeKey(runtime))?.after === runtime.sha256;
+    const runtimePlans: { runtime: RuntimeFile; before: string | null }[] = [];
     for (const runtime of runtimes) {
       if (!isAbsolute(runtime.path) || digest(runtime.bytes) !== runtime.sha256)
         throw new HerdrError('runtime-digest-mismatch', 'Runtime source digest or absolute path differs');
-      const target = preflight.targets.find(t => t.machine === runtime.machine);
-      const cached = target && journal.probes.find(p => p.machine === target.machine && p.nodePath === target.nodePath && p.coreStartedAt === target.coreStartedAt && checkRemoteNodeVersion(p.version));
-      const verifiedRuntime = journal.verified && cached && priorRuntimes.some(r => r.machine === runtime.machine && r.path === runtime.path && r.after === runtime.sha256);
-      const bytes = verifiedRuntime ? runtime.bytes : await readRuntime(parts, runtime);
-      const before = bytes === null ? null : digest(bytes);
-      if (before !== null && before !== runtime.sha256)
-        throw new HerdrError('runtime-digest-mismatch', `Existing versioned runtime differs on ${runtime.machine}; inspect it instead of overwriting it`);
-      runtimePlans.push({ runtime, before });
-      journal.runtimes = [...journal.runtimes.filter(r => r.machine !== runtime.machine || r.path !== runtime.path), { machine: runtime.machine, path: runtime.path, before, after: runtime.sha256 }];
+      await onMachine(runtime.machine, async () => {
+        const target = preflight.targets.find(t => t.machine === runtime.machine);
+        const cached = target && priorProbes.find(p => p.machine === target.machine && p.nodePath === target.nodePath && p.coreStartedAt === target.coreStartedAt && checkRemoteNodeVersion(p.version));
+        const verifiedRuntime = journal.verified && !priorPending.has(runtime.machine) && cached && recordedRuntime(runtime);
+        const bytes = verifiedRuntime ? runtime.bytes : await readRuntime(parts, runtime);
+        const before = bytes === null ? null : digest(bytes);
+        if (before !== null && before !== runtime.sha256)
+          throw new HerdrError('runtime-digest-mismatch', `Existing versioned runtime differs on ${runtime.machine}; inspect it instead of overwriting it`);
+        runtimePlans.push({ runtime, before });
+      });
     }
-    const probes: NodeObservation[] = [];
+    const probes = new Map<MachineName, NodeObservation>();
     for (const target of preflight.targets) {
-      const cached = journal.probes.find(p => p.machine === target.machine && p.nodePath === target.nodePath && p.coreStartedAt === target.coreStartedAt);
-      const runtimeUnchanged = runtimes.filter(r => r.machine === target.machine).every(r => priorRuntimes.some(prior => prior.machine === r.machine && prior.path === r.path && prior.after === r.sha256));
-      if (cached && checkRemoteNodeVersion(cached.version) && runtimeUnchanged)
-        continue;
-      let version: string;
-      try {
-        version = await parts.probeMachineNode(target, probeLaunch(target));
-      }
-      catch (e) {
-        throw new HerdrError('remote-node-unavailable', `Machine ${target.machine} needs Node >=${REMOTE_NODE_MINIMUM}; configure nodePath or repair destination PATH: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      if (!checkRemoteNodeVersion(version))
-        throw new HerdrError('remote-node-unavailable', `Machine ${target.machine} needs Node >=${REMOTE_NODE_MINIMUM}; configure nodePath or repair destination PATH`);
-      const observation = { ...target, version: version.trim() };
-      probes.push(observation);
-      journal.probes = [...journal.probes.filter(p => p.machine !== target.machine), observation];
+      const cached = priorProbes.find(p => p.machine === target.machine && p.nodePath === target.nodePath && p.coreStartedAt === target.coreStartedAt);
+      if (!priorPending.has(target.machine) && cached && checkRemoteNodeVersion(cached.version) && runtimes.filter(r => r.machine === target.machine).every(recordedRuntime)) continue;
+      const requirement = `Machine ${target.machine} needs Node >=${REMOTE_NODE_MINIMUM}; configure nodePath or repair destination PATH`;
+      await onMachine(target.machine, async () => {
+        const version = await parts.probeMachineNode(target, probeLaunch(target));
+        if (!checkRemoteNodeVersion(version)) throw new Error('Unsupported or missing Node version');
+        probes.set(target.machine, { ...target, version: version.trim() });
+      }, error => new HerdrError('remote-node-unavailable', `${requirement}: ${error instanceof Error ? error.message : String(error)}`));
     }
-    const bootstrapNeeded = !journal.verified || probes.length > 0 || runtimes.some(runtime => !priorRuntimes.some(prior => prior.machine === runtime.machine && prior.path === runtime.path && prior.after === runtime.sha256)) || (parts.runtimeRootsHealthy ? !await parts.runtimeRootsHealthy(request, runtimes) : false);
+    const bootstrapError = (machine: MachineName, error: unknown) => new HerdrError('runtime-bootstrap-failed',
+      error instanceof HerdrError && error.code === 'probe-timeout'
+        ? `Runtime bootstrap timed out on ${machine}; check that the machine is responsive, then rerun setup.`
+        : `Destination runtime bootstrap failed; repair its directory permissions or Node configuration and rerun setup: ${error instanceof Error ? error.message : String(error)}`);
+    const bootstraps: RuntimeFile[] = [];
+    for (const { runtime, before } of runtimePlans) await onMachine(runtime.machine, async () => {
+      if (!journal.verified || priorPending.has(runtime.machine) || probes.has(runtime.machine) || !recordedRuntime(runtime) || before !== runtime.sha256 ||
+          parts.runtimeRootsHealthy && !await parts.runtimeRootsHealthy(request, [runtime])) bootstraps.push(runtime);
+    }, error => bootstrapError(runtime.machine, error));
     const bootstrap = async () => {
-      try {
-        if (bootstrapNeeded) await parts.bootstrapRuntime(request, context);
-      } catch (error) {
-        throw new HerdrError('runtime-bootstrap-failed', `Destination runtime bootstrap failed; repair its directory permissions or Node configuration and rerun setup: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      for (const runtime of bootstraps) await onMachine(runtime.machine, () => parts.bootstrapRuntime(request, context, [runtime]), error => bootstrapError(runtime.machine, error));
     };
-    const unchanged = releasedSounds.length === 0 && fileActions.every(action => action.action === 'unchanged') && journal.verified && !cutoverNeeded && fingerprint === journal.fingerprint && probes.length === 0 && runtimePlans.every(p => p.before === p.runtime.sha256) && (await Promise.all(files.map(async file => file.snapshotOnly || (await snapshot(file.path)).hash === digest(file.bytes)))).every(Boolean);
+    const activeProbes = () => [...probes.values()].filter(probe => !deferred.has(probe.machine));
+    const runtimeJournalState = () => JSON.stringify([journal.runtimes, journal.probes, journal.runtimeRootProbes, journal.pendingRuntimes]);
+    const recordRuntimes = (): boolean => {
+      const previous = runtimeJournalState();
+      const active = runtimePlans.filter(({ runtime }) => !deferred.has(runtime.machine));
+      const entries = new Map(recordedRuntimes), observations = new Map(priorProbes.map(probe => [probe.machine, probe]));
+      for (const { runtime, before } of active) if (!recordedRuntime(runtime))
+        entries.set(runtimeKey(runtime), { machine: runtime.machine, path: runtime.path, before, after: runtime.sha256 });
+      for (const probe of activeProbes()) observations.set(probe.machine, probe);
+      journal.runtimes = [...entries.values()];
+      journal.probes = [...observations.values()];
+      if (parts.runtimeRootProbes) {
+        const roots = new Map(priorRootProbes?.filter(probe => deferred.has(probe.machine)).map(probe => [probe.machine, probe]));
+        for (const probe of parts.runtimeRootProbes(request, active.map(({ runtime }) => runtime))) roots.set(probe.machine, probe);
+        journal.runtimeRootProbes = [...roots.values()];
+      }
+      journal.pendingRuntimes = deferred.size ? [...deferred].sort() : undefined;
+      return previous !== runtimeJournalState();
+    };
+    const verify = async () => {
+      const doctor = await parts.verify(request, deferred);
+      for (const machine of doctor.deferredRuntimes ?? []) deferred.add(machine);
+      return doctor;
+    };
+    const warnDeferred = () => {
+      if (deferred.size) parts.warn(`Skipped runtime setup on ${[...deferred].sort().join(', ')}. Setup will install the runtime the next time setup runs while each machine is reachable.`);
+    };
+    const unchanged = releasedSounds.length === 0 && fileActions.every(action => action.action === 'unchanged') && journal.verified && !cutoverNeeded && fingerprint === journal.fingerprint && activeProbes().length === 0 && runtimePlans.every(p => deferred.has(p.runtime.machine) || p.before === p.runtime.sha256) && (await Promise.all(files.map(async file => file.snapshotOnly || (await snapshot(file.path)).hash === digest(file.bytes)))).every(Boolean);
     await ensureSessionFeedDirectory(request.config.globalRoot, false);
     const endpointPlan = await parts.paneEndpointPlan?.(request);
     const checkpointPaths = [...files.map(file => file.path), layoutPath, join(request.config.app.home, 'keys.json'),
@@ -521,12 +555,13 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       const endpointWrites = await observeWrites([join(request.config.globalRoot, 'herdr/installation.json'), ...(endpointPlan?.paths ?? [])], async () => await parts.stagePaneEndpoint?.(request) ?? []);
       if (unchanged) {
         await bootstrap(); // Repair root loss without repeating cutover or unrelated setup writes.
-        const doctor = await parts.verify(request);
+        const doctor = await verify();
         if (doctor.failures.length) throw new HerdrError('setup-verification-failed', 'Installed setup failed verification', { failures: doctor.failures });
-        if (recordRuntimeRootProbes() || cutoverMetadataChanged) {
+        if (recordRuntimes() || cutoverMetadataChanged) {
           checkpoint ??= await beginRunCheckpoint(request.journalRoot, checkpointPaths, substantive);
           await saveSetupJournal();
         }
+        warnDeferred();
         completed = true;
         return { writes: [...endpointWrites], probes: [], cutover: journal.cutover, doctor };
       }
@@ -548,24 +583,26 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       journal.retiredTerminals = retiredTerminals;
       await prepareBackups(request.journalRoot, files, journal);
       if (checkpoint) await recordCheckpointIntents(request.journalRoot, checkpoint, files, journal);
-      await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal, recordWrites);
-      const writes = [...endpointWrites, ...await applyFiles(request.journalRoot, files.filter(file => !file.updateAfterCutover), journal, recordWrites)];
-      for (const file of appFiles)
-        if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
-      for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);
-      for (const { runtime, before } of runtimePlans) {
+      for (const { runtime, before } of runtimePlans) await onMachine(runtime.machine, async () => {
         const installed = await readRuntime(parts, runtime);
         const current = installed === null ? null : digest(installed);
-        if (current === runtime.sha256)
-          continue;
+        if (current === runtime.sha256) return;
         if (current !== before)
           throw new HerdrError('runtime-digest-mismatch', `Runtime changed after preflight on ${runtime.machine}`);
         if (checkpoint) await recordRemoteWrite(request.journalRoot, checkpoint, runtime.machine, runtime.path);
         await parts.hc.fileWrite(runtime.machine, runtime.path, runtime.bytes);
         if (digest(await parts.hc.fileRead(runtime.machine, runtime.path)) !== runtime.sha256)
           throw new HerdrError('runtime-digest-mismatch', `Runtime verification failed on ${runtime.machine}`);
-      }
+      });
+      // Reuse the Node check after a failed bootstrap, but retry bootstrap until verified.
+      if (recordRuntimes()) await saveSetupJournal();
       await bootstrap();
+      if (recordRuntimes()) await saveSetupJournal();
+      await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal, recordWrites);
+      const writes = [...endpointWrites, ...await applyFiles(request.journalRoot, files.filter(file => !file.updateAfterCutover), journal, recordWrites)];
+      for (const file of appFiles)
+        if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
+      for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);
       let cutover = journal.cutover;
       try {
         if (cutoverNeeded || selectionReplacement) {
@@ -627,14 +664,15 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         journal.cutover = cutover;
         journal.cutoverPending = false;
         await saveSetupJournal();
-        const doctor = await parts.verify(request);
+        const doctor = await verify();
         if (doctor.failures.length)
           throw new HerdrError('setup-verification-failed', 'Setup failed verification; retain the journal and inspect live owners before rollback', { failures: doctor.failures });
-        recordRuntimeRootProbes();
+        recordRuntimes();
         journal.verified = true;
         await saveSetupJournal();
+        warnDeferred();
         completed = true;
-        return { writes, probes, cutover, doctor };
+        return { writes, probes: activeProbes(), cutover, doctor };
       } catch (error) { throw error; }
     } catch (error) { setupError = error; throw error; }
     finally {

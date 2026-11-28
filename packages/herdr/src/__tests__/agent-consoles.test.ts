@@ -6,28 +6,36 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { paths } from '@spider/db-core';
 import type { ExtensionAPI, ExtensionContext, SessionShutdownEvent } from '@earendil-works/pi-coding-agent';
 import type { HcClient, JobHandle, JobId, MachineName, Owner, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
 import type { AgentConsoleLaunch } from '../remote/console.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createRemoteTestFixture } from './acceptance/c.js';
+import { installFastCoreTransport } from '../../../host/src/__tests__/herdr-setup-fast-core.js';
 import * as consoleModule from '../remote/console.js';
-const harnesses: HerdrHarness[] = [];
+const harnesses: { h: HerdrHarness; restore?: () => void }[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
-  for (const h of harnesses.splice(0)) {
-    const extra = (await h.hc.machines()).find(machine => machine.name === 'other.invalid');
-    if (extra) await h.cli(['machine', 'rm', 'other.invalid', '--json']);
-    await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
-    await mkdir(resolve('.spider/scratch/agent-consoles'), { recursive: true });
-    await writeFile(resolve(`.spider/scratch/agent-consoles/lifecycle-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
+  for (const { h, restore } of harnesses.splice(0)) {
+    try {
+      const extra = (await h.hc.machines()).find(machine => machine.name === 'other.invalid');
+      if (extra) await h.cli(['machine', 'rm', 'other.invalid', '--json']);
+      await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
+      const directory = join(paths.scratch('worktree', process.cwd()), 'agent-consoles');
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, `lifecycle-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
+    } finally { restore?.(); }
   }
 });
 type Launch = AgentConsoleLaunch;
 function api() { return { ...consoleModule, ensureAgentConsole: openRetainedConsole }; }
-async function fixture(mode: 'fake' | 'hc' = 'fake') {
-  const h = await createHerdrHarness(mode); harnesses.push(h); await h.start();
+async function fixture(mode: 'fake' | 'hc' = 'fake', coreTransport: 'process' | 'socket' = 'process') {
+  if (mode !== 'fake' && coreTransport === 'socket') throw new Error('Socket transport requires fake cores');
+  const h = await createHerdrHarness(mode);
+  const restore = coreTransport === 'socket' ? installFastCoreTransport(h) : undefined;
+  harnesses.push({ h, restore }); await h.start();
   const remote = await createRemoteTestFixture(h); let counter = 0;
   const launch = async (owner = h.owner!, on = 'remote.invalid' as MachineName): Promise<Launch> => {
     const target = { ...await remote.ports.target('remote.invalid' as MachineName, owner), on };
@@ -59,7 +67,7 @@ it.skip('creates one named, labelled remote console under parallel command launc
   }
 }, 20000);
 it.each(['batch', 'exec_file'] as const)('publishes the %s tool for the console header', async tool => {
-  const { h, launch } = await fixture(); const request = await launch();
+  const { h, launch } = await fixture('fake', tool === 'batch' ? 'process' : 'socket'); const request = await launch();
   const withTool = tool === 'batch'
     ? { ...request, kind: 'batch' as const }
     : { ...request, source: { kind: 'file' as const, language: 'shell' as const, path: '/fixture/script.sh', code: 'echo file' } };
@@ -79,7 +87,7 @@ it.skipIf(process.env.SPIDER_HERDR_E2E !== '1' || !existsSync(process.env.SPIDER
   expect(rows.filter(row => row.labels['spider.kind'] === 'remote-console')).toHaveLength(1);
 }, 20000);
 it('uses bounded deterministic slugs for long, unicode and space-containing agent names', async () => {
-  const { h, launch, remoteConsoles } = await fixture(); const module = api();
+  const { h, launch, remoteConsoles } = await fixture('fake', 'socket'); const module = api();
   const names = ['A name with spaces', '代理 🚀 café', 'very-long-name-'.repeat(100)];
   for (let index = 0; index < names.length; index++) {
     const owner = { ...h.owner!, sessionId: `session-${index}` as Owner['sessionId'], name: names[index] };
@@ -97,7 +105,7 @@ it('uses bounded deterministic slugs for long, unicode and space-containing agen
   expect(new Set(slugs).size).toBe(3);
 }, 20000);
 it('separates child run identities and machine identities while using the child display name', async () => {
-  const { h, launch, remoteConsoles } = await fixture(); const module = api();
+  const { h, launch, remoteConsoles } = await fixture('fake', 'socket'); const module = api();
   await h.cli(['machine', 'add', '--via', join(h.root, 'via'), '--name', 'other.invalid', '--session', 'r', '--json']);
   const top = await module.ensureAgentConsole(await launch(), h.hc, h.localEnv);
   const env = { ...h.localEnv, PI_SUBAGENT_CHILD: '1', PI_SUBAGENT_RUN_ID: 'run-one', PI_SUBAGENT_RUN_NAME: 'Reviewer' };
@@ -148,13 +156,13 @@ it('keeps a failed console close pending when inventory temporarily omits the ma
 }, 30000);
 
 it('reuses a console found by labels rather than creating a duplicate after a fresh activation', async () => {
-  const { h, launch, remoteConsoles } = await fixture(); const module = api(); const request = await launch();
+  const { h, launch, remoteConsoles } = await fixture('fake', 'socket'); const module = api(); const request = await launch();
   const existing = await h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: request.on, name: 'existing-console', labels: { 'spider.kind': 'remote-console', 'spider.session': h.owner!.sessionId, 'spider.machine': 'remote.invalid', 'spider.owner-core': h.owner!.terminal.coreId, 'spider.owner-terminal': h.owner!.terminal.terminalId, 'spider.view-generation': h.owner!.generation, 'spider.runtime': request.target.runtimeSha256, 'spider.console-key': JSON.stringify([JSON.stringify([h.owner!.sessionId, null]), request.on]), 'spider.console-id': 'console-' + createHash('sha256').update(JSON.stringify([JSON.stringify([h.owner!.sessionId, null]), request.on])).digest('hex') }, noNotify: true, background: true, outliveParent: true });
   const found = await module.ensureAgentConsole(request, h.hc, h.localEnv);
   expect(found!.address).toBe(existing.address); expect(await remoteConsoles()).toHaveLength(1);
 }, 20000);
 it('keeps the console journal attached to agent identity when the owning core changes', async () => {
-  const { h, launch } = await fixture(); const request = await launch();
+  const { h, launch } = await fixture('fake', 'socket'); const request = await launch();
   const first = await consoleModule.ensureAgentConsole(request, h.hc, h.localEnv);
   const movedOwner = { ...h.owner!, terminal: { ...h.owner!.terminal, coreId: 'reconnected-core' as Owner['terminal']['coreId'] } };
   const second = await consoleModule.ensureAgentConsole(await launch(movedOwner), h.hc, h.localEnv);
@@ -224,7 +232,7 @@ it('the child owns normal-exit cleanup without using the top-level shutdown hook
   await childEvent.shutdown('quit'); await expect(h.hc.get(console!.address)).rejects.toMatchObject({ code: 'not_found' }); top.dispose(); child.dispose();
 }, 20000);
 it('does nothing outside Herdr or when the Herdr integration is disabled', async () => {
-  const { h, launch } = await fixture(); const module = api(); const before = await h.calls();
+  const { h, launch } = await fixture('fake', 'socket'); const module = api(); const before = await h.calls();
   expect(await module.ensureAgentConsole(await launch(), h.hc, {})).toBeNull();
   expect(await module.ensureAgentConsole({ ...await launch(), enabled: false }, h.hc, h.localEnv)).toBeNull();
   const event = events(); const registration = module.registerAgentConsoleLifecycle(event.pi, { hc: h.hc, currentOwner: () => null, env: h.localEnv }); await event.shutdown('quit'); registration.dispose();

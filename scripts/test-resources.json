@@ -12,8 +12,11 @@
         "**/.tool-versions",
         "**/tsconfig*.json",
         "**/vitest*.config.*",
+        "**/vite*.config.*",
         "**/vitest.setup.*",
-        "**/vitest.herdr-global-setup.*"
+        "**/vitest.herdr-global-setup.*",
+        "packages/herdr/e2e/setup.ts",
+        "scripts/vitest-sequencer.ts"
       ],
       "tests": [],
       "related": [],
@@ -26,7 +29,6 @@
         "scripts/selection/**",
         "scripts/test-resources.json",
         "scripts/roam-entries.json",
-        "scripts/vitest-sequencer.ts",
         "scripts/test-shards.ts",
         "scripts/test-durations.json",
         "scripts/update-test-durations.mjs",
@@ -56,8 +58,6 @@
         "scripts/extension-shim.mjs",
         "scripts/generate-roam-sql.mjs",
         "scripts/roam-entries.json",
-        "**/vite.config.*",
-        "**/vite.*.config.*",
         "scripts/selection/build-maps.*"
       ],
       "tests": [],

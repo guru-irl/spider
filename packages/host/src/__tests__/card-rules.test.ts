@@ -8,7 +8,7 @@ const fixtures = cardFixtures();
 const styles = ["text", "nerd"] as const satisfies readonly IconStyle[];
 type Fixture = ReturnType<typeof cardFixtures>[number];
 
-/** Validate blank rows and markers after stripping the shell's padding. */
+/** Validate blank rows and markers at their displayed columns. */
 function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" | "groups" | "callDetails" | "itemBoundary" | "taskStarts">, style: IconStyle): Array<[string, string]> {
   const failures: Array<[string, string]> = [];
   const statusGlyphs = (["success", "question", "open", "running", "active", "warning", "failure"] as const)
@@ -141,8 +141,8 @@ for (const fixture of fixtures) {
           for (const line of rendered) check("width", visibleWidth(line) <= width, stripTerminalSequences(line));
           const plain = rendered.map(line => stripTerminalSequences(line).trimEnd());
           const titleIndex = fixture.notification ? 1 : plain.findIndex(Boolean);
-          const pad = fixture.notification ? 1 : 0;
-          const title = plain[titleIndex]?.slice(pad + 1) ?? "";
+          // Raw tool fixtures use their own lead cell; notifications get it from the box.
+          const title = plain[titleIndex]?.slice(1) ?? "";
           const titlePrefix = `${icon(style, "spider")} ${fixture.verb}`;
           // The full escalation title cannot fit in 20 columns even without its subject.
           if (width >= 30) {
@@ -162,7 +162,7 @@ for (const fixture of fixtures) {
             check("title follows top edge", Boolean(title));
           }
           else check("title starts at top", titleIndex === 0, `${titleIndex} blank rows`);
-          const body = plain.slice(titleIndex + 1, fixture.notification ? -1 : undefined).map(line => line.slice(pad));
+          const body = plain.slice(titleIndex + 1, fixture.notification ? -1 : undefined);
           if (!fixture.callDetails && !fixture.callOnly) check("blank-under-title", Boolean(body[0]));
           if (fixture.callDetails) {
             const gap = body.indexOf("");

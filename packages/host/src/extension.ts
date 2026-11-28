@@ -44,6 +44,7 @@ import { registerHooks } from "./hooks";
 import { registerCompaction } from "./compaction/index.js";
 import { registerCopyButtons, type CopyButtonsHost } from "./copy-buttons/index.js";
 import { registerInputBand, type InputBandHost } from "./input-band/index.js";
+import { registerAccentPicker } from "./accent/index.js";
 import { HostOrganismRuntime } from "./organism-runtime";
 import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
@@ -974,6 +975,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       else process.stderr.write(message + "\n");
     });
   }
+  if (pi.registerCommand) registerAccentPicker(pi as unknown as ExtensionAPI);
   let scheduler: SessionScheduler | undefined;
   const autoReload = registerAutoReload(pi as unknown as ExtensionAPI, loadedBundle, cwd => controlConfig("get", cwd, "reload.auto") !== false, ordinaryWorkAllowed, reloadWouldInterrupt,
     () => activity.busy() || !!intercom?.hasPendingInboundAsks() || !!scheduler?.blocksReload() || organism.blocksReload(), activity);

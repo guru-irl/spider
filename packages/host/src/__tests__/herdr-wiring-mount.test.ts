@@ -72,11 +72,11 @@ it('forwards repeated explicit space adoption before the setup preflight', async
 });
 
 it.each(['explicit', 'standard'] as const)('starts the production session feed from %s setup output', async location => {
-  const { createHerdrHarness } = await import('../../../herdr/src/__tests__/testutil.js');
+  const { createHostHerdrHarness } = await import('./herdr-fixture-inventory.testutil.js');
   const { writeFile, mkdir, readFile } = await import('node:fs/promises');
   const { join } = await import('node:path');
   const { existsSync } = await import('node:fs');
-  const h = await createHerdrHarness('fake'); await h.start();
+  const h = await createHostHerdrHarness('fake'); await h.start();
   const { execFileSync } = await import('node:child_process');
   execFileSync('git', ['init', '-q', h.directories.local]);
   const hooks = new Map<string, Function[]>();

@@ -2,6 +2,7 @@ import { buildRuntimeArtifact } from '../../../herdr/src/__tests__/runtime-artif
 import { expect, vi } from 'vitest';
 import { resolve, join } from 'node:path';
 import { configFixtureCwd } from './herdr-config-fixture.js';
+import { writeWiringArtifacts } from './herdr-wiring-artifact.testutil.js';
 
 export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode = 'tui', hasUI = true, child = false, hcOwner = true, launches = false, requested: boolean | 'auto' = true, deadSocket = false, failShortcutRegistration = false, coreAvailable = true, killAction?: (ctx: any, id: string) => Promise<unknown>, options: { automaticSubagentPanes?: boolean; admitted?: () => boolean; allowMissingFeed?: boolean; fastInactive?: boolean; beforeStart?: (h: import('@spider/herdr/__tests__/isolated').HerdrHarness) => Promise<void> } = {}): Promise<{
     h: import("@spider/herdr/__tests__/isolated").HerdrHarness;
@@ -95,7 +96,7 @@ export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode =
     presence: import("../../../herdr/src/sessions/presence.js").ProcessPresenceStore;
     close(): Promise<void>;
 }> {
-  const { createHerdrHarness } = await import('../../../herdr/src/__tests__/testutil.js');
+  const { createHostHerdrHarness } = await import('./herdr-fixture-inventory.testutil.js');
   const { mountHerdr } = await import('../herdr/mount.js');
   const { createProcessPresence } = await import('../../../herdr/src/sessions/presence.js');
   const { ProcessTerminal } = await import('@earendil-works/pi-tui');
@@ -109,7 +110,7 @@ export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode =
   if (options.fastInactive && (mode !== 'fake' || launches || !(child || requested === false || requested === 'auto' && !hcOwner))) {
     throw new Error('The process-free fixture is only for inactive sessions');
   }
-  const h = await createHerdrHarness(mode);
+  const h = await createHostHerdrHarness(mode);
   let inactiveCore: import('node:net').Server | undefined;
   if (options.fastInactive) {
     const { randomUUID } = await import('node:crypto');
@@ -144,24 +145,41 @@ export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode =
   const config = { ...configOptions, enabled: requested, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: ['managed.example.invalid'], runtime: { cwd: null, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
 
   const callLog = join(h.root, 'host-hc-calls.jsonl'); await writeFile(callLog, '');
-    const { chmod } = await import('node:fs/promises'); const { fileURLToPath } = await import('node:url');
+    const { chmod } = await import('node:fs/promises');
     const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-    const logger = join(h.root, 'argv.mjs'); await writeFile(logger, `import { appendFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(callLog)}, JSON.stringify({ argv: process.argv.slice(2) }) + String.fromCharCode(10));`);
-    const recorded = join(h.root, 'recorded-hc'); await writeFile(recorded, `#!/bin/sh\n${quote(process.execPath)} ${quote(logger)} "$@"\n${coreAvailable ? '' : 'if [ "$1" = server ] && [ "$2" = status ]; then printf \'%s\\n\' \'{"error":{"kind":"unavailable","message":"Fixture core is offline"}}\' >&2; exit 2; fi\n'}exec ${quote(h.hcBinary)} "$@"\n`); await chmod(recorded, 0o700); config.core.binary = recorded;
+    const logger = join(h.root, 'argv.mjs');
+    const record = `import { appendFileSync } from 'node:fs';\nconst argv = process.argv.slice(2);\nappendFileSync(${JSON.stringify(callLog)}, JSON.stringify({ argv }) + '\\n');\n`;
+    const recorded = join(h.root, 'recorded-hc');
+    if (mode === 'fake') {
+      const fake = new URL('../../../herdr/src/__tests__/fake-hc.mjs', import.meta.url);
+      await writeFile(logger, record + `
+if (!${coreAvailable} && argv[0] === 'server' && argv[1] === 'status') {
+  console.error(JSON.stringify({ error: { kind: 'unavailable', message: 'Fixture core is offline' } }));
+  process.exit(2);
+}
+await import(${JSON.stringify(fake.href)});
+`);
+      await writeFile(recorded, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(logger)} "$@"\n`);
+    } else {
+      await writeFile(logger, record);
+      await writeFile(recorded, `#!/bin/sh\n${quote(process.execPath)} ${quote(logger)} "$@"\nexec ${quote(h.hcBinary)} "$@"\n`);
+    }
+    await chmod(recorded, 0o700); config.core.binary = recorded;
   if (launches || mode === 'hc') {
     const appScript = join(h.root, 'app-port.mjs'), parked = join(h.root, 'parked.json'); await writeFile(parked, '[]');
     await writeFile(appScript, `import { execFileSync } from 'node:child_process'; import { readFileSync, writeFileSync } from 'node:fs';
 const argv = process.argv.slice(2), parkedPath = ${JSON.stringify(parked)};
 const parked = JSON.parse(readFileSync(parkedPath, 'utf8'));
 if (argv[0] === 'do') { if (argv[1] === 'terminal.park') { parked.push(argv[argv.indexOf('--terminal') + 1]); writeFileSync(parkedPath, JSON.stringify(parked)); } console.log('{}'); }
-else { const core = JSON.parse(execFileSync(${JSON.stringify(h.hcBinary)}, ['ls', '--all', '--json'], { encoding: 'utf8' }));
+else { const core = JSON.parse(${mode === 'fake'
+      ? `readFileSync(${JSON.stringify(join(h.directories.local, 'core.json'))}, 'utf8')`
+      : `execFileSync(${JSON.stringify(h.hcBinary)}, ['ls', '--all', '--json'], { encoding: 'utf8' })`});
 const terminals = core.terminals.filter(t => t.state === 'live' && !t.address.includes('/') && !parked.includes(t.address)).map(t => ({ terminal: t.address, pane: 'p-' + t.address }));
 console.log(JSON.stringify({ spaces: [{ id: 's1', name: 'work', tabs: [{ id: 'tb1', name: 'owner', terminals }] }] })); }
 `);
     const appBinary = join(h.root, 'app-port'); await writeFile(appBinary, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(appScript)} "$@"\n`); await chmod(appBinary, 0o700); config.app.binary = appBinary;
     if (launches) {
-      const { build } = await import('vite');
-      await build({ define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, configFile: false, logLevel: 'silent', ssr: { noExternal: [/^@spider\//] }, build: { ssr: true, outDir: join(h.root, 'dist/herdr'), emptyOutDir: false, minify: false, rollupOptions: { input: { cli: fileURLToPath(new URL('../../../herdr/src/bin/cli.ts', import.meta.url)), 'viewer-main': fileURLToPath(new URL('../../../herdr/src/bin/viewer.ts', import.meta.url)) }, external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: '[name].mjs' } } } });
+      await writeWiringArtifacts(join(h.root, 'dist/herdr'));
       const runtime = await buildRuntimeArtifact();
       await writeFile(join(h.root, 'dist/herdr/remote-runtime.mjs'), runtime);
       await writeFile(join(h.root, 'dist/herdr/pane-endpoint.mjs'), 'export const createProductionPaneEndpointPorts = digest => ({protocol:1,buildDigest:digest}); export const runPaneEndpointCli = async (args, create) => {const p = await create(); return JSON.stringify({version:1,op:"handshake",protocol:p.protocol,buildDigest:p.buildDigest})};');

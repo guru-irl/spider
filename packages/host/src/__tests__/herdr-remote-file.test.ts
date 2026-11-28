@@ -4,7 +4,7 @@ import { access, copyFile, cp, mkdir, readFile, writeFile } from 'node:fs/promis
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { openDbAt } from '@spider/db-core';
-import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
+import { createHostHerdrHarness } from './herdr-fixture-inventory.testutil.js';
 import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
 import { runtimeInstallPath, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
 import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
@@ -16,7 +16,7 @@ const mounts: HerdrMount[] = [];
 afterEach(async () => { for (const m of mounts.splice(0)) await m.dispose(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 async function fixture(kind: 'parent' | 'child', base: 'cwd' | 'home', mode: 'fake' | 'hc') {
   const originalHome = process.env.HOME;
-  const h = await createHerdrHarness(mode);
+  const h = await createHostHerdrHarness(mode);
   try {
     h.localEnv.HOME = h.remoteEnv.HOME = h.directories.remote;
     await h.start();

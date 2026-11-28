@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { openGlobal, setGlobalDbPathForTests } from '@spider/db-core';
-import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
+import { createHostHerdrHarness } from './herdr-fixture-inventory.testutil.js';
 import { setupHerdr, standardHerdrConfigPath, type SetupRequest } from '../../../herdr/src/setup/installer.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { createAppClient } from '../../../herdr/src/client/app.js';
@@ -22,7 +22,7 @@ import type { RunId, SessionFeed } from '../../../herdr/src/contracts.js';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); setGlobalDbPathForTests(null); });
 async function fixture(mode: 'fake' | 'hc', existingRun = false, automaticSubagentPanes = false) {
-  const h = await createHerdrHarness(mode); await h.start();
+  const h = await createHostHerdrHarness(mode); await h.start();
   try {
     // Real cores use a recording app double, never an app process or window.
     if (mode === 'hc') {

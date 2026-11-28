@@ -20,7 +20,7 @@ import { parseHerdrConfig } from '@spider/herdr/config';
 import { runSshShim, ordinaryExecutionEnvironment, SSH_DESCRIPTOR_ENV } from '@spider/herdr/ssh/shim';
 import { runRemoteObserver, observerMarker } from '@spider/herdr/jobs/observer';
 import { createJobStore, jobJournalRoot, type JournalJob } from '@spider/herdr/jobs/store';
-import { preflightSpaces, setupSpaces, readCutoverRecovery, reconcileSpaceJournal, planSpaceCutover, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
+import { preflightSpaces, setupSpaces, readCutoverRecovery, reconcileSpaceJournal, inspectSpaceCutover, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
 import { inspectPanePlacement } from '@spider/herdr/panes/store';
 import { createRoamPresentationPorts, type RoamPresentationPorts } from './roam-presentations.js';
 import { offerResume, resumeOfferShell, resumeWatchShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
@@ -1212,7 +1212,8 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           const patchInputs = [patchBytes];
           if (selected.crossMachine) patchInputs.push(Buffer.from(JSON.stringify(selected.crossMachine)));
           if (Object.keys(additionalFor(release)).length) patchInputs.push(Buffer.from(JSON.stringify(additionalFor(release))));
-          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverNotices: recovery.layoutNotices, cutoverActions: await planSpaceCutover(request.config, spaces, { snapshot: layoutSnapshot, recovery }), fingerprint: digest(Buffer.concat(patchInputs)), coreIdentity: identity, mods: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
+          const { actions: cutoverActions, layoutNotices: cutoverNotices } = await inspectSpaceCutover(request.config, spaces, { snapshot: layoutSnapshot, recovery });
+          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverNotices, cutoverActions, fingerprint: digest(Buffer.concat(patchInputs)), coreIdentity: identity, mods: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
         },
         stageLook: async (request, context) => {
           stagedVersions.delete(context); fallbackContext = undefined; fallbackLook = undefined;

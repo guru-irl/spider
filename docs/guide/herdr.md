@@ -188,7 +188,7 @@ Setup identifies a live session by its session ID, current feed and heartbeat, a
 
 If you rename a recorded tab or move its sessions into another tab, setup keeps the new placement and reports the change once per tab. It refuses to adopt a terminal that belongs to a different session. If a recorded terminal has finished or is open without pi, setup reports the stopped session and leaves the terminal where you put it, even if it is parked. Unrelated panes stay in place and are not recorded as owned.
 
-After setup finishes placing a session, it treats the session as closed by hand when its terminal is gone and no pane shows it. The rule also applies when the tab still exists. Setup reports the closure on each run and does not reopen the session. Remove the selection from the spaces config or reopen the session yourself. An interrupted allocation still uses its recorded session file and placement to resume setup.
+After setup finishes placing a session, it treats the session as closed by hand when its terminal is gone and no pane shows it. The rule also applies when the tab still exists. Setup does not reopen the session. It reports the closure on each run while the spaces config selects that session. Remove the selection from the spaces config or reopen the session yourself. An interrupted allocation still uses its recorded session file and placement to resume setup.
 
 ### Exact roaming sessions
 

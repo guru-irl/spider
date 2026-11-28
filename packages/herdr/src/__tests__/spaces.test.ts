@@ -86,7 +86,9 @@ beforeEach(async () => {
     verifyOwner: async (target, placement) => {
       const launchError = errors.get(placement.terminal);
       if (launchError) throw launchError;
-      if (await ports.terminalState!(placement) === 'finished') throw new HerdrError('owner-terminal-finished', 'New owner terminal finished before activation');
+      const state = await ports.terminalState!(placement);
+      if (state === 'absent') throw new HerdrError('not_found', 'Terminal not found');
+      if (state === 'finished') throw new HerdrError('owner-terminal-finished', 'New owner terminal finished before activation');
       for (const record of await processInventory.presence.list()) {
         if (record.kind !== 'top-level' || record.hcAddress !== placement.terminal || !record.sessionId || record.sessionId === target.sessionId) continue;
         const process = await processInventory.probe(record.pid);
@@ -578,6 +580,7 @@ it('adopts a renamed and merged tab whose pi owners exited, and leaves parked an
   ports.liveSessionFeed = async () => null;
   const notices: string[] = []; ports.reportLayout = message => notices.push(message);
   const commands = vi.fn(ports.app.command); ports.app.command = commands;
+  const verifyOwner = vi.spyOn(ports, 'verifyOwner');
   const tabs = initial.tabs.map((placement, index) => index < 3 ? { ...placement, tab: first.id } : placement);
   const stopped = ['First', 'Second', 'Third', 'Fourth', 'Fifth'].map((label, index) =>
     `Session "${label}" isn't running in terminal ${initial.tabs[index].terminal}, so setup left it as it is.`);
@@ -592,6 +595,7 @@ it('adopts a renamed and merged tab whose pi owners exited, and leaves parked an
   expect(await setupSpaces(config, ports)).toEqual({ launched: [], tabs });
   expect(notices.sort()).toEqual(stopped.sort());
   expect(commands).not.toHaveBeenCalled();
+  expect(verifyOwner).not.toHaveBeenCalled();
   expect(messages).toEqual([]);
   expect(writers).toEqual(['one', 'two', 'three', 'four', 'five']);
 });
@@ -727,10 +731,11 @@ it('leaves a pane closed by hand in its surviving tab and reports it on every ru
   const notices: string[] = []; ports.reportLayout = message => notices.push(message);
   const commands = vi.fn(ports.app.command); ports.app.command = commands;
   const expected = { launched: initial.launched.slice(1), tabs: initial.tabs.slice(1) };
+  const notice = 'Session "First" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.';
   expect(await setupSpaces(config, ports)).toEqual(expected);
+  expect(notices).toEqual([notice]);
   expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
   expect(await setupSpaces(config, ports)).toEqual(expected);
-  const notice = 'Session "First" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.';
   expect(notices).toEqual([notice, notice]);
   expect(commands).not.toHaveBeenCalled();
   expect(writers).toEqual(['one', 'two', 'three']);
@@ -765,12 +770,56 @@ it('accepts dropping closed file selectors but still refuses to reorder the surv
   layout.spaces[0].tabs.shift(); config.spaces[0].sessions.shift();
   await confirmOwners({ launched: initial.launched.slice(1), tabs: initial.tabs.slice(1) });
   const command = vi.spyOn(ports.app, 'command');
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
   expect(await setupSpaces(config, ports)).toEqual({ launched: initial.launched.slice(1), tabs: initial.tabs.slice(1) });
+  expect(notices.filter(message => message.includes('closed by hand'))).toEqual([]);
   expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
   config.spaces[0].sessions.reverse();
   await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'tab-owner-conflict', message: 'Session selection changed since tab allocation' });
   expect(command).not.toHaveBeenCalled();
   expect(writers).toEqual(['one', 'two', 'three']);
+});
+
+it.each([
+  ['setup', setupSpaces],
+  ['journal reconciliation', spaceSetup.reconcileSpaceJournal],
+] as const)('reports a closed session only while its selector remains configured (%s)', async (_path, run) => {
+  const file = await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports);
+  probes.set(initial.launched[0].pid, { kind: 'absent' });
+  layout.spaces[0].tabs = [];
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
+  const notice = 'Session "First" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.';
+  expect(await run(config, ports)).toEqual({ launched: [], tabs: [] });
+  expect(notices).toEqual([notice]);
+  config.spaces[0].sessions = [];
+  const path = join(ports.journalRoot, 'spaces.json'), before = await readFile(path, 'utf8');
+  const written = await stat(path, { bigint: true }), beforeLayout = structuredClone(layout);
+  const command = vi.spyOn(ports.app, 'command'); notices.length = 0;
+  expect(await run(config, ports)).toEqual({ launched: [], tabs: [] });
+  expect(notices).toEqual([]);
+  expect(await readFile(path, 'utf8')).toBe(before);
+  const unchanged = await stat(path, { bigint: true });
+  expect([unchanged.ino, unchanged.mtimeNs]).toEqual([written.ino, written.mtimeNs]);
+  expect(layout).toEqual(beforeLayout); expect(command).not.toHaveBeenCalled(); expect(writers).toEqual(['one']);
+
+  await writeFile(file, JSON.stringify({ type: 'session', id: 'one', cwd: root }) + '\n' + JSON.stringify({ type: 'session_info', name: 'Renamed' }) + '\n');
+  for (const selector of [{ file }, { name: 'Renamed' }, { name: 'Renamed', sessionId: 'one' }]) {
+    config.spaces[0].sessions = [selector]; notices.length = 0;
+    await run(config, ports);
+    expect(notices).toEqual([notice]);
+  }
+  config.spaces[0].sessions = [{ name: 'Renamed', sessionId: 'different' }]; notices.length = 0;
+  await expect(run(config, ports)).rejects.toMatchObject({ code: 'session-selector-missing' });
+  expect(notices).toEqual([]);
+});
+
+it('the owner verification fixture reports a removed terminal as not_found', async () => {
+  await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports);
+  const [entry] = (await readCutoverRecovery(ports.journalRoot)).entries;
+  probes.set(initial.launched[0].pid, { kind: 'absent' });
+  await expect(ports.verifyOwner(entry.target, entry.placement)).rejects.toMatchObject({ code: 'not_found' });
 });
 
 it('does not allocate another session on the terminal address of a closed tab', async () => {
@@ -804,8 +853,8 @@ it('reports a closed pane and the renamed surviving tab without changing either'
   expect(await setupSpaces(config, ports)).toEqual({ launched: initial.launched.slice(1), tabs: initial.tabs.slice(1) });
   expect(notices).toEqual([
     'Space "Space A" is now called "Renamed space". Setup kept that name.',
-    'Session "First" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
     'Tab "Kept tab" in space "Renamed space" was reorganised by hand. Setup kept it as it is.',
+    'Session "First" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
   ]);
   expect(command).not.toHaveBeenCalled();
   expect(layout).toEqual(before);
@@ -845,6 +894,9 @@ it('keeps a closed pane out of a mixed merged layout', async () => {
   expect(new Set(result.tabs.map(tab => tab.tab))).toEqual(new Set(['tab-0', 'tab-4', 'tab-7', 'tab-10']));
   expect(notices.join('\n')).toMatch(/Group 1 renamed[\s\S]*kept/i);
   expect(notices.join('\n')).toMatch(/terminal-14[\s\S]*terminal-15[\s\S]*left\s+\w+\s+alone/i);
+  expect(notices.filter(message => message.includes('closed by hand'))).toEqual([
+    'Session "Session 8" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
+  ]);
   const recovery = await readCutoverRecovery(ports.journalRoot);
   expect(recovery.createdTabs).toEqual(result.tabs);
   expect(recovery.closedEntries?.map(entry => entry.target.sessionId)).toEqual(['session-8']);

@@ -8,6 +8,8 @@ import type { TerminalAddress } from '../contracts.js';
 import type { InstallFile, NodeObservation, CutoverResult, RuntimeRootObservation } from './installer.js';
 import { changedSetupFilesNotice } from '../notices.js';
 import { isRuntimeRootProbe } from '../remote/node-version.js';
+import { LEGACY_SPIDER_LAYOUT_KEYS, SPIDER_LAYOUT_KEYS } from '../look/names.js';
+
 export const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 export interface FileSnapshot {
   bytes: Buffer | null;
@@ -15,8 +17,9 @@ export interface FileSnapshot {
   mode: number;
 }
 export const missingKeyMapMessage = 'Open Herdr once so it creates its default key map, then rerun setup.';
-export type KeyBinding = string | { command: string; args: Record<string, unknown> };
-export type KeySections = Readonly<Record<string, Readonly<Record<string, KeyBinding>>>>;
+export type KeyBinding = string | { command: string; args?: Record<string, unknown> };
+/** A null entry records a managed deletion, not a binding written to keys.json. */
+export type KeySections = Readonly<Record<string, Readonly<Record<string, KeyBinding | null>>>>;
 export type KeyFields = Readonly<Record<string, readonly string[]>>;
 type KeyBaseline = { present: false } | { present: true; value: unknown };
 type KeyBaselines = Readonly<Record<string, Readonly<Record<string, KeyBaseline>>>>;
@@ -203,7 +206,7 @@ export function rootNotesValue(bytes: Buffer | null): boolean | null {
 export interface BackupEntry {
   path: string;
   before: string | null;
-  after: string;
+  after: string | null;
   backup: string | null;
   mode: number;
   terminalKeys?: Readonly<Record<string, string>>;
@@ -325,6 +328,12 @@ export async function atomicWrite(path: string, bytes: Buffer, mode = 0o600, exp
       throw e; });
   }
 }
+export async function removeFile(path: string, expected: string): Promise<void> {
+  if ((await snapshot(path)).hash !== expected) throw new HerdrError('concurrent-settings-edit', `Changed after backup: ${path}`);
+  await unlink(path);
+  await syncDirectory(dirname(path));
+}
+
 export async function withSetupLock<T>(root: string, work: () => Promise<T>): Promise<T> {
   await rejectSymlinks(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -405,7 +414,7 @@ function parseKeySections(value: unknown): KeySections {
     journalKeyName(section);
     return [section, Object.fromEntries(Object.entries(journalObject(fields)).map(([key, binding]) => {
       journalKeyName(key);
-      if (!isKeyBinding(binding)) throw new HerdrError('setup-journal-invalid', 'Invalid managed key binding');
+      if (binding !== null && !isKeyBinding(binding)) throw new HerdrError('setup-journal-invalid', 'Invalid managed key binding');
       return [key, binding];
     }))];
   }));
@@ -492,11 +501,11 @@ export async function readJournal(root: string): Promise<SetupJournal> {
     const fieldNames = (sections: Readonly<Record<string, Readonly<Record<string, unknown>>>>) => canonicalJson(Object.fromEntries(Object.entries(sections).map(([section, values]) => [section, Object.keys(values).sort()])));
     if (keys && (managed?.kind !== 'keys' || fieldNames(keys) !== canonicalJson(Object.fromEntries(Object.entries(managed.sections).map(([section, values]) => [section, [...values].sort()])))))
       throw new HerdrError('setup-journal-invalid', 'Managed key fields do not match their bindings');
-    if (managed?.kind === 'keys' && (!keys || typeof e.managedAfter !== 'string' || e.managedAfter !== managedProjection(Buffer.from(JSON.stringify(keys)), managed)))
+    if (managed?.kind === 'keys' && (!keys || typeof e.managedAfter !== 'string' || e.managedAfter !== keyProjection(keys, managed)))
       throw new HerdrError('setup-journal-invalid', 'Managed key values do not match the journal');
     if (keysBefore && (!keys || fieldNames(keysBefore) !== fieldNames(keys))) throw new HerdrError('setup-journal-invalid', 'Managed key baselines do not match their bindings');
     if (keySectionsBefore && (!keys || canonicalJson(Object.keys(keySectionsBefore).sort()) !== canonicalJson(Object.keys(keys).sort()))) throw new HerdrError('setup-journal-invalid', 'Managed key section baselines do not match their bindings');
-    return { ...(previous ? { previous } : {}), path: text(e.path), before: e.before === null ? null : text(e.before), after: text(e.after), backup: e.backup === null ? null : text(e.backup), mode: e.mode, ...(e.terminalKeys === undefined ? {} : { terminalKeys }), ...(keys === undefined ? {} : { keys }), ...(keysBefore === undefined ? {} : { keysBefore }), ...(keySectionsBefore === undefined ? {} : { keySectionsBefore }), ...(pathsBefore === undefined ? {} : { pathsBefore }), ...(e.soundApplied === undefined ? {} : { soundApplied: e.soundApplied as boolean }), ...(e.soundDeferred === undefined ? {} : { soundDeferred: e.soundDeferred as boolean }), ...(e.soundIntent === undefined ? {} : { soundIntent: e.soundIntent as string }), ...(managed === undefined ? {} : { managed, managedAfter: typeof e.managedAfter === 'string' ? e.managedAfter : text(e.managedAfter) }) };
+    return { ...(previous ? { previous } : {}), path: text(e.path), before: e.before === null ? null : text(e.before), after: e.after === null ? null : text(e.after), backup: e.backup === null ? null : text(e.backup), mode: e.mode, ...(e.terminalKeys === undefined ? {} : { terminalKeys }), ...(keys === undefined ? {} : { keys }), ...(keysBefore === undefined ? {} : { keysBefore }), ...(keySectionsBefore === undefined ? {} : { keySectionsBefore }), ...(pathsBefore === undefined ? {} : { pathsBefore }), ...(e.soundApplied === undefined ? {} : { soundApplied: e.soundApplied as boolean }), ...(e.soundDeferred === undefined ? {} : { soundDeferred: e.soundDeferred as boolean }), ...(e.soundIntent === undefined ? {} : { soundIntent: e.soundIntent as string }), ...(managed === undefined ? {} : { managed, managedAfter: typeof e.managedAfter === 'string' ? e.managedAfter : text(e.managedAfter) }) };
   });
   const probes = j.probes.map(value => { const p = object(value); return { machine: text(p.machine) as NodeObservation['machine'], nodePath: text(p.nodePath), version: text(p.version), coreStartedAt: text(p.coreStartedAt) }; });
   let cutover: CutoverResult | null = null;
@@ -551,8 +560,12 @@ export async function saveJournal(root: string, journal: SetupJournal): Promise<
     await atomicWrite(path, bytes, 0o600, current.hash);
 }
 /** The planned content's managed part. A snapshot-only plan of an absent file is the absent state, not empty JSON. */
+function keyProjection(keys: KeySections, part: ManagedPart): string {
+  const present = Object.fromEntries(Object.entries(keys).map(([section, bindings]) => [section, Object.fromEntries(Object.entries(bindings).filter(([, binding]) => binding !== null))]));
+  return managedProjection(Buffer.from(JSON.stringify(present)), part);
+}
 function plannedProjection(f: InstallFile, part: ManagedPart): string {
-  if (part.kind === 'keys' && f.keys && f.retainedKeys) return managedProjection(Buffer.from(JSON.stringify(f.keys)), part);
+  if (part.kind === 'keys' && f.keys && f.retainedKeys) return keyProjection(f.keys, part);
   return managedProjection(f.snapshotOnly && f.expected === null ? null : f.bytes, part);
 }
 function priorManagedPart(prior: BackupEntry, fallback: ManagedPart): ManagedPart {
@@ -649,7 +662,7 @@ function matchesAppSettingsTransition(path: string, part: ManagedPart, current: 
 }
 export interface FileAction {
   path: string;
-  action: 'adopt' | 'write' | 'replace' | 'unchanged';
+  action: 'adopt' | 'write' | 'replace' | 'remove' | 'unchanged';
   refusal?: { code: string; message: string };
 }
 export async function validateFiles(files: readonly InstallFile[], journal: SetupJournal, overwriteKeys = false, appSettings?: AppSettingsTransition, options: { replaceChanged?: boolean; planOnly?: boolean; pendingBaselines?: ReadonlyMap<string, string | null> } = {}): Promise<FileAction[]> {
@@ -669,7 +682,7 @@ export async function validateFiles(files: readonly InstallFile[], journal: Setu
     if ((!identical || f.snapshotOnly || f.updateAfterCutover) && f.managed && prior) {
       const originalPart = priorManagedPart(prior, f.managed);
       const part: ManagedPart = originalPart.kind === 'keys' && f.retainedKeys ? { kind: 'keys', sections: Object.fromEntries(Object.entries(originalPart.sections).map(([section, keys]) => [section, keys.filter(key => !Object.hasOwn(f.retainedKeys?.[section] ?? {}, key))])) } : originalPart;
-      const recorded = part !== originalPart && prior.keys ? managedProjection(Buffer.from(JSON.stringify(prior.keys)), part) : prior.managedAfter ?? (prior.terminalKeys && part.kind === 'json' && part.section === 'terminal'
+      const recorded = part !== originalPart && prior.keys ? keyProjection(prior.keys, part) : prior.managedAfter ?? (prior.terminalKeys && part.kind === 'json' && part.section === 'terminal'
         ? managedProjection(Buffer.from(JSON.stringify({ terminal: prior.terminalKeys })), part) : plannedProjection(f, part));
       const actual = managedProjection(current.bytes, part);
       if (!journal.verified && f.managed.kind === 'json-paths' && part.kind === 'json' && part.section === undefined && f.managed.paths.includes('sounds.enabled') && appSettings && resolve(f.path) === resolve(appSettings.path)) {
@@ -1127,7 +1140,7 @@ function planKeyRollback(current: Buffer | null, original: Buffer | null, entry:
   if (current === null) return { bytes: null, changed: false, keys: {}, baselines: {}, released: Object.entries(part.sections).flatMap(([section, keys]) => keys.map(key => `${section}.${key}`)) };
   const json = current === null ? {} : object(JSON.parse(current.toString('utf8')));
   const before = original === null ? {} : object(JSON.parse(original.toString('utf8')));
-  const remaining: Record<string, Record<string, KeyBinding>> = {};
+  const remaining: Record<string, Record<string, KeyBinding | null>> = {};
   const baselines: Record<string, Record<string, KeyBaseline>> = {};
   let changed = false;
   for (const [section, fields] of Object.entries(part.sections)) {
@@ -1137,7 +1150,7 @@ function planKeyRollback(current: Buffer | null, original: Buffer | null, entry:
       const actual: KeyBaseline = Object.hasOwn(source, key) ? { present: true, value: source[key] } : { present: false };
       if (canonicalJson(actual) === canonicalJson(baseline)) continue;
       const installed = entry.keys![section][key];
-      if (actual.present && canonicalJson(actual.value) === canonicalJson(installed)) {
+      if (installed === null ? !actual.present : actual.present && canonicalJson(actual.value) === canonicalJson(installed)) {
         if (baseline.present) source[key] = baseline.value;
         else delete source[key];
         changed = true;
@@ -1206,7 +1219,7 @@ export async function rollbackFiles(root: string, journal: SetupJournal, options
     if (conflict) for (const path of options.dependencies?.[entry.path] ?? []) keep.add(path);
     plans.push({ entry, current, original, conflict, alreadyRestored, keyPlan, pathPlan });
   }
-  const removedMods = new Set(await unpublishNewMods(root, journal, new Map(plans.filter(plan => !plan.conflict && !keep.has(plan.entry.path) && !plan.entry.managed && plan.entry.before === null && plan.current.hash === plan.entry.after).map(plan => [plan.entry.path, plan.current.hash]))));
+  const removedMods = new Set(await unpublishNewMods(root, journal, new Map(plans.filter(plan => !plan.conflict && !keep.has(plan.entry.path) && !plan.entry.managed && plan.entry.before === null && plan.current.hash !== null && plan.current.hash === plan.entry.after).map(plan => [plan.entry.path, plan.current.hash]))));
   // Shared references are reversed before any of the artifacts they load can be removed.
   plans.sort((a, b) => Number(!!b.entry.managed) - Number(!!a.entry.managed));
   for (const { entry, current, original, conflict, alreadyRestored, keyPlan, pathPlan } of plans) {
@@ -1242,7 +1255,7 @@ export async function rollbackFiles(root: string, journal: SetupJournal, options
         if (entry.keySectionsBefore) entry.keySectionsBefore = Object.fromEntries(Object.keys(keyPlan.keys).map(section => [section, entry.keySectionsBefore![section]]));
         delete entry.terminalKeys;
         entry.managed = { kind: 'keys', sections: Object.fromEntries(Object.entries(keyPlan.keys).map(([section, values]) => [section, Object.keys(values)])) };
-        entry.managedAfter = managedProjection(Buffer.from(JSON.stringify(keyPlan.keys)), entry.managed);
+        entry.managedAfter = keyProjection(keyPlan.keys, entry.managed);
         entry.after = keyPlan.bytes === null ? digest(Buffer.alloc(0)) : digest(keyPlan.bytes);
         options.warn?.(`${entry.path} partially restored: managed content was changed by the user. Repair the retained keys and rerun rollback.`);
       } else settled.add(entry.path);
@@ -1269,7 +1282,7 @@ export async function rollbackFiles(root: string, journal: SetupJournal, options
   journal.entries = journal.entries.filter(entry => !settled.has(entry.path));
   return restored;
 }
-function isNativeKeyBinding(value: unknown): boolean {
+function isKeyBinding(value: unknown): value is KeyBinding {
   if (typeof value === 'string') return value.length > 0 && !value.includes('\0');
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const binding = value as Record<string, unknown>;
@@ -1277,8 +1290,27 @@ function isNativeKeyBinding(value: unknown): boolean {
     && typeof binding.command === 'string' && binding.command.length > 0 && !binding.command.includes('\0')
     && (binding.args === undefined || !!binding.args && typeof binding.args === 'object' && !Array.isArray(binding.args));
 }
-function isKeyBinding(value: unknown): value is KeyBinding {
-  return isNativeKeyBinding(value) && (typeof value === 'string' || Object.hasOwn(value as object, 'args'));
+/** Merge the old layout section into the new one before applying the standard key guards. */
+export function stageLayoutKeyRename(bytes: Buffer, desired: KeySections, owned: KeySections): { bytes: Buffer; desired: KeySections; owned: KeySections } {
+  let settings: Record<string, unknown>, legacy: Record<string, unknown>, target: Record<string, unknown>;
+  try {
+    settings = object(JSON.parse(bytes.toString('utf8')));
+    legacy = object(settings[LEGACY_SPIDER_LAYOUT_KEYS] ?? {});
+    target = object(settings[SPIDER_LAYOUT_KEYS] ?? {});
+  } catch { throw new HerdrError('key-binding-conflict', 'Repair the layout sections in keys.json before renaming the layout.'); }
+  const moved = Object.entries(legacy).map(([key, binding]) => {
+    journalKeyName(key);
+    if (!isKeyBinding(binding)) throw new HerdrError('key-binding-conflict', `Invalid ${LEGACY_SPIDER_LAYOUT_KEYS} key: ${key}`);
+    if (Object.hasOwn(target, key) && canonicalJson(target[key]) !== canonicalJson(binding))
+      throw new HerdrError('key-binding-conflict', `Competing ${key} bindings in ${LEGACY_SPIDER_LAYOUT_KEYS} and ${SPIDER_LAYOUT_KEYS}. Resolve the conflict in keys.json before retrying setup.`);
+    return [key, binding] as const;
+  });
+  if (!moved.length) return { bytes, desired, owned };
+  return {
+    bytes: Buffer.from(JSON.stringify({ ...settings, [SPIDER_LAYOUT_KEYS]: { ...legacy, ...target } })),
+    desired: { ...desired, [SPIDER_LAYOUT_KEYS]: { ...Object.fromEntries(moved), ...desired[SPIDER_LAYOUT_KEYS] }, [LEGACY_SPIDER_LAYOUT_KEYS]: Object.fromEntries(moved.map(([key]) => [key, null])) },
+    owned: { ...owned, [SPIDER_LAYOUT_KEYS]: { ...owned[LEGACY_SPIDER_LAYOUT_KEYS], ...owned[SPIDER_LAYOUT_KEYS] }, [LEGACY_SPIDER_LAYOUT_KEYS]: Object.fromEntries(moved) },
+  };
 }
 export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ownedSections: KeySections, overwrite: boolean, options: { ignoredKeys?: KeyFields } = {}): Buffer {
   if (bytes === null) throw new HerdrError('keys-defaults-missing', missingKeyMapMessage);
@@ -1290,13 +1322,13 @@ export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ow
     try { return object(settings[section]); }
     catch { throw new HerdrError('key-binding-conflict', `Invalid key section: ${section}`); }
   };
-  if (desiredSections['layout:spider-glass']?.['cmd-shift-e'] !== undefined) {
+  if (desiredSections[SPIDER_LAYOUT_KEYS]?.['cmd-shift-e'] !== undefined) {
     for (const section of ['global', 'terminal'])
       if (!options.ignoredKeys?.[section]?.includes('cmd-shift-e') && sectionValues(section)['cmd-shift-e'] !== undefined)
         throw new HerdrError('key-binding-conflict', `Competing ${section}.cmd-shift-e needs repair`);
-    for (const section of ['global', 'terminal', 'layout:spider-glass']) {
+    for (const section of ['global', 'terminal', SPIDER_LAYOUT_KEYS]) {
       const close = sectionValues(section)['cmd-shift-w'];
-      if (!options.ignoredKeys?.[section]?.includes('cmd-shift-w') && close !== undefined && close !== 'pane.close' && !(section === 'layout:spider-glass' && desiredSections[section]?.['cmd-shift-w'] === 'spider-pane.close' && close === 'spider-pane.close'))
+      if (!options.ignoredKeys?.[section]?.includes('cmd-shift-w') && close !== undefined && close !== 'pane.close' && !(section === SPIDER_LAYOUT_KEYS && desiredSections[section]?.['cmd-shift-w'] === 'spider-pane.close' && close === 'spider-pane.close'))
         throw new HerdrError('key-binding-conflict', `${section}.cmd-shift-w needs repair`);
     }
   }
@@ -1305,19 +1337,21 @@ export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ow
     for (const [key, value] of Object.entries(desired)) {
       const current = currentSection[key];
       const owned = ownedSections[section]?.[key];
-      if (!isKeyBinding(value) || owned !== undefined && !isKeyBinding(owned))
+      if (value !== null && !isKeyBinding(value) || owned != null && !isKeyBinding(owned))
         throw new HerdrError('setup-journal-invalid', 'Invalid managed key binding');
-      if (current !== undefined && !isNativeKeyBinding(current))
+      if (current !== undefined && !isKeyBinding(current))
         throw new HerdrError('key-binding-conflict', `Invalid ${section} key: ${key}`);
       const creationBaseline: Readonly<Record<string, string>> = { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' };
-      const strict = section === 'global' && Object.hasOwn(creationBaseline, key) || section === 'layout:spider-glass' && key === 'cmd-shift-w';
-      const bStock = section === 'global' && Object.hasOwn(creationBaseline, key) && current === creationBaseline[key] || section === 'layout:spider-glass' && key === 'cmd-shift-w' && current === 'pane.close';
+      const strict = section === 'global' && Object.hasOwn(creationBaseline, key) || section === SPIDER_LAYOUT_KEYS && key === 'cmd-shift-w';
+      const bStock = section === 'global' && Object.hasOwn(creationBaseline, key) && current === creationBaseline[key] || section === SPIDER_LAYOUT_KEYS && key === 'cmd-shift-w' && current === 'pane.close';
       const stock = bStock || section === 'global' && (key === 'cmd-p' && current === 'mod.open:picker' || key === 'cmd-n' && current === 'space.new');
       if (current !== undefined && canonicalJson(current) !== canonicalJson(value) && (strict || canonicalJson(current) !== canonicalJson(owned)) && !stock && (!overwrite || strict))
         throw new HerdrError('key-binding-conflict', `Unowned ${section} key: ${key}`);
-      currentSection[key] = value;
+      if (value === null) delete currentSection[key];
+      else currentSection[key] = value;
     }
-    settings[section] = Object.fromEntries(Object.entries(currentSection).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+    if (!Object.keys(currentSection).length && Object.values(desired).some(binding => binding === null)) delete settings[section];
+    else settings[section] = Object.fromEntries(Object.entries(currentSection).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
   }
   return Buffer.from(JSON.stringify(settings, null, 2) + '\n');
 }

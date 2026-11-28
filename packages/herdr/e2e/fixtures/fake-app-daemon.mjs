@@ -149,16 +149,16 @@ async function main() {
   if (!core?.core?.id || (config.coreId && core.core.id !== config.coreId)) throw new Error('wrong isolated core identity');
   const boundary = createFakeAppBoundary({ hc,
     readLayout: async name => {
-      if (!/^[a-z0-9_-]+$/.test(name)) throw new Error('unsafe layout name');
+      if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error('unsafe layout name');
       return JSON.parse(readFileSync(ownedPath(root, join(env.HERDR_APP_HOME, 'layouts', `${name}.json`)), 'utf8'));
     },
     selectLayout: async name => {
-      const path = ownedPath(root, join(env.HERDR_APP_HOME, 'settings.json'), true);
-      let settings = {}; try { settings = JSON.parse(readFileSync(path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('malformed owned app settings');
-      if (settings.layout === name) return;
+      const path = ownedPath(root, join(env.HERDR_APP_HOME, 'shared.json'), true);
+      let values = {}; try { values = JSON.parse(readFileSync(path, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error('malformed owned app shared state');
+      if (values.layout === name) return;
       const staging = ownedPath(root, `${path}.new`, true);
-      writeFileSync(staging, JSON.stringify({ ...settings, layout: name }), { mode: 0o600 }); renameSync(staging, path);
+      writeFileSync(staging, JSON.stringify({ ...values, layout: name }), { mode: 0o600 }); renameSync(staging, path);
     },
     selectTheme: async name => {
       if (!/^[a-z0-9_-]+$/.test(name)) throw new Error('unsafe theme name');

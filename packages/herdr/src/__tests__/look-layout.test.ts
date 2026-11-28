@@ -132,7 +132,7 @@ describe('generated glass layout', () => {
 
   it('matches the desired layout bytes', async () => {
     const result = JSON.stringify(buildGlassLayout(await source(), names), null, 2);
-    const expected = await readFile(new URL('spider-glass.json', layouts), 'utf8');
+    const expected = await readFile(new URL('Spider.json', layouts), 'utf8');
     expect(result).toBe(expected);
   });
 

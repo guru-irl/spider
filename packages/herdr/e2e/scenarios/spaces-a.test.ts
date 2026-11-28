@@ -90,7 +90,7 @@ async function configureNativeFixture(suite: Suite, owned: NativeAppOwnership, b
   const stock = JSON.parse(await readFile(join(owned.appHome, 'layouts/main.json'), 'utf8'));
   const layout = buildGlassLayout(stock, { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome', bodyFont: 'Google Sans Flex', props: modProps });
   Object.assign(layout, (layoutEdits as any).spacesA?.[version]?.root ?? {});
-  await writeFile(join(owned.appHome, 'layouts/spider-glass.json'), JSON.stringify(layout));
+  await writeFile(join(owned.appHome, 'layouts/Spider.json'), JSON.stringify(layout));
   await mkdir(join(owned.appHome, 'themes'), { recursive: true });
   await copyFile(join(assets, 'themes/spider-glass.json'), join(owned.appHome, 'themes/spider-glass.json'));
   const nativeKeys = JSON.parse(await readFile(join(owned.appHome, 'keys.json'), 'utf8'));
@@ -109,13 +109,13 @@ async function nativeFixture(suite: Suite, baseline = false, setupProbe = false)
   const nativeKeys = JSON.parse(await readFile(join(owned.appHome, 'keys.json'), 'utf8'));
   expect(nativeKeys).toEqual(prepared.nativeKeys);
   const version = owned.release;
-  await app.command('layout.switch', { name: 'spider-glass' });
+  await app.command('layout.switch', { name: 'Spider' });
   if (!baseline) await app.command('spider-agents.sort-machine', {});
-  expect(await app.status()).toMatchObject({ errors: [], layout: 'spider-glass' });
+  expect(await app.status()).toMatchObject({ errors: [], layout: 'Spider' });
   expect(nativeKeys.global['cmd-shift-w']).toBe('pane.close');
   expect(nativeKeys.global['cmd-n']).toEqual({ command: 'space.new', args: { machine: '' } });
   expect(nativeKeys.global['cmd-p']).toBe('mod.open:spider-picker');
-  expect(nativeKeys['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
+  expect(nativeKeys['layout:Spider']['cmd-shift-e']).toBe('spider-pane.park');
   const commands = await app.command('commands', {}) as { commands: { name: string }[] };
   for (const name of ['terminal.park', 'pane.close', 'mod.open']) expect(commands.commands.some(command => command.name === name)).toBe(true);
   await suite.evidence('native-keys-and-commands.json', { version, keys: nativeKeys, commands });

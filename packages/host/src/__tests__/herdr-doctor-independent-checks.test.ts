@@ -141,7 +141,7 @@ test.each(['0.1.13', '0.1.16'])('%s B staging configures the pane service for al
   for (const name of ['agents', 'panel', 'picker']) {
     expect.soft(files.some(file => file.path === join(f.appHome, `mods/spider-${name}/shared/pane-service-state.js`))).toBe(true);
   }
-  const layout = JSON.parse(files.find(file => file.path === join(f.appHome, 'layouts/spider-glass.json'))!.bytes.toString());
+  const layout = JSON.parse(files.find(file => file.path === join(f.appHome, 'layouts/Spider.json'))!.bytes.toString());
   const nodes: any[] = [];
   const visit = (value: any) => { if (!value || typeof value !== 'object') return; if (value.mod) nodes.push(value); for (const child of Object.values(value)) visit(child); };
   visit(layout);

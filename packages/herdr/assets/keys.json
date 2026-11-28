@@ -11,7 +11,7 @@
     "cmd-d": "mod.open:spider-machine-picker-right",
     "cmd-shift-d": "mod.open:spider-machine-picker-down"
   },
-  "layout:spider-glass": {
+  "layout:Spider": {
     "cmd-shift-e": "spider-pane.park",
     "cmd-shift-w": "spider-pane.close"
   },

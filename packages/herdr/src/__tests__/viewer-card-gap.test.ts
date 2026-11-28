@@ -24,13 +24,23 @@ function viewer(hidden: boolean): PiRunView {
 }
 const plain = (rows: string[]) => rows.map(row => stripTerminalSequences(row).trimEnd());
 
-test.each([false, true])('adjacent viewer cards have no separator with hidden tool=%s', hidden => {
-  const rows = plain(viewer(hidden).render(40));
+test.each([false, true])('adjacent viewer cards have chat half-edges with hidden tool=%s', hidden => {
+  const rendered = viewer(hidden).render(40);
+  const rows = plain(rendered);
   const first = rows.indexOf(' first collapsed');
   const second = rows.indexOf(' second');
-  expect(first).toBeGreaterThanOrEqual(0);
+  const firstCall = rows.indexOf(' first');
+  const secondResult = rows.indexOf(' second collapsed');
+  expect(firstCall).toBeGreaterThan(0);
+  expect(first).toBeGreaterThan(firstCall);
   expect(second).toBeGreaterThan(first);
-  expect(rows.slice(first + 1, second)).toEqual(['', '']);
+  expect(secondResult).toBeGreaterThan(second);
+  expect(rows[firstCall - 1]).toBe('▄'.repeat(40));
+  expect(rows.slice(first + 1, second)).toEqual(['▀'.repeat(40), '▄'.repeat(40)]);
+  expect(rows[secondResult + 1]).toBe('▀'.repeat(40));
+  for (const index of [firstCall - 1, first + 1, first + 2, secondResult + 1]) {
+    expect(rendered[index]).toMatch(/^\x1b\[(?:38;2;\d+;\d+;\d+|38;5;\d+|3[0-7]|9[0-7])m[▄▀]{40}\x1b\[39m$/);
+  }
 });
 
 test('clicking the joined second card expands that card, not the first', () => {

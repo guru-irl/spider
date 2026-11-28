@@ -23,6 +23,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "herdr.config": "",
   "ui.footer": true,
   "ui.icons": "text",
+  "ui.inputBand": true,
   "copyButtons.enabled": true,
   "reload.auto": true,
   "tools.structured": false,
@@ -269,6 +270,9 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   }
   if (op === "set" && key === "subagents.profiles.reviewer.excludeTools" && !isToolSelectorList(value)) {
     throw new Error(`${key} must be a JSON array of nonempty tool selectors without whitespace or commas`);
+  }
+  if (op === "set" && key === "ui.inputBand" && typeof value !== "boolean") {
+    throw new Error("ui.inputBand must be a boolean");
   }
   if (op === "set" && key === "ui.icons" && !isIconStyle(value)) {
     throw new Error("ui.icons must be text or nerd");

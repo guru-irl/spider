@@ -43,6 +43,7 @@ import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { registerCompaction } from "./compaction/index.js";
 import { registerCopyButtons, type CopyButtonsHost } from "./copy-buttons/index.js";
+import { registerInputBand, type InputBandHost } from "./input-band/index.js";
 import { HostOrganismRuntime } from "./organism-runtime";
 import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
@@ -900,7 +901,7 @@ async function dispatchWithDoctorSnapshot(
 
 type V0IntercomFactory = { hasConfig(root: string): boolean; create(root: string): { prepare: V0Prepare } };
 
-export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> }; piVersion?: string; v0Intercom?: V0IntercomFactory } = {}): void {
+export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> }; inputBand?: InputBandHost; piVersion?: string; v0Intercom?: V0IntercomFactory } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
   const admissionPorts = createAdmissionPorts(ports.bootId ? { bootId: ports.bootId } : {});
   let activationContext: ExtensionContext | undefined;
@@ -932,6 +933,9 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
+  if (ports.inputBand) registerInputBand(pi as unknown as ExtensionAPI, ports.inputBand, cwd => ({
+    "ui.inputBand": controlConfig("get", cwd, "ui.inputBand"),
+  }));
   if (ports.copyButtons) registerCopyButtons(pi as unknown as ExtensionAPI, ports.copyButtons.host,
     cwd => {
       const values = configValues(cwd);

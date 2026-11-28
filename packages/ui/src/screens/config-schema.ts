@@ -88,6 +88,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	]},
 	{ id: "ui", label: "UI", fields: [
 		{ key: "ui.footer", label: "Agents footer", type: "boolean", default: true, description: "Show the agents footer from the next session.", restart: true },
+		{ key: "ui.inputBand", label: "Input band", type: "boolean", default: true, description: "Draw the input band and sent-message caret. Changes apply on reload.", restart: true },
 		{ key: "ui.icons", label: "Icon style", type: "enum", default: "text", enum: ICON_STYLES, description: "Choose text or Nerd Font icons. New messages update immediately; footer and copy buttons update next session, command descriptions on reload.", restart: true },
 	]},
 	{ id: "copyButtons", label: "Copy buttons", fields: [

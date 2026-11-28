@@ -76,6 +76,15 @@ test('viewer footer shows calibrated run credits, context, cache and the model d
   }
 });
 
+test('viewer uses owner model metadata for an unqualified child model ID', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'gpt-6.1-sol', modelName: 'GPT-6.1 Sol', thinking: 'high', contextWindow: 200000 });
+  view.addEntries([entry]);
+  const footer = view.footerLines(120).map(stripTerminalSequences).join('\n');
+  expect(footer).toContain('20.8%/200k');
+  expect(footer).toContain('GPT-6.1 Sol · high');
+});
+
 test('viewer footer does not claim zero credits or context when usage is unpriced', () => {
   const view = make();
   view.setRunInfo({ protocol: 2, model: 'unknown/model', thinking: 'high' });

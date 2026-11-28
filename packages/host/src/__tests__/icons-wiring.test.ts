@@ -73,7 +73,7 @@ it("uses the configured style for registered tool and notice renderers", () => {
     bold: (text: string) => text, italic: (text: string) => text };
   expect(commands.get("spider")?.description).toContain("\u{F0BCA}");
   expect(commands.get("todos")?.description).toContain("\u{F0BCA}");
-  expect(tool.label).toBe("\u{F0BCA}  spider");
+  expect(tool.label).toBe("spider");
   expect(tool.renderCall({ action: "run" }, theme, {}).render(100).join("\n")).toContain("\u{F0BCA}  run");
   const result = { details: { run: { name: "scribe", status: "failed" } } };
   expect(tool.renderResult(result, {}, theme, { args: { action: "run" } }).render(100).join("\n")).toContain("\u{F0156}  failed · scribe");

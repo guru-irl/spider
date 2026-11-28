@@ -441,13 +441,13 @@ describe("spider extension entry", () => {
     }
   });
 
-  it("registers the 'spider' tool with a monochrome label alongside the edit/write overrides", () => {
+  it("registers the 'spider' tool with a plain label alongside the edit/write overrides", () => {
     const pi = fakePi();
     spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     // Routing wires edit/write overrides at load, so there are now three tools.
     expect(new Set(Object.keys(pi._tools))).toEqual(new Set(["spider", "edit", "write"]));
     const spider = pi._tools["spider"] as { label: string; description: string };
-    expect(spider.label).toBe("◆ spider");
+    expect(spider.label).toBe("spider");
     expect(spider.description).toContain("unified memory");
     expect(spider.description).not.toMatch(/\p{Extended_Pictographic}/u);
   });

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { stripTerminalSequences, visibleWidth, type TUI } from '@earendil-works/pi-tui';
+import { setCapabilityOverrides, stripTerminalSequences, visibleWidth, type TUI } from '@earendil-works/pi-tui';
 import { initTheme, type Theme } from '@earendil-works/pi-coding-agent';
 import { createPiRunView, type PiRunView } from '../viewers/pi-app.js';
 
@@ -9,7 +9,7 @@ const views: PiRunView[] = [];
 afterEach(() => {
   for (const view of views.splice(0)) view.dispose();
   vi.useRealTimers();
-  vi.unstubAllEnvs();
+  setCapabilityOverrides({});
 });
 function make(requestRender = vi.fn()): PiRunView {
   const ui = { requestRender, setFocus: vi.fn(), terminal: { columns: 100, rows: 30 } } as unknown as TUI;
@@ -42,22 +42,25 @@ test('viewer input uses the shared band and keeps a draft across reconnect', () 
   expect(view.editor!.getText()).toBe('Keep the retry limit at three.');
 });
 
-test('viewer moon and input band follow the owning session accent', () => {
-  vi.stubEnv('COLORTERM', 'truecolor');
+test.each([
+  [true, '\x1b[38;2;80;250;123m', '\x1b[38;2;255;121;198m'],
+  [false, '\x1b[38;5;84m', '\x1b[38;5;212m'],
+])('viewer moon and input band follow the owner accent (true color: %s)', (trueColor, greenColor, pinkColor) => {
+  setCapabilityOverrides({ trueColor });
   const view = make();
   view.setState(running);
   view.setRunInfo({ protocol: 2, accent: 'green' });
   const green = view.render(72).join('\n');
-  expect(green).toContain('\x1b[38;2;80;250;123m▖');
-  expect(green).toContain('\x1b[38;2;80;250;123m◐');
+  expect(green).toContain(`${greenColor}▖`);
+  expect(green).toContain(`${greenColor}◐`);
   view.setRunInfo({ protocol: 2, accent: 'pink' });
   const pink = view.render(72).join('\n');
-  expect(pink).toContain('\x1b[38;2;255;121;198m▖');
-  expect(pink).toContain('\x1b[38;2;255;121;198m◐');
+  expect(pink).toContain(`${pinkColor}▖`);
+  expect(pink).toContain(`${pinkColor}◐`);
 });
 
 test('viewer keeps the owner accent when Pi replaces its theme', () => {
-  vi.stubEnv('COLORTERM', 'truecolor');
+  setCapabilityOverrides({ trueColor: true });
   const view = make();
   view.setState(running);
   view.setRunInfo({ protocol: 2, accent: 'green' });

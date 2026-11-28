@@ -129,6 +129,14 @@ test('viewer labels missing transcript history rather than claiming the tail is 
   expect(footer).toContain('? AIC');
 });
 
+test('recorded fallback events do not claim a complete run credit total', () => {
+  const view = make();
+  view.text('A saved tool event without its session transcript.');
+  const footer = view.footerLines(120).map(stripTerminalSequences).join('\n');
+  expect(footer).toContain('partial totals');
+  expect(footer).toContain('? AIC');
+});
+
 test('a newly opened idle RPC child starts with the idle moon', () => {
   vi.useFakeTimers(); vi.setSystemTime(0);
   try {

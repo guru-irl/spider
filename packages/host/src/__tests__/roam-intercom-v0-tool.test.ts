@@ -13,7 +13,7 @@ import type { RemoteSessionInfo } from "../../../intercom/src/types.js";
 import { INTERCOM_HOST_EVENT } from "../../../intercom/src/host-api.js";
 import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../../../intercom/src/test-support.js";
-import { createHostSessionFixture } from "./fixtures/pi-events.js";
+import { createHostSessionFixture, hostUnitPorts } from "./fixtures/pi-events.js";
 import { SessionManager, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { openDbAt, paths } from "@spider/db-core";
 import { V0_ASK_MAX_MS, type V0Code, type V0Delivery, type V0Prepare, type V0Text, type V0ToolOptions } from "../../../intercom/src/roam-v0.js";
@@ -353,6 +353,35 @@ it("wires an injected roaming factory for an admitted running home", async () =>
     else process.env.GIT_CEILING_DIRECTORIES = previousCeiling;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+it("a real extension activation failure releases the lock and leaves a homeless session usable", async () => {
+  const admissionModule = await import("../roam/admission.js");
+  const activationModule = await import("../roam/move-activation.js");
+  const { default: spiderExtension } = await import("../extension.js");
+  const root = mkdtempSync(join(testTmpDir(), "activation-failure-")), previous = paths.globalRoot;
+  try {
+    paths.globalRoot = root; mkdirSync(join(root, "roam"), { mode: 0o700 });
+    writeFileSync(join(root, "roam", "machine.json"), JSON.stringify({ machineId: hubMachineId }), { mode: 0o600 });
+    writeFileSync(join(root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: hubMachineId,
+      hubMachineId, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
+    const warnings: string[] = [], releases: string[] = [], seen = new Set<string>();
+    const ports: import("../roam/admission.js").AdmissionPorts & { setContext(ctx: any): void } = { expectedEpoch: null, setContext() {}, lockUntracked: () => true,
+      async localMachine() { return hubMachineId; }, knownParticipant: () => false,
+      warnOnce(id, reason) { if (!seen.has(id)) { seen.add(id); warnings.push(reason); } },
+      async load() { return { home: null, states: [], origin: null, participating: false, captureSafe: true, unfinishedFreeze: false, initialConflict: false }; },
+      async lock() { return async () => { releases.push("released"); }; } };
+    vi.spyOn(admissionModule, "createAdmissionPorts").mockReturnValue(ports);
+    const activation = vi.spyOn(activationModule, "createMoveActivation").mockRejectedValue(new Error("activation-failed"));
+    const host = createHostSessionFixture({ cwd: root, sessionId: "homeless", sessionFile: join(root, "session.jsonl") });
+    spiderExtension(host.pi as never, hostUnitPorts);
+    const start = host.hooks.get("session_start")![0], input = host.hooks.get("input")![0];
+    await start({ reason: "startup" }, host.ctx);
+    expect(activation).toHaveBeenCalledOnce(); expect(releases).toEqual(["released"]);
+    expect(await input({ text: "continue" }, host.ctx)).toBeUndefined();
+    expect(warnings).toHaveLength(1); expect(warnings[0]).toMatch(/move setup failed/i);
+    await start({ reason: "reload" }, host.ctx); expect(warnings).toHaveLength(1);
+  } finally { paths.globalRoot = previous; vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); }
 });
 
 it.each([

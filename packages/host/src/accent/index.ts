@@ -66,7 +66,8 @@ export function registerAccentPicker(pi: Pick<ExtensionAPI, "on" | "registerComm
           blocked: { kind: "question", message: "Choose an accent color" },
         });
         if (!selected || (selected !== previewed && !preview(selected))) return;
-        controlConfig("set", ctx.cwd, ACCENT_KEY, selected.id, "global");
+        if (input === "reset") controlConfig("unset", ctx.cwd, ACCENT_KEY, undefined, "global");
+        else controlConfig("set", ctx.cwd, ACCENT_KEY, selected.id, "global");
         saved = true;
       } catch (error) {
         ui.notify(`Could not save accent: ${safeError(error)}`, "error");

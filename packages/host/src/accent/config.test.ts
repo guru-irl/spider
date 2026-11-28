@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { paths } from "@spider/db-core";
 import { coerce, getField, renderConfig } from "@spider/ui";
 import { configValues, controlConfig } from "../control.js";
 import { applyConfigEdit, applyConfigUnset } from "../control/config-cmd.js";
+import { testScratchPath } from "../__tests__/testutil.js";
 import { ACCENTS } from "./palette.js";
 
-const scratch = resolve(".spider/scratch/accent-config");
+const scratch = testScratchPath("accent-config");
 let root: string;
 let project: string;
 let global: string;

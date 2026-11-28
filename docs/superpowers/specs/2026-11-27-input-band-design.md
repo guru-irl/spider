@@ -69,7 +69,7 @@ A spider editor, `BandEditor extends CustomEditor`, replaces pi's editor through
 
 ### Theme
 
-In `packages/herdr/assets/themes/dracula-plus-glass.json` and `spider-glass.json`:
+In the Pi theme, `packages/herdr/assets/themes/dracula-plus-glass.json`:
 
 - New var `strip` = `#060607`. `userMessageBg` uses it.
 - `accent`, `borderAccent` and `customMessageLabel` move from `purple` to `blue` (`#82aaff`). `toolTitle` stays
@@ -79,6 +79,8 @@ In `packages/herdr/assets/themes/dracula-plus-glass.json` and `spider-glass.json
 - The thinking colours don't change: the bar no longer shows them.
 - Purple stays in the palette for anything that names it directly, but nothing uses it as the accent.
 - The installed copy in `~/.pi/agent/themes/` follows through Herdr setup's normal theme install.
+
+Herdr’s app theme, `spider-glass.json`, keeps its neutral chrome accent (`#d9d9db`).
 
 ### Sent messages
 
@@ -190,7 +192,8 @@ In `packages/herdr/assets/themes/dracula-plus-glass.json` and `spider-glass.json
   half-row edges replace pi's padding rows, reload installs the wrapper once, wrapper inert when pi's component
   changes shape.
 - Theme assets: `strip` is `#060607`; `userMessageBg`, the three tool backgrounds and `customMessageBg` use it;
-  `accent`, `borderAccent` and `customMessageLabel` are blue; `toolTitle` is unchanged; both theme files agree.
+  Pi’s `accent`, `borderAccent` and `customMessageLabel` are blue and `toolTitle` is unchanged.
+  Herdr’s app accent stays neutral.
 - Bar colour: accent at every thinking level, bash mode green.
 - Boxes: half rows replace the padding rows at the box colour, one-cell sides kept, leading and trailing blank
   content rows dropped, pi's built-in edit tool included, untouched when pi's padding rows are missing.

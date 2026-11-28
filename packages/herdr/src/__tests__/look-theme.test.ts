@@ -43,7 +43,7 @@ describe('glass themes and fonts', () => {
     for (const token of ['accent', 'borderAccent', 'customMessageLabel']) {
       expect(rows.find(row => row.token === token)?.foreground, token).toBe('#82aaff');
     }
-    expect(herdrTheme.colors.accent).toBe('#82aaff');
+    expect(herdrTheme.colors.accent).toBe('#d9d9db');
     expect(rows.find(row => row.token === 'toolTitle')?.foreground).toBe('#f8f8f2');
   });
   it('both themes preserve neutral backgrounds and readable pi roles', async () => {

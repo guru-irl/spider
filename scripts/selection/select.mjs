@@ -86,17 +86,19 @@ export function changedBetween(root, base, head) {
   return changes;
 }
 
-export function namedByTests(root, head, file) {
-  // Include basenames for references assembled from path segments or relative
-  // to a test. Ambiguous names can select extra readers, not omit them.
-  const needles = sorted([file, basename(file)]);
-  try {
-    return git(root, 'grep', '--threads=1', '-I', '-lz', '-F', ...needles.flatMap(needle => ['-e', needle]), head, '--',
-      ':(glob)packages/*/src/**/*.test.ts').split('\0').filter(Boolean).map(match => match.slice(head.length + 1));
-  } catch (error) {
-    if (error.status === 1) return [];
-    throw error;
-  }
+export function createNamedByTests(root, inventory) {
+  let sources;
+  const readers = new Map();
+  return file => {
+    // Include basenames for paths assembled from segments or relative to a
+    // test. An ambiguous basename adds readers rather than dropping them.
+    const name = basename(file);
+    if (!readers.has(name)) {
+      sources ??= inventory.map(test => [test, readFileSync(resolve(root, test), 'utf8')]);
+      readers.set(name, sources.filter(([, text]) => text.includes(name)).map(([test]) => test));
+    }
+    return readers.get(name);
+  };
 }
 
 // Vite transforms away type imports. Resolve them from the tracked source
@@ -226,9 +228,7 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
           }
           for (const test of readers.get(file) ?? []) add(test, `recorded ${removed ? 'deleted ' : ''}input: ${file}`);
           if (isTest && !removed) add(file, 'changed test');
-          if (isDoc || isScript || isHerdrE2e || isPolicy) {
-            for (const test of namedBy(file)) add(test, `names ${file}`);
-          }
+          for (const test of namedBy(file)) add(test, `names ${file}`);
           if (isBuild) buildChanged = true;
           // A recording cannot rule out a lazy import on a branch the test did not take.
           const graphInput = code.test(file) || (!isDoc && !isBuild && !isPolicy) || isScript || isHerdrE2e;
@@ -312,7 +312,7 @@ async function main(base, output) {
   try { changes = changedBetween(root, lookup.map?.commit ?? mergeBase, head); }
   catch { lookup.fallback = 'could not read map-to-head changed files'; }
   const selection = await selectTests({ head, inventory, changes, ...lookup, fallbackDurations: read(fallbackDurationsURL),
-    namedBy: file => namedByTests(root, head, file),
+    namedBy: createNamedByTests(root, inventory),
     fixtureBlobs: commit => fixtureBlobsAtCommit(root, commit),
     async resolveRelated(seeds, targets) {
       if (targets?.some(file => fixtureEntries.includes(file) && !availableFixtures.has(file))) {

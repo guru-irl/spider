@@ -295,7 +295,8 @@ test('finds a test naming a README by a path relative to the test', t => {
   execFileSync('git', ['add', '--', a], { cwd: root });
   execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture'], { cwd: root });
   const tempHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-  assert.deepEqual(selector.namedByTests(root, tempHead, 'packages/one/README.md'), [a]);
+  const namedBy = selector.createNamedByTests(root, selector.testInventory(root, tempHead));
+  assert.deepEqual(namedBy('packages/one/README.md'), [a]);
 });
 
 test('runs tests naming, importing, or running a script', async () => {

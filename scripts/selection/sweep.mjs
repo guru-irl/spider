@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import { git, namedByTests, selectTests, testInventory } from './select.mjs';
+import { createNamedByTests, git, selectTests, testInventory } from './select.mjs';
 
 const root = process.cwd();
 const head = git(root, 'rev-parse', 'HEAD').trim();
@@ -32,10 +32,10 @@ if (!namesByPath.size) throw new Error('Named-input sweep found no paths to chec
 // see or what the import graph knows. All tests are recorded, with no reads.
 const record = { reads: [], unresolved: [], ms: 1, result: 'passed', ranBundle: false, incomplete: false };
 const map = { version: 2, commit: head, runId: null, files: [], tests: Object.fromEntries(inventory.map(test => [test, record])) };
+const namedBy = createNamedByTests(root, inventory);
 const misses = [];
 for (const [file, tests] of [...namesByPath.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-  const result = await selectTests({ head, inventory, map, changes: [{ file, status: 'M' }],
-    namedBy: name => namedByTests(root, head, name) });
+  const result = await selectTests({ head, inventory, map, changes: [{ file, status: 'M' }], namedBy });
   if (result.mode === 'full' && ![`toolchain changed: ${file}`, `selection infrastructure changed: ${file}`].includes(result.fallback)) {
     misses.push(`${file}: unexpected full fallback (${result.fallback})`);
     continue;

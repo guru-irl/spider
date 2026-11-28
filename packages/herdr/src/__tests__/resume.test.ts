@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { fixtureInput } from '../../../../scripts/test-fixture-input.js';
 import { beforeEach, afterEach, expect, it } from 'vitest';
 import { mkdir, mkdtemp, writeFile, readFile, readdir, stat, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -22,7 +23,7 @@ beforeEach(async () => {
   owner = { sessionId: 's1' as SessionId, generation: 'g1' as Generation, terminal, sessionFile: file, cwd: root, name: "session 'quoted' $(false)" };
   await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: 's1', cwd: root }) + '\n');
   await createTerminalRegistry(root).record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
-  options = { nodePath: process.execPath, cliPath: join(root, "cli 'quoted'.mjs"), configPath: join(root, 'config.json'), hookPath: fileURLToPath(new URL('../../assets/shell/resume.sh', import.meta.url)) };
+  options = { nodePath: process.execPath, cliPath: join(root, "cli 'quoted'.mjs"), configPath: join(root, 'config.json'), hookPath: fixtureInput(new URL('../../assets/shell/resume.sh', import.meta.url)) };
 });
 afterEach(async () => rm(root, { recursive: true, force: true }));
 function ports(start = 20) { return { registry: createTerminalRegistry(root), processInventory: { presence: createProcessPresence(root), leases: createSessionLeases(root), processes: async () => [], probe: async () => ({ kind: 'absent' as const }) }, coreStartedAt: async () => start }; }

@@ -464,7 +464,7 @@ test('keeps scripts loaded by an externally killed child and marks its record in
 test('records non-code file reads through Node fs APIs in a child with a replacement environment', t => {
   const paths = fixture(t);
   const { root, raw, workspace, installed } = paths;
-  for (const name of ['callback.json', 'handle.html', 'open.sql', 'openSync.txt', 'promise.css', 'stream.svg', 'sync.yaml', 'output.txt']) {
+  for (const name of ['callback.json', 'copy.json', 'handle.html', 'open.sql', 'openSync.txt', 'promise.css', 'stream.svg', 'sync.yaml', 'output.txt']) {
     writeFileSync(join(root, name), name);
   }
   writeFileSync(join(workspace, 'outside.txt'), 'outside');
@@ -472,11 +472,13 @@ test('records non-code file reads through Node fs APIs in a child with a replace
   writeFileSync(join(root, 'data-child.mjs'), `
     import assert from 'node:assert/strict';
     import { createReadStream, open, openSync, close, readFile, readFileSync, closeSync } from 'node:fs';
-    import { open as openPromise, readFile as readPromise } from 'node:fs/promises';
+    import { copyFile, open as openPromise, readFile as readPromise } from 'node:fs/promises';
     import { promisify } from 'node:util';
     assert.equal(readFileSync(new URL('./sync.yaml', import.meta.url), 'utf8'), 'sync.yaml');
     assert.equal(await promisify(readFile)(Buffer.from('callback.json'), 'utf8'), 'callback.json');
     assert.equal(await readPromise('promise.css', 'utf8'), 'promise.css');
+    await copyFile('copy.json', '../copied.json');
+    assert.equal(await readPromise('../copied.json', 'utf8'), 'copy.json');
     closeSync(await promisify(open)('open.sql', 'r'));
     closeSync(openSync('openSync.txt', 'r'));
     const handle = await openPromise('handle.html', 'r');
@@ -495,9 +497,24 @@ test('records non-code file reads through Node fs APIs in a child with a replace
   `], { cwd: root, env: recorderEnv(root, raw) });
   assert.equal(result.status, 0, result.stderr);
   const record = reduceProbe(paths);
-  assert.deepEqual(record.reads, ['callback.json', 'data-child.mjs', 'handle.html', 'open.sql', 'openSync.txt',
+  assert.deepEqual(record.reads, ['callback.json', 'copy.json', 'data-child.mjs', 'handle.html', 'open.sql', 'openSync.txt',
     'promise.css', 'stream.svg', 'sync.yaml']);
   assert.equal(record.incomplete, false);
+});
+
+test('records a declared fixture input even when only a shell reads it', { skip: process.platform === 'win32' }, t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'fixture.sh'), 'printf shell-output');
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { execFileSync } from 'node:child_process';
+    import { fixtureInput } from './scripts/test-fixture-input.ts';
+    const input = fixtureInput(new URL(${JSON.stringify(`file://${join(root, 'fixture.sh')}`)}));
+    assert.equal(execFileSync('/bin/sh', [input], { encoding: 'utf8' }), 'shell-output');
+  `], { env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(reduceProbe(paths).reads.includes('fixture.sh'));
 });
 
 test('records all inputs of an in-memory bundle even when no output script runs', t => {

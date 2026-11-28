@@ -1,3 +1,4 @@
+import { fixtureInput } from '../../../../scripts/test-fixture-input.js';
 import { buildRuntimeArtifact } from './runtime-artifact.js';
 import { runPanelScene } from './acceptance/i.js';
 // SPDX-License-Identifier: MIT
@@ -53,8 +54,8 @@ export async function createAcceptanceHarness(mode: AcceptanceMode): Promise<Her
   if (mode === 'fake') {
     const h = await createHerdrHarness(mode);
     const log = join(h.root, 'acceptance-calls.jsonl'); await writeFile(log, '');
-    const logger = fileURLToPath(new URL('./acceptance-call-log.mjs', import.meta.url));
-    const fake = fileURLToPath(new URL('./fake-hc.mjs', import.meta.url));
+    const logger = fixtureInput(new URL('./acceptance-call-log.mjs', import.meta.url));
+    const fake = fixtureInput(new URL('./fake-hc.mjs', import.meta.url));
     const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
     await writeFile(h.hcBinary, `#!/bin/sh\nexec ${quote(process.execPath)} --import ${quote(logger)} ${quote(fake)} "$@"\n`);
     h.calls = async (side = 'local') => (await readFile(log, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as { argv: string[]; env: NodeJS.ProcessEnv }).filter(call => call.env.HC_SESSION === (side === 'local' ? 'l' : 'r'));

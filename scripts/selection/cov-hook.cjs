@@ -146,9 +146,9 @@ if (dir) {
       if (typeof flags === 'number') return !(flags & fs.constants.O_WRONLY);
       return typeof flags !== 'string' || flags.startsWith('r') || flags.includes('+');
     }
-    for (const name of ['readFile', 'readFileSync', 'createReadStream']) wrapRead(fs, name);
+    for (const name of ['readFile', 'readFileSync', 'createReadStream', 'copyFile', 'copyFileSync']) wrapRead(fs, name);
     for (const name of ['open', 'openSync']) wrapRead(fs, name, readable);
-    wrapRead(fs.promises, 'readFile');
+    for (const name of ['readFile', 'copyFile']) wrapRead(fs.promises, name);
     wrapRead(fs.promises, 'open', readable);
   }
 
@@ -285,6 +285,7 @@ if (dir) {
       }
 
       captureFsReads();
+      globalThis[Symbol.for('spider.selection.input')] = recordRead;
       globalThis[Symbol.for('spider.selection.bundle-inputs')] = ids => {
         record('build');
         const files = new Set();

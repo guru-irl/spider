@@ -52,8 +52,8 @@ jobs:
               print('large case', case['title'], case['status'], case.get('duration'))
           if not data['success'] or len(pids) < 3 or len(cases) != 2 or any(c['status'] != 'passed' for c in cases):
               raise SystemExit('trial did not execute all required work')
-          if not (root / 'tmpfs-seen').read_text().strip():
-              raise SystemExit('no large fixture observed on tmpfs')
+          if len(set((root / 'tmpfs-seen').read_text().splitlines())) < 2:
+              raise SystemExit('both large fixtures were not observed on tmpfs')
           PY
           stat -f -c 'Large fixture candidate /dev/shm: %T, %a blocks x %s bytes free' /dev/shm
           tests=(packages/roam/src/__tests__/{artifacts,cli-package,provision-adapter,move}.test.ts)
@@ -62,17 +62,17 @@ jobs:
             dir="$PWD/.spider/scratch/roam-metrics/$i"
             mkdir -p "$dir"
             export SPDR_WORKERS="$dir/workers" TMPDIR="$PWD/.spider/scratch/tmp"
-            (while :; do find /dev/shm -maxdepth 1 -type d -name 'spider-artifact-*' -print >> "$dir/tmpfs-seen"; sleep 0.1; done) &
+            (while :; do find /dev/shm -maxdepth 1 -type d -name 'spider-artifact-*' -print >> "$dir/tmpfs-seen"; sleep 0.2; done) &
             monitor=$!
             rc=0
             env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u XDG_RUNTIME_DIR \
-              node_modules/.bin/vitest run "${tests[@]}" --maxWorkers=3 --minWorkers=3 --config ./.spider/scratch/roam-vitest.mts \
+              node_modules/.bin/vitest run "${tests[@]}" --maxWorkers=3 --config ./.spider/scratch/roam-vitest.mts \
               --reporter=default --reporter=json --outputFile="$dir/vitest.json" || rc=$?
             kill "$monitor" || true
             wait "$monitor" 2>/dev/null || true
             echo "Trial $i exit $rc"
-            python3 .spider/scratch/roam-summary.py "$dir" | tee "$dir/summary.txt"
             if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+            python3 .spider/scratch/roam-summary.py "$dir" | tee "$dir/summary.txt"
             echo '::endgroup::'
           done
       - uses: actions/upload-artifact@v4

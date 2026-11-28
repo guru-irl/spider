@@ -570,15 +570,23 @@ test('a kernel trace attributes shell and killed Node reads to the test that spa
   writeFileSync(join(root, 'resume.sh'), 'read text < shell.txt; printf "%s" "$text"\n');
   writeFileSync(join(root, 'shell.txt'), 'shell read\n');
   writeFileSync(join(root, 'child.txt'), 'child read');
+  writeFileSync(join(root, 'worker.txt'), 'worker read');
+  writeFileSync(join(root, 'thread.mjs'), `
+    import { readFileSync } from 'node:fs';
+    import { parentPort } from 'node:worker_threads';
+    parentPort.postMessage(readFileSync('worker.txt', 'utf8'));
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  `);
   writeFileSync(join(root, 'child.mjs'), `
     import { readFileSync } from 'node:fs';
     process.stdout.write(readFileSync('child.txt'));
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   `);
   execFileSync('git', ['init', '-q'], { cwd: root });
-  execFileSync('git', ['add', '--', 'child.txt', 'shell.txt', 'resume.sh'], { cwd: root });
+  execFileSync('git', ['add', '--', 'child.txt', 'shell.txt', 'resume.sh', 'worker.txt'], { cwd: root });
   const result = spawnSync('bash', ['scripts/selection/with-recorder.sh', raw, process.execPath, '--input-type=module', '-e', `
     import { spawn, execFileSync } from 'node:child_process';
+    import { Worker } from 'node:worker_threads';
     import { once } from 'node:events';
     import assert from 'node:assert/strict';
     globalThis[Symbol.for('spider.selection.tag')](${JSON.stringify(id)});
@@ -590,10 +598,13 @@ test('a kernel trace attributes shell and killed Node reads to the test that spa
     assert.equal(String(ready), 'child read');
     child.kill('SIGKILL');
     assert.deepEqual(await exited, [null, 'SIGKILL']);
+    const thread = new Worker('./thread.mjs', { execArgv: [] });
+    assert.deepEqual(await once(thread, 'message'), ['worker read']);
+    assert.equal(await thread.terminate(), 1);
   `], { cwd: root, env: { ...process.env, SPIDER_SELECTION_KERNEL_TRACE: '1' }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const record = reduceProbe(paths);
-  assert.deepEqual(record.reads, ['child.mjs', 'child.txt', 'resume.sh', 'shell.txt']);
+  assert.deepEqual(record.reads, ['child.mjs', 'child.txt', 'resume.sh', 'shell.txt', 'thread.mjs', 'worker.txt']);
   assert.equal(record.incomplete, false);
   assert.equal(record.unknownCpu, 1);
   assert.equal(record.cpuMs, null);
@@ -627,6 +638,35 @@ ${extra}${exitLine}3 +++ exited with 0 +++
     assert.equal(record.incomplete, !complete);
     assert.equal(record.cpuMs, null);
     if (complete) assert.deepEqual(record.reads, ['native.txt']);
+  });
+}
+
+for (const [label, ready, exited, complete] of [
+  ['a ready worker with observed termination', true, true, true],
+  ['a heap-limited worker without a recorder', false, true, false],
+  ['a ready worker without an observed exit', true, false, false],
+]) {
+  test(`reconciles forced worker termination without assuming a flush: ${label}`, t => {
+    const processId = 'worker-parent';
+    const thread = { test: id, processId, threadId: 1 };
+    const result = fixtureRecords(t, {
+      results: [{ name: id }],
+      launches: [{ ...thread, kind: 'thread' }, ...(exited ? [{ ...thread, kind: 'thread-exit' }] : [])],
+      snapshots: [
+        { test: id, worker: true, pid: 3, processId, threadId: 0, cpuMs: 132, ended: true, paths: [] },
+        ...(ready ? [{ ...thread, pid: 3, cpuMs: 50, captureReady: true, paths: ['src/worker.ts'] }] : []),
+      ],
+      kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 clone(child_stack=NULL, flags=CLONE_THREAD) = 4
+4 +++ exited with 0 +++
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+    });
+    const record = result.records[id];
+    assert.equal(record.incomplete, !complete);
+    assert.equal(record.cpuMs, 132);
+    if (complete) assert.deepEqual(record.reads, ['src/worker.ts']);
   });
 }
 

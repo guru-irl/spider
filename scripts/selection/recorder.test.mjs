@@ -556,6 +556,27 @@ test('keeps scripts loaded by an externally killed child and marks its record in
   assert.equal(record.cpuMs, null);
 });
 
+test('a nested recorder keeps its fixture journal and does not claim an outer startup', t => {
+  const outer = fixture(t);
+  const inner = fixture(t);
+  writeFileSync(join(inner.root, 'nested.cjs'), 'process.stdout.write(require("node:fs").readFileSync("nested.txt"));');
+  writeFileSync(join(inner.root, 'nested.txt'), 'inner fixture');
+  const result = runNode(['--input-type=module', '-e', `
+    import { execFileSync } from 'node:child_process';
+    import assert from 'node:assert/strict';
+    const child = execFileSync(process.execPath, ['nested.cjs'], {
+      cwd: ${JSON.stringify(inner.root)}, env: ${JSON.stringify({
+        SPIDER_SELECTION_DIR: inner.raw, SPIDER_SELECTION_ROOT: inner.root,
+        SPIDER_SELECTION_TEST: id, NODE_OPTIONS: `--require=${JSON.stringify(hook)}`,
+      })}, encoding: 'utf8',
+    });
+    assert.equal(child, 'inner fixture');
+  `], { cwd: outer.root, env: recorderEnv(outer.root, outer.raw) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(reduceProbe(inner)?.reads, ['nested.cjs', 'nested.txt']);
+  assert.equal(reduceProbe(outer).incomplete, true);
+});
+
 test('a kernel trace attributes shell and killed Node reads to the test that spawned them', {
   skip: !canTrace,
 }, t => {

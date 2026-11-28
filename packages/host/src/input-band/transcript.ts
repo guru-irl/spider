@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Spacer, stripTerminalSequences, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { icon, type IconStyle } from "@spider/ui";
+import { stripTerminalSequences, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { icon, joinToolCards, type IconStyle } from "@spider/ui";
 import { bindHalfBox, edgeInk, halfEdge, isImageRow, stripRow } from "./box.js";
 import type { InputBandHost } from "./index.js";
 
@@ -79,41 +79,10 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
   const container = tool && Object.getPrototypeOf(tool) as Container | undefined;
   off.push(patch(container, options, function (render, width) {
     const rows = render.call(this, width);
-    if (!host.ToolExecutionComponent || width < 1 || !this.children?.some(child => child instanceof host.ToolExecutionComponent!)) return rows;
-    const layout = field(this, "mouseLayout") as { width?: number; children?: { component: Component; height: number }[] } | undefined;
-    const entries = layout?.children;
-    if (layout?.width !== width || !Array.isArray(entries) || entries.length !== this.children.length ||
-      entries.some((entry, i) => entry.component !== this.children[i] || !Number.isInteger(entry.height) || entry.height < 0) ||
-      entries.reduce((sum, entry) => sum + entry.height, 0) !== rows.length) return rows;
-    const output: string[] = [];
-    const mouseChildren: { component: Component; height: number }[] = [];
-    let offset = 0;
-    let previousTool = false;
-    for (const entry of entries) {
-      const part = rows.slice(offset, offset + entry.height);
-      offset += entry.height;
-      const isTool = entry.component instanceof host.ToolExecutionComponent;
-      const leading = isTool ? (entry.component as Container).children?.[0] : undefined;
-      const join = previousTool && isTool && leading instanceof Spacer && field(leading, "lines") === 1 && part.length > 1 && part[0] === "" &&
-        stripTerminalSequences(part[1]) === "▄".repeat(width);
-      const component = entry.component;
-      if (join) {
-        output.push(...part.slice(1));
-        // Forward the same click to Pi at its original local coordinates.
-        const mouse: Component = {
-          render: w => component.render(w).slice(1),
-          invalidate: () => component.invalidate?.(),
-          handleMouse: event => component.handleMouse?.({ ...event, y: event.y + 1, height: event.height + 1 }),
-        };
-        mouseChildren.push({ component: mouse, height: entry.height - 1 });
-      } else {
-        output.push(...part);
-        mouseChildren.push(entry);
-      }
-      if (part.length) previousTool = isTool && stripTerminalSequences(part.at(-1)!) === "▀".repeat(width);
-    }
-    layout.children = mouseChildren;
-    return output;
+    const Tool = host.ToolExecutionComponent;
+    if (!Tool) return rows;
+    return joinToolCards(this, rows, width, child => child instanceof Tool,
+      (row, edge, columns) => stripTerminalSequences(row) === (edge === "top" ? "▄" : "▀").repeat(columns));
   }));
   const sentCache = new WeakMap<Container, { rows: string[]; width: number; caret: string; output: string[] }>();
   off.push(patch(host.UserMessageComponent?.prototype, options, function (render, width, opts) {

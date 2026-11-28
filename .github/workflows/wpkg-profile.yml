@@ -37,11 +37,14 @@ jobs:
           dir="$PWD/.spider/scratch/wpkg-profile"
           p=packages/herdr/src/__tests__
           shopt -s nullglob
-          files=("$p"/setup-checkpoint-model-seed*.test.ts "$p"/checkpoint-model-shards.test.ts
-            "$p"/remote-execute.test.ts "$p"/production-cutover-{rollback,placement,launcher,journal}.test.ts
-            "$p"/spaces-a-install.test.ts "$p"/setup-backup-recovery.test.ts "$p"/setup-installation.test.ts
-            "$p"/setup-checkpoint.test.ts "$p"/acceptance.test.ts "$p"/agent-consoles.test.ts
-            "$p"/ssh-core-restart.test.ts "$p"/console-upgrade.test.ts)
+          files=("$p"/setup-checkpoint-model-seed*.test.ts "$p"/checkpoint-model-shards*.test.ts
+            "$p"/remote-execute*.test.ts "$p"/production-cutover-{rollback,placement,launcher,journal}*.test.ts
+            "$p"/production-cutover-app-shim*.test.ts "$p"/spaces-a-install*.test.ts
+            "$p"/setup-backup-recovery*.test.ts "$p"/setup-installation*.test.ts
+            "$p"/setup-checkpoint.test.ts "$p"/setup-checkpoint-part*.test.ts "$p"/acceptance.test.ts
+            "$p"/agent-consoles*.test.ts "$p"/ssh-core-restart.test.ts "$p"/console-upgrade.test.ts)
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do test -f "$file" || { echo "Missing $file"; exit 1; }; done
           status=0
           for file in "${files[@]}"; do
             name="${file##*/}"

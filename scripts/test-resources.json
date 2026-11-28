@@ -340,6 +340,7 @@
       "packages/host/src/__tests__/herdr-setup-production-rollback.test.ts",
       "packages/host/src/__tests__/herdr-setup-rollback-exit.test.ts",
       "packages/host/src/__tests__/herdr-setup-rollback.test.ts",
+      "packages/host/src/__tests__/herdr-setup-unreachable-machines.test.ts",
       "packages/host/src/__tests__/herdr-sidebar.test.ts",
       "packages/host/src/__tests__/herdr-ssh.test.ts",
       "packages/host/src/__tests__/herdr-viewer-layout-fixture.testutil.ts",

@@ -13,7 +13,7 @@ import { linkRoamCommand } from "./link-roam.mjs";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const bundle = join(repoRoot, "dist", "extension.js");
-const extDir = join(piAgentDir(), "extensions");
+const extDir = join(await piAgentDir(), "extensions");
 const shim = join(extDir, "spider.ts");
 const devShim = join(extDir, "spider-dev.ts");
 

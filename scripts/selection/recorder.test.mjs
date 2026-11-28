@@ -20,7 +20,7 @@ function fixture(t) {
   const scratch = resolve('.spider/scratch/selection');
   mkdirSync(scratch, { recursive: true });
   const workspace = mkdtempSync(join(scratch, 'recorder-'));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
+  // Keep the synthetic fixture for diagnosis on this branch only.
   const root = join(workspace, 'repo');
   const raw = join(workspace, 'raw');
   const maps = join(workspace, 'maps');
@@ -641,7 +641,7 @@ test('a kernel trace attributes shell and killed Node reads to the test that spa
   assert.equal(result.status, 0, result.stderr);
   const record = reduceProbe(paths);
   assert.deepEqual(record.reads, ['child.mjs', 'child.txt', 'resume.sh', 'shell.txt', 'thread.mjs', 'worker.txt']);
-  assert.equal(record.incomplete, false);
+  assert.equal(record.incomplete, false, JSON.stringify(record.capture));
   assert.equal(record.unknownCpu, 1);
   assert.equal(record.cpuMs, null);
 });

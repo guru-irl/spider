@@ -90,18 +90,20 @@ matrix. Selection never collects test modules or starts test workers.
 
 The PR scheduling budget is 65 seconds per runner, leaving setup and aggregate
 headroom inside the two-minute target. It uses recorded file durations plus a
-700 ms per-file import allowance from CI observations. Tests fill that budget
-in this order:
+700 ms per-file import allowance from CI observations. Tests retained by
+explicit resource rules are required and count toward the budget. If those tests
+alone exceed the budget, the selector keeps them and notes it in the summary.
+The remaining tests fill the budget in this order:
 
 1. Changed test files and tests that directly import a changed file with a static import.
 2. Tests beside changed production source, including its `__tests__` directory.
-3. Other selected importers and resource consumers.
+3. Other selected importers and bundle consumers.
 
 Type-only imports count as direct imports. Dynamic and transitive imports do
-not. Paths break ties within each priority. A file that cannot fit waits for
-the full run, and smaller later files can use the space left. Every deferred
-file appears in each runner's step summary. Chrome and acceptance selection
-outputs are summary notes, not PR suite triggers.
+not. Paths break ties within each priority. A non-required file that cannot fit
+waits for the full run, and smaller later files can use the space left. Every
+deferred file appears in each runner's step summary. Chrome and acceptance
+selection outputs are summary notes, not PR suite triggers.
 
 Each manifest records sorted test paths, selection reasons, base/tested SHAs,
 and hashes of the selector, resource policy, inventory, and timing table.

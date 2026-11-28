@@ -40,7 +40,10 @@ export async function startPiViewer(options: { piRoot: string; runId: RunId; cwd
     if (result.missing) return;
     if (result.reset) { view.reset(); if (runInfo) view.setRunInfo(runInfo); }
     if (result.truncatedHead) { view.setHistoryTruncated(); view.notice('Earlier messages are not shown. Showing the saved tail.'); }
-    if (result.invalid && !missingNotice) { view.notice('Some saved session records could not be shown.'); missingNotice = true; }
+    if (result.invalid) {
+      view.setHistoryTruncated();
+      if (!missingNotice) { view.notice('Some saved session records could not be shown.'); missingNotice = true; }
+    }
     if (result.entries.length) view.addEntries(result.entries);
   };
   ui.addChild(view.root);

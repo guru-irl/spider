@@ -442,7 +442,7 @@ describe("v0 controls", () => {
   it("prints the branch recovery command on successful relocate", async () => {
     const f = fixture();
     const result = await f.services.relocate({ sessionId: home.sessionId, destinationMachine: box });
-    if (!result.ok) throw new Error("fixture expects success");
+    if (!result.ok || "stop" in result.value) throw new Error("fixture expects a running success");
     const command = "git switch -c spider-relocated-3-111111111111 1111111111111111111111111111111111111111";
     vi.mocked(f.services.relocate).mockResolvedValue({ ok: true, value: { ...result.value, branchRecovery: { savedBranch: "main", command } } });
     expect(await runV0Control({ kind: "relocate", session: "session-abc", machine: "box-a.invalid" }, config, catalog, f.services, f.io)).toBe(0);

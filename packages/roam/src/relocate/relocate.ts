@@ -1,9 +1,11 @@
 import type { Clock } from "../contracts";
 import { AwayHomeRecoveryRequired, MacSessionOccupied } from "./home-refusals";
+import { projectSessionStatus } from "./session-stop-store";
+import type { SessionStatus } from "./session-stop-types";
 import type {
   CapturedSession, InstalledSession, MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome, RelocateSuccess,
   RelocatePlan, RelocatePorts, RelocateRequest, RelocateStep, RunningHome, SessionPlacement,
-  SettledHome, V0Refusal, V0RefusalCode, V0Result,
+  SettledHome, StoppedHome, V0Refusal, V0RefusalCode, V0Result,
 } from "./types";
 
 class PortRefusal extends Error {
@@ -69,6 +71,14 @@ export interface PendingConfirmationPort {
 }
 interface Readiness { clock: Clock; timeoutMs: number }
 
+export type StoppedRelocateSuccess = {
+  home: StoppedHome;
+  moveId: RelocateId | null;
+  disposition: "already-home" | "relocated" | "undone";
+  stop: SessionStatus;
+};
+export type SettledRelocateOutcome = RelocateOutcome | { ok: true; value: StoppedRelocateSuccess };
+
 function waitForConfirmation<T>(attempt: () => Promise<V0Result<T>>, readiness: Readiness, pending: V0Refusal): Promise<V0Result<T>> {
   return new Promise((resolve, reject) => {
     let expired = false;
@@ -98,7 +108,9 @@ function waitForConfirmation<T>(attempt: () => Promise<V0Result<T>>, readiness: 
 }
 
 /** Hub-only orchestration. All durable state and exclusion belong to the ports. */
-export async function relocate(request: RelocateRequest, ports: RelocatePorts & Partial<PendingConfirmationPort>, readiness?: Readiness): Promise<RelocateOutcome> {
+export async function relocate(request: RelocateRequest, ports: RelocatePorts & Partial<PendingConfirmationPort> & {
+  stoppedStatus?: (home: StoppedHome) => SessionStatus;
+}, readiness?: Readiness): Promise<SettledRelocateOutcome> {
   let home: RelocateHome | null = null;
   let moveId: RelocateId | null = null;
   let step: RelocateStep = "check";
@@ -198,27 +210,22 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts & 
       }
       if (home.state !== "moving" && home.machineId === request.destinationMachine) {
         moveId = home.moveId;
-        const placement = initialPlacement ?? value(await ports.locate(home.machineId, request.sessionId));
-        const resumed: RunningHome = { ...home, state: "running",
-          epoch: home.state === "stopped" ? home.epoch + 1 : home.epoch };
         if (home.state === "stopped") {
-          step = "commit-home";
-          value(await ports.activate(resumed, placement));
-          await cas(home, resumed);
-          value(await ports.publishHome(resumed, resumed.machineId));
-        } else {
-          step = "commit-home";
-          value(await ports.publishHome(resumed, resumed.machineId));
-          value(await ports.activate(resumed, placement));
-          const localPid = await ports.unlabelledLocalRunner?.(resumed);
-          if (localPid) return { ok: true, value: { moveId, home: resumed, placement,
-            terminal: `pid:${localPid}`, localPid, disposition: "already-home" } };
+          const stop = ports.stoppedStatus?.(home) ?? projectSessionStatus(home, null, home.sessionId, 0);
+          return { ok: true, value: { home, moveId, disposition: "already-home", stop } };
         }
+        const placement = initialPlacement ?? value(await ports.locate(home.machineId, request.sessionId));
+        step = "commit-home";
+        value(await ports.publishHome(home, home.machineId));
+        value(await ports.activate(home, placement));
+        const localPid = await ports.unlabelledLocalRunner?.(home);
+        if (localPid) return { ok: true, value: { moveId, home, placement,
+          terminal: `pid:${localPid}`, localPid, disposition: "already-home" } };
         step = "start-destination";
-        const started = await start(resumed, placement);
+        const started = await start(home, placement);
         step = "confirm";
-        const confirmed = started.confirmed ?? await confirm(resumed, placement);
-        return { ok: true, value: { moveId, home: resumed, placement, terminal: confirmed.terminal, disposition: "already-home" } };
+        const confirmed = started.confirmed ?? await confirm(home, placement);
+        return { ok: true, value: { moveId, home, placement, terminal: confirmed.terminal, disposition: "already-home" } };
       }
       let checkpoint: RelocateCheckpoint;
       if (home.state === "moving") {

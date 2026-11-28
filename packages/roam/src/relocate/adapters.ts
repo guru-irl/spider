@@ -13,12 +13,13 @@ import { callV0, createV0ArtifactTransport, decodeStopObservation, handleRelocat
 import { createLocalRuntime, exactHome, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, captureOrdinarySource, requestLocalStop, SessionSeedBusy, seedBusyRefusal, type LocalSource } from "./local";
 import { captureLocalSession, installLocalSession, stagingRoot } from "./transfer";
 import { legacyRecordedHomeRefusal, sameManagedHome } from "./home";
+import type { StartMachinePorts } from "./session-start";
 import type { StopMode, StopObservation } from "./session-stop-types";
 import type { StopSupervisorPorts } from "./supervisor";
 import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePorts, SessionId, SessionPlacement, SettledHome, V0Result, RelocatePlan, CapturedSession, RunningHome, StoppedHome, InstalledSession } from "./types";
 
 export interface ExactRelocatePorts extends RelocatePorts {
-  confirm(home: RunningHome, placement: SessionPlacement, exact?: true): Promise<V0Result<{terminal:string}>>;
+  confirm(home: RunningHome, placement: SessionPlacement, exact?: true, admitted?: true): Promise<V0Result<{terminal:string}>>;
   confirmPending: RelocatePorts["confirm"];
 }
 
@@ -29,7 +30,9 @@ export interface StopMachinePorts {
   publishStopped(home: StoppedHome, observer: MachineId): Promise<V0Result<void>>;
   enforceLocal(home: StoppedHome): Promise<StopObservation>;
 }
-export type StopRelocateAdapters = RelocateAdapters & { ports: ExactRelocatePorts; supervisor: StopSupervisorPorts; stop: StopMachinePorts };
+export type StopRelocateAdapters = RelocateAdapters & {
+  ports: ExactRelocatePorts; supervisor: StopSupervisorPorts; stop: StopMachinePorts; start: StartMachinePorts;
+};
 
 export function createRelocateAdapters(options: RelocateAdapterOptions): StopRelocateAdapters {
   const local=createLocalRuntime(options),journal=createRelocateJournal(options.journal,options.config.hubMachineId);
@@ -78,11 +81,13 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): StopRel
       return candidates.length===1?{ok:true,value:candidates[0]}:candidates.length?refusal("ambiguous-session",`The session is active on multiple machines: ${candidates.join(", ")}.`):refusal("session-not-found","No ordinary active source was found.");
     }catch{return refusal("home-unavailable","The source catalog could not be read safely.");}
   }
-  async function available(machineId:string,source:boolean):Promise<V0Result<void>> {
+  async function available(machineId:string,source:boolean,requireStopControl = false):Promise<V0Result<void>> {
     if(machineId===options.config.machineId)return resolveParticipantPi()?{ok:true,value:undefined}:refusal("destination-not-provisioned","The local pi executable is unavailable.","Install pi and spider before retrying.");
     try {
       const reply=await rpc(machineId,{version:1,kind:"hello"});if(!reply.ok)return reply;
       if(reply.value.machineId!==machineId || reply.value.pi!==true || reply.value.spider!==true)return refusal("destination-not-provisioned",`The ${source?"source":"destination"} needs executable pi and spider with v0 support.`,"Install pi and spider on that machine before retrying.");
+      if (requireStopControl && reply.value.sessionStopVersion !== 1)
+        return refusal("destination-not-provisioned", "The box does not support Start and Stop controls.", "Update roaming on the box, then retry Start.");
       return {ok:true,value:undefined};
     }catch{return refusal(source?"source-unreachable":"destination-unreachable",`The ${source?"source":"destination"} v0 agent is unreachable.`);}
   }
@@ -177,10 +182,14 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): StopRel
       if(machineId===options.config.machineId)return local.locate(machineId,id);
       try{const result=await rpc(machineId,{version:1,kind:"locate",sessionId:id});if(!result.ok)return result;const placement=parsePlacement(result.value.placement);return placement.machineId===machineId && placement.sessionId===id?{ok:true,value:placement}:refusal("destination-copy-missing","The remote copy has a different identity.");}catch{return refusal("destination-copy-missing","No verified destination copy is available.");}
     },
-    async publishHome(home:Parameters<RelocatePorts["publishHome"]>[0],machineId:string):Promise<V0Result<void>> {
-      if(machineId===options.config.machineId)return local.publishHome(home,machineId);
+    async publishHome(home:Parameters<RelocatePorts["publishHome"]>[0],machineId:string,strict = false):Promise<V0Result<void>> {
+      if (machineId === sourceMachine) {
+        if (!strict) return local.publishHome(home, machineId);
+        return sameManagedHome(await options.homes.read(home.sessionId), home)
+          ? { ok: true, value: undefined } : refusal("sync-failed", "The exact running home is not present locally.");
+      }
       const synchronized=await sync(machineId);if(!synchronized.ok)return synchronized;
-      try{const reply=await rpc(machineId,{version:1,kind:"home",sessionId:home.sessionId});if(!reply.ok)return reply;const observed=reply.value.home===null?null:parseHome(reply.value.home);return exactHome(observed,home)?{ok:true,value:undefined}:refusal("sync-failed","The peer has not replicated the exact requested home.");}catch{return refusal("sync-failed","The peer home could not be read back.");}
+      try{const reply=await rpc(machineId,{version:1,kind:"home",sessionId:home.sessionId});if(!reply.ok)return reply;const observed=reply.value.home===null?null:parseHome(reply.value.home);return (strict ? sameManagedHome(observed,home) : exactHome(observed,home))?{ok:true,value:undefined}:refusal("sync-failed","The peer has not replicated the exact requested home.");}catch{return refusal("sync-failed","The peer home could not be read back.");}
     },
     async activate(home:RunningHome,placement:SessionPlacement):Promise<V0Result<void>> {
       if(home.machineId===options.config.machineId)return local.activate(home,placement);
@@ -191,12 +200,12 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): StopRel
       if(home.machineId===options.config.machineId)return local.start(home,placement);
       try{const reply=await rpc(home.machineId,{version:1,kind:"start",home,placement});if(!reply.ok)return reply;text(reply.value.terminal);return {ok:true,value:{terminal:reply.value.terminal}};}catch{return refusal("start-pending","The destination launch reply is pending.");}
     },
-    async confirm(home:RunningHome,placement:SessionPlacement,exact?:true):Promise<V0Result<{terminal:string}>> {
-      if(home.machineId===options.config.machineId)return local.confirm(home,placement,exact);
+    async confirm(home:RunningHome,placement:SessionPlacement,exact?:true,admitted?:true):Promise<V0Result<{terminal:string}>> {
+      if(home.machineId===options.config.machineId)return local.confirm(home,placement,exact,admitted);
       try {
-        const reply=await rpc(home.machineId,{version:1,kind:"confirm",home,placement,...(exact ? {exact:true} : {})});
+        const reply=await rpc(home.machineId,{version:1,kind:"confirm",home,placement,...(exact ? {exact:true} : {}),...(admitted ? {admitted:true} : {})});
         if(!reply.ok) return exact && reply.refusal.code==="invalid-arguments" ? refusal("start-pending","The destination cannot confirm the exact launch.") : reply;
-        if(exact && reply.value.exact!==true)return refusal("start-pending","The destination cannot confirm the exact launch.");
+        if(exact && reply.value.exact!==true || admitted && reply.value.admitted!==true)return refusal("start-pending","The destination cannot confirm the exact launch and admission requested.");
         text(reply.value.terminal);return {ok:true,value:{terminal:reply.value.terminal}};
       } catch {return refusal("start-pending","The destination ID-lock owner is not confirmed.");}
     },
@@ -205,6 +214,24 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): StopRel
     if(machineId===options.config.machineId)return (await local.owner(id)).kind==="free";
     const result=await rpc(machineId,{version:1,kind:"owner",sessionId:id});return result.ok && object(result.value.owner).kind==="free";
   }
+  const start: StartMachinePorts = {
+    locate: machines.locate,
+    async checkStart(home) {
+      const ready = await available(home.machineId, true, true);
+      return ready.ok ? machines.locate(home.machineId, home.sessionId) : ready;
+    },
+    observe: stop.observe,
+    publishHome: (home, machine) => machines.publishHome(home, machine, true),
+    activate: machines.activate,
+    start: machines.start,
+    confirm: (home, placement, exact) => machines.confirm(home, placement, exact, true),
+    async ownerFree(home, placement) {
+      try {
+        if (home.machineId === sourceMachine) return (await local.owner(home.sessionId, placement)).kind === "free";
+        return await ownerAt(home.machineId, home.sessionId);
+      } catch { return false; }
+    },
+  };
   const shared={homes:options.homes,newMoveId:()=>`v0-${randomUUID()}` as RelocateId,withSession:async<T>(id:SessionId,run:()=>Promise<T>):Promise<T>=>{
     if(!hub)throw new Error("Only the hub may mutate a v0 home");return withProcessLock(join(options.root,"roam","v0-locks"),id,run,{timeoutMs:options.limits.controlMs});
   },...machines};
@@ -250,7 +277,7 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): StopRel
       try{const result=await rpc(home.machineId,{version:1,kind:"install",plan,captured,home});if(!result.ok)return result;const installed=object(result.value.installed);parsePlacement(installed.placement);object(installed.session);return {ok:true,value:installed as unknown as InstalledSession};}catch{return refusal("install-failed","The destination install acknowledgement is unavailable.");}
     },
   };
-  return {ports,setHome:shared,stop,supervisor:{machineId:sourceMachine,clock:options.clock,entries:local.entries,owner:local.owner,
+  return {ports,setHome:shared,stop,start,supervisor:{machineId:sourceMachine,clock:options.clock,entries:local.entries,owner:local.owner,
     stop:id=>local.stop(id),stopStopped:local.enforceStopped,activate:local.activate,start:local.start,
     report(sessionId,refusal){writeLocal(options.globalDb,"relocate-supervisor-refusal",sessionId??"service",refusal);}},
     async dispose(){/* Per-call local stores and staging handles are already closed. */}};

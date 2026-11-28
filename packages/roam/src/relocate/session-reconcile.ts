@@ -5,7 +5,7 @@ import { sameManagedHome } from "./home";
 import type { SessionOperations } from "./session-operations";
 import { hasStopProof } from "./session-stop-store";
 import type { SessionStopStore, SessionTransition, StopMode, StopObservation } from "./session-stop-types";
-import type { HomeStore, SessionId, StoppedHome, V0RefusalCode } from "./types";
+import type { HomeStore, RunningHome, SessionId, StoppedHome, V0RefusalCode } from "./types";
 
 export interface SessionReconcilePorts {
   operations: SessionOperations;
@@ -17,6 +17,7 @@ export interface SessionReconcilePorts {
   readyMs: number;
   localMachineId: MachineId;
   mayContact(observer: MachineId): boolean;
+  reconcileStart?(home: RunningHome, continueLocally: boolean): Promise<void>;
 }
 
 export interface SessionReconciler {
@@ -231,13 +232,21 @@ export function createSessionReconciler(ports: SessionReconcilePorts): SessionRe
       if (closing || !ports.mayContact(peer)) return;
       // Do not wait, or call sync, inside its completion callback. A contact
       // round already awaiting this sync owns the read-back and mode send.
-      for (const record of store.list()) if (record.action !== "start" && expects(record, peer))
-        forObservers(record, contact => schedule(contact, "contact", 0), peer);
+      for (const record of store.list()) {
+        if (record.action === "start") {
+          if (record.observedAt === null && record.committed.machineId === peer)
+            void ports.reconcileStart?.(record.committed, false).catch(() => {});
+        } else if (expects(record, peer)) forObservers(record, contact => schedule(contact, "contact", 0), peer);
+      }
     },
     resume() {
       if (closing) return;
-      for (const record of store.list()) if (record.action !== "start")
-        forObservers(record, contact => schedule(contact, "publish", 0));
+      for (const record of store.list()) {
+        if (record.action === "start") {
+          if (record.observedAt === null && record.committed.machineId === ports.localMachineId && ports.mayContact(ports.localMachineId))
+            void ports.reconcileStart?.(record.committed, true).catch(() => {});
+        } else forObservers(record, contact => schedule(contact, "publish", 0));
+      }
     },
     close() {
       return closing ??= (async () => {

@@ -6,6 +6,8 @@ import type { ApplyReceipt, MachineId } from "@spider/db-core/roam/types";
 import type { Outcome } from "../contracts";
 import { isMachineId } from "../machine-id";
 import { privateDirectory } from "../staging";
+import { decodeManagedHome } from "./home";
+import type { SettledRelocateOutcome } from "./relocate";
 import type { RelocateRequest, SetHomeRequest, V0ControlServices } from "./types";
 
 export async function runV0Service(start: () => Promise<{ stop(): Promise<void> }>): Promise<void> {
@@ -24,7 +26,10 @@ const MAX_REQUEST = 32 * 1024, MAX_REPLY = 1024 * 1024;
 const CONTROL_TIMEOUT = 30 * 60_000;
 type SyncRequest = { machineId?: MachineId };
 export type V0SyncOutcome = Outcome<{ outcomes: readonly Outcome<ApplyReceipt>[] }>;
-export type V0HubControlServices = V0ControlServices & { sync(request: SyncRequest): Promise<V0SyncOutcome> };
+export type V0PlacementControlServices = Omit<V0ControlServices, "relocate"> & {
+  relocate(request: RelocateRequest): Promise<SettledRelocateOutcome>;
+};
+export type V0HubControlServices = V0PlacementControlServices & { sync(request: SyncRequest): Promise<V0SyncOutcome> };
 
 function syncCode(outcomes: readonly Pick<Outcome<ApplyReceipt>, "code">[]): V0SyncOutcome["code"] {
   return outcomes.some(row => row.code === 3) ? 3 : outcomes.some(row => row.code === 1) ? 1 : outcomes.some(row => row.code === 2) ? 2 : 0;
@@ -91,6 +96,22 @@ function parseSyncReply(result: unknown): V0SyncOutcome {
         result.code === syncCode(value.outcomes)) return result as unknown as V0SyncOutcome;
   }
   throw new Error("Invalid v0 sync reply");
+}
+function checkRelocateSuccess(value: Record<string, unknown>, request: RelocateRequest): void {
+  const invalid = () => new Error("Invalid v0 relocate reply");
+  if (!object(value.home)) throw invalid();
+  if (value.home.state === "running" && !Object.hasOwn(value, "stop") && text(value.terminal)) return;
+  const home = decodeManagedHome(value.home);
+  const stop = value.stop;
+  if (home.state !== "stopped" || home.sessionId !== request.sessionId || home.machineId !== request.destinationMachine ||
+      Object.keys(value).length !== 4 || Object.hasOwn(value, "terminal") || value.moveId !== home.moveId ||
+      (value.disposition !== "already-home" && value.disposition !== "relocated" && value.disposition !== "undone") ||
+      !object(stop) || Object.keys(stop).length !== 7 || stop.sessionId !== home.sessionId || stop.machineId !== home.machineId ||
+      stop.homeEpoch !== home.epoch || stop.homeState !== "stopped" ||
+      (stop.status !== "stopped" && stop.status !== "stopping" && stop.status !== "stop-pending") ||
+      (stop.reason !== null && !text(stop.reason)) ||
+      (stop.observedAt !== null && (typeof stop.observedAt !== "number" || !Number.isSafeInteger(stop.observedAt) || stop.observedAt < 0)) ||
+      (stop.status !== "stop-pending" && stop.observedAt === null)) throw invalid();
 }
 async function reclaim(path: string): Promise<void> {
   let stat;
@@ -183,6 +204,8 @@ export function requestV0Services(root: string): V0HubControlServices {
           }
           if (!object(value.result) || typeof value.result.ok !== "boolean" ||
               (value.result.ok ? !object(value.result.value) : !object(value.result.refusal) || !text(value.result.refusal.code) || !text(value.result.refusal.message) || !text(value.result.refusal.nextStep))) throw new Error("Invalid v0 reply");
+          if (request.kind === "relocate" && value.result.ok === true && object(value.result.value))
+            checkRelocateSuccess(value.result.value, request.request);
           finish(); done(value.result);
         } catch (error) { fail(error); }
       });
@@ -190,7 +213,7 @@ export function requestV0Services(root: string): V0HubControlServices {
   }
   return {
     async sync(request) { return await call({ version: 1, kind: "sync", request }) as V0SyncOutcome; },
-    async relocate(request) { return await call({ version: 1, kind: "relocate", request }) as Awaited<ReturnType<V0ControlServices["relocate"]>>; },
+    async relocate(request) { return await call({ version: 1, kind: "relocate", request }) as SettledRelocateOutcome; },
     async setHome(request) { return await call({ version: 1, kind: "set-home", request }) as Awaited<ReturnType<V0ControlServices["setHome"]>>; },
   };
 }

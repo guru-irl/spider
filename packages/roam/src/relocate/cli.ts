@@ -4,7 +4,9 @@ import type { RoamConfig } from "../contracts";
 import { resolveControlMachine, resolveControlSession } from "../commands";
 import { forgottenDestinationRefusal } from "../revocation";
 import { forceWarning, setHomeReplicationRefusal } from "./set-home";
-import type { RelocateSuccess, RunningHome, SessionId, V0CommandIO, V0ControlServices, V0PublicControl, V0Refusal, V0Result } from "./types";
+import type { StoppedRelocateSuccess } from "./relocate";
+import type { V0PlacementControlServices } from "./service";
+import type { RelocateSuccess, RunningHome, SessionId, V0CommandIO, V0PublicControl, V0Refusal, V0Result } from "./types";
 
 export async function readV0Confirmation(prompt: string, streams: {
   input: Readable & { isTTY?: boolean }; output: Writable & { isTTY?: boolean };
@@ -29,11 +31,17 @@ export function parseV0Control(argv: readonly string[]): V0PublicControl | null 
 }
 
 export async function runV0Control(control: V0PublicControl, config: RoamConfig,
-  catalog: readonly { id: string; name: string | null }[], services: V0ControlServices,
+  catalog: readonly { id: string; name: string | null }[], services: V0PlacementControlServices,
   io: V0CommandIO, options: { json?: boolean; isForgotten?: (machineId: string) => boolean } = {}): Promise<number> {
-  const emit = (result: V0Result<RelocateSuccess | RunningHome>): number => {
+  const emit = (result: V0Result<RelocateSuccess | StoppedRelocateSuccess | RunningHome>): number => {
     if (options.json) io.out(`${JSON.stringify(result)}\n`);
     else if (!result.ok) io.err(`${result.refusal.message}\n${result.refusal.nextStep}\n`);
+    else if ("stop" in result.value) {
+      const { home, stop } = result.value;
+      const status = stop.status === "stopped" ? "Stopped" : stop.status === "stopping" ? "Stopping" : "Stop pending";
+      io.out(`Session is at ${home.machineId}; ${status}.\n`);
+      if (stop.reason) io.out(`${stop.reason}\n`);
+    }
     else if ("home" in result.value) {
       if (result.value.localPid) io.out(`Session is already running on the Mac (pi PID ${result.value.localPid}). Use the terminal where you started it.\n`);
       else io.out(`Session is at ${result.value.home.machineId}; terminal ${result.value.terminal}.\n`);

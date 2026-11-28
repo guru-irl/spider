@@ -18,8 +18,9 @@ import { setHome } from "./set-home";
 import { createSessionOperations, type SessionOperations } from "./session-operations";
 import { createSessionReconciler, type SessionReconciler } from "./session-reconcile";
 import { createStopCommand } from "./session-stop";
+import { createStartCommand } from "./session-start";
 import { createSessionStopStore, projectSessionStatus } from "./session-stop-store";
-import type { SessionOutcome, SessionStatus, StopRequest } from "./session-stop-types";
+import type { SessionOutcome, SessionStatus, StartRequest, StopRequest } from "./session-stop-types";
 import { createRelocateAdapters, type StopRelocateAdapters } from "./adapters";
 import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
 import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local";
@@ -27,7 +28,7 @@ import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
 import { serveV0Control, summarizeSync, type V0HubControlServices, type V0SyncOutcome } from "./service";
-import type { RelocateAdapterOptions, HomeStore, RunningHome, SessionId, SetHomePorts, V0ControlServices, V0Result } from "./types";
+import type { RelocateAdapterOptions, HomeStore, RelocateHome, RunningHome, SessionId, SetHomePorts, V0ControlServices, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
   openCore?: (root: string) => LocalCore;
@@ -45,6 +46,7 @@ export interface V0Runtime {
   sync: ReturnType<typeof createSync>;
   services: V0HubControlServices;
   stopSession(request: StopRequest): Promise<SessionOutcome>;
+  startSession(request: StartRequest): Promise<SessionOutcome>;
   sessionStatus(id: SessionId): Promise<SessionStatus>;
   resumeSessionStops(): void;
   close(): Promise<void>;
@@ -161,8 +163,13 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     const stopStore = createSessionStopStore(core.db);
     const stopPorts = { operations, store: stopStore, homes, withSession: adapters.ports.withSession,
       clock: localClock, readyMs: config.limits.readyMs };
+    const start = liveHub ? createStartCommand({ ...stopPorts, ...adapters.start, localMachineId: config.machineId, enabled: () => config.enabled }) : undefined;
+    function cachedStatus(home: RelocateHome | null, id: SessionId): SessionStatus {
+      return projectSessionStatus(home, home ? stopStore.current(id) : null, id, localClock.now());
+    }
     reconciler = liveHub ? createSessionReconciler({ ...stopPorts, machines: adapters.stop, localMachineId: config.machineId,
       mayContact: machine => config.enabled && (machine === config.machineId || config.peers.some(peer => peer.machineId === machine)),
+      reconcileStart: start?.reconcile,
     }) : undefined;
     const stop = reconciler && createStopCommand({ ...stopPorts, enabled: () => config.enabled,
       reconcile: reconciler.reconcile, subscribe: stopStore.subscribe });
@@ -206,7 +213,8 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
               return result;
             },
           };
-          return relocate(request, { ...relocatePorts, homes: moveHomes }, { clock: localClock, timeoutMs: config.limits.readyMs });
+          return relocate(request, { ...relocatePorts, homes: moveHomes, stoppedStatus: home => cachedStatus(home, home.sessionId) },
+            { clock: localClock, timeoutMs: config.limits.readyMs });
         }, () => homes.read(request.sessionId));
       },
       setHome(request) {
@@ -220,15 +228,16 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       if (!stop) throw new Error("Stop requires the live v0 hub");
       return stop(request);
     },
-    async sessionStatus(id) {
-      const home = await homes.read(id);
-      return projectSessionStatus(home, home ? stopStore.current(id) : null, id, localClock.now());
+    async startSession(request) {
+      if (!start) throw new Error("Start requires the live v0 hub");
+      return start(request);
     },
+    async sessionStatus(id) { return cachedStatus(await homes.read(id), id); },
     resumeSessionStops() { reconciler?.resume(); },
     close() {return closing ??= (async()=>{
       sync.stop();
       try {
-        await Promise.all([stop?.close(), reconciler?.close()]);
+        await Promise.all([stop?.close(), start?.close(), reconciler?.close()]);
         await sync.drain();
         await adapters.dispose();
       } finally { closeStores(); }

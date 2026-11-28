@@ -6,9 +6,9 @@ import { RELAY_HOLD_MS, RELAY_POLL_MAX_BYTES } from "@spider/intercom/relay-prot
 import { parseV0AgentReply, parseV0AgentRequest, parseV0RelayAgentRequest, V0_INTERCOM_BYTES, type V0AgentReply } from "@spider/intercom/roam-v0";
 import { readPeerRevocation } from "./revocation";
 import { skippedProjectDbNotice, v0SessionCatalog } from "./relocate/session-catalog";
-import { requestV0Services, runV0Service } from "./relocate/service";
+import { requestV0Services, runV0Service, type V0PlacementControlServices } from "./relocate/service";
 import { startV0Hub, runV0Agent, V0HubLockRefusal, recoverMacHomeWithoutHub } from "./relocate/runtime";
-import type { V0ControlServices, V0Result } from "./relocate/types";
+import type { V0Result } from "./relocate/types";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { inspectSupervisorCorePin } from "./enrollment";
 import { HOSTING_WARNING_CODE } from "./hosting-warning";
@@ -143,7 +143,7 @@ function setupPendingCause(error: unknown): { code: string } {
   return { code: enrollmentCauseCode(error) };
 }
 
-export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { hub?(root: string): Promise<{ stop(): Promise<void> }>; services?: V0ControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>>; intercom?(input: unknown, root: string): Promise<V0AgentReply | null>; lifecycle?: Partial<V0ServiceOptions> } }): Promise<number> {
+export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { hub?(root: string): Promise<{ stop(): Promise<void> }>; services?: V0PlacementControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>>; intercom?(input: unknown, root: string): Promise<V0AgentReply | null>; lifecycle?: Partial<V0ServiceOptions> } }): Promise<number> {
   let root = process.env.SPIDER_GLOBAL_ROOT || join(homedir(), ".pi", "agent", "spider");
   const privateRoot = argv[0] === "--global-root";
   if (privateRoot) {
@@ -224,7 +224,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     }
     const confirmation = options?.v0?.confirmation ?? readV0Confirmation;
     const socket = requestV0Services(root);
-    const services = options?.v0?.services ?? { ...socket, async setHome(request: Parameters<V0ControlServices["setHome"]>[0]) {
+    const services = options?.v0?.services ?? { ...socket, async setHome(request: Parameters<V0PlacementControlServices["setHome"]>[0]) {
       try { return await socket.setHome(request); }
       catch (error) {
         const code = (error as NodeJS.ErrnoException | null)?.code;

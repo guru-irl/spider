@@ -96,6 +96,7 @@ export { AgentDetail } from "./agents/agent-detail";
 export type { DetailRead, DetailBackTarget, DetailOptions } from "./agents/agent-detail";
 export { MOON_CYCLE_MS, moonFrame } from "./components/spinner";
 export { renderProgressBar } from "./components/progress-bar";
+export { FULLSCREEN_READER_OVERLAY, TabbedReader, type ReaderDocument, type ReaderTab } from "./components/reader.js";
 export { renderDiffView } from "./components/diff-view";
 export { renderTable } from "./components/table";
 

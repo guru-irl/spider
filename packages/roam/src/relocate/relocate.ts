@@ -3,7 +3,7 @@ import { AwayHomeRecoveryRequired, MacSessionOccupied } from "./home-refusals";
 import { projectSessionStatus } from "./session-stop-store";
 import type { SessionStatus } from "./session-stop-types";
 import type {
-  CapturedSession, InstalledSession, MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome, RelocateSuccess,
+  CapturedSession, HomeCasResult, InstalledSession, MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome, RelocateSuccess,
   RelocatePlan, RelocatePorts, RelocateRequest, RelocateStep, RunningHome, SessionPlacement,
   SettledHome, StoppedHome, V0Refusal, V0RefusalCode, V0Result,
 } from "./types";
@@ -19,8 +19,8 @@ function movingHome(plan: RelocatePlan): MovingHome {
   return { ...plan.source, state: "moving", epoch: plan.source.epoch + 1,
     moveId: plan.moveId, destination: plan.destinationPlacement.machineId, updatedAt: plan.startedAt };
 }
-function committedHome(plan: RelocatePlan): RunningHome {
-  return { ...plan.source, machineId: plan.destinationPlacement.machineId, state: "running",
+function committedHome(plan: RelocatePlan): SettledHome {
+  return { ...plan.source, machineId: plan.destinationPlacement.machineId,
     epoch: plan.source.epoch + 2, moveId: plan.moveId, destination: null, updatedAt: plan.startedAt };
 }
 function branchAdvice(home: RunningHome, installed: InstalledSession | null, captured: CapturedSession | null): Pick<RelocateSuccess, "branchRecovery"> {
@@ -31,8 +31,8 @@ function branchAdvice(home: RunningHome, installed: InstalledSession | null, cap
   const branch = `spider-relocated-${home.epoch}-${workspace.head.slice(0, 12)}`;
   return { branchRecovery: { savedBranch, command: `git switch -c ${branch} ${workspace.head}` } };
 }
-function restoredHome(plan: RelocatePlan): RunningHome {
-  return { ...plan.source, state: "running", epoch: plan.source.epoch + 2,
+function restoredHome(plan: RelocatePlan): SettledHome {
+  return { ...plan.source, epoch: plan.source.epoch + 2,
     moveId: plan.moveId, destination: null, updatedAt: plan.startedAt };
 }
 const steps: readonly RelocateStep[] = ["check", "mark-moving", "stop-source", "pull-source",
@@ -71,6 +71,12 @@ export interface PendingConfirmationPort {
 }
 interface Readiness { clock: Clock; timeoutMs: number }
 
+export interface StoppedPlacementPorts {
+  verifyStoppedSource(home: StoppedHome): Promise<V0Result<void>>;
+  installDestination(plan: RelocatePlan, captured: CapturedSession, home: StoppedHome): Promise<V0Result<InstalledSession>>;
+  commitStopped(expected: RelocateHome, home: StoppedHome): Promise<HomeCasResult>;
+}
+
 export type StoppedRelocateSuccess = {
   home: StoppedHome;
   moveId: RelocateId | null;
@@ -108,9 +114,10 @@ function waitForConfirmation<T>(attempt: () => Promise<V0Result<T>>, readiness: 
 }
 
 /** Hub-only orchestration. All durable state and exclusion belong to the ports. */
-export async function relocate(request: RelocateRequest, ports: RelocatePorts & Partial<PendingConfirmationPort> & {
-  stoppedStatus?: (home: StoppedHome) => SessionStatus;
-}, readiness?: Readiness): Promise<SettledRelocateOutcome> {
+export async function relocate(request: RelocateRequest, ports: RelocatePorts & Partial<PendingConfirmationPort & {
+  stoppedStatus: (home: StoppedHome) => SessionStatus;
+  stoppedPlacements: StoppedPlacementPorts;
+}>, readiness?: Readiness): Promise<SettledRelocateOutcome> {
   let home: RelocateHome | null = null;
   let moveId: RelocateId | null = null;
   let step: RelocateStep = "check";
@@ -119,8 +126,16 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts & 
     `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine}.`): never {
     throw new PortRefusal({ code, message, nextStep });
   }
+  function requireStoppedPlacements(): StoppedPlacementPorts {
+    return ports.stoppedPlacements ?? refuse("home-unavailable", "This hub does not support relocating stopped homes.");
+  }
+  function stoppedReply(home: StoppedHome, disposition: StoppedRelocateSuccess["disposition"]): { ok: true; value: StoppedRelocateSuccess } {
+    const stop = ports.stoppedStatus?.(home) ?? projectSessionStatus(home, null, home.sessionId, 0);
+    return { ok: true, value: { home, moveId: home.moveId, disposition, stop } };
+  }
   const cas = async (expected: RelocateHome, next: RelocateHome) => {
-    const result = await ports.homes.compareAndSwap(expected, next).catch(async error => {
+    const result = await (next.state === "stopped" ? requireStoppedPlacements().commitStopped(expected, next)
+      : ports.homes.compareAndSwap(expected, next)).catch(async error => {
       // A lost reply may hide an applied CAS. Never report the cached prior home.
       try { home = await ports.homes.read(request.sessionId); } catch { home = null; }
       throw error;
@@ -153,6 +168,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts & 
     return { terminal: confirmed.terminal, confirmed };
   };
   const check = async (source: SettledHome): Promise<RelocateCheckpoint> => {
+    if (source.state === "stopped") value(await requireStoppedPlacements().verifyStoppedSource(source));
     moveId = ports.newMoveId();
     const plan = value(await ports.check(request, source, moveId));
     return { plan, completed: ["check"], captured: null, installed: null, terminal: null, result: null };
@@ -210,10 +226,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts & 
       }
       if (home.state !== "moving" && home.machineId === request.destinationMachine) {
         moveId = home.moveId;
-        if (home.state === "stopped") {
-          const stop = ports.stoppedStatus?.(home) ?? projectSessionStatus(home, null, home.sessionId, 0);
-          return { ok: true, value: { home, moveId, disposition: "already-home", stop } };
-        }
+        if (home.state === "stopped") return stoppedReply(home, "already-home");
         const placement = initialPlacement ?? value(await ports.locate(home.machineId, request.sessionId));
         step = "commit-home";
         value(await ports.publishHome(home, home.machineId));
@@ -249,6 +262,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts & 
         await save(checkpoint);
       }
       const plan = checkpoint.plan;
+      if (plan.source.state === "stopped") requireStoppedPlacements();
       const done = (name: RelocateStep) => checkpoint.completed.includes(name);
       const complete = async (done: RelocateStep, update: Partial<RelocateCheckpoint> = {}) => {
         checkpoint = { ...checkpoint, ...update, completed: [...checkpoint.completed, done] };
@@ -264,9 +278,13 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts & 
         }
         step = "stop-source";
         value(await ports.stopSource(plan, moving));
-        const restored: RunningHome = { ...home, state: "running", destination: null,
+        const restored: SettledHome = { ...home, state: plan.source.state, destination: null,
           epoch: home.epoch + 1, updatedAt: plan.startedAt };
         step = "commit-home";
+        if (restored.state === "stopped") {
+          await cas(home, restored);
+          return stoppedReply(restored, "undone");
+        }
         value(await ports.activate(restored, plan.sourcePlacement));
         await cas(home, restored);
         value(await ports.publishHome(restored, restored.machineId));
@@ -285,11 +303,13 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts & 
         try { value(await ports.publishHome(moving, moving.machineId)); }
         catch (error) {
           // The one safe rollback boundary: no destination work has begun.
-          const restored: RunningHome = { ...moving, state: "running", destination: null, epoch: moving.epoch + 1 };
+          const restored: SettledHome = { ...moving, state: plan.source.state, destination: null, epoch: moving.epoch + 1 };
           await cas(moving, restored);
-          // Best effort: the authoritative running home is safe even if the
-          // source is still unreachable. Its loop can reactivate on later sync.
-          try { value(await ports.publishHome(restored, restored.machineId)); } catch { /* keep the original refusal */ }
+          // Stopped commits reconcile after the operation lock is released.
+          if (restored.state === "running") {
+            // Its loop can reactivate on later sync if the source is unreachable.
+            try { value(await ports.publishHome(restored, restored.machineId)); } catch { /* keep the original refusal */ }
+          }
           throw error;
         }
         await complete(step);
@@ -308,9 +328,23 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts & 
         await complete(step);
       }
       step = "install-destination";
-      const installed = checkpoint.installed ?? value(await ports.installDestination(plan, captured, committed));
+      const installed = checkpoint.installed ?? value(await (committed.state === "stopped"
+        ? requireStoppedPlacements().installDestination(plan, captured, committed)
+        : ports.installDestination(plan, captured, committed)));
       if (!done(step)) await complete(step, { installed });
       step = "commit-home";
+      if (committed.state === "stopped") {
+        try { await cas(moving, committed); }
+        catch (error) {
+          // The CAS read-back can prove commit even when its reply is lost.
+          if (home && sameHome(home, committed)) {
+            try { await complete(step); } catch { /* Keep the original refusal. */ }
+          }
+          throw error;
+        }
+        await complete(step);
+        return stoppedReply(committed, "relocated");
+      }
       await cas(moving, committed);
       value(await ports.publishHome(committed, committed.machineId));
       await complete(step);

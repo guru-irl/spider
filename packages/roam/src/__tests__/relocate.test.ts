@@ -192,12 +192,12 @@ describe("relocate", () => {
     expect(s.effects.slice(before)).toEqual(["locate-destination", "publish-destination-running", "activate-destination", "start-destination", "confirm-destination"]);
   });
 
-  it("stopped source can move and same-home relocation reports cached Stop", async () => {
+  it("refuses a stopped move without stopped placement ports but reports cached Stop at home", async () => {
     const remote = state(); remote.home = { ...running(), state: "stopped" }; remote.processes.clear();
-    expect(await relocate(request, ports(remote))).toMatchObject({ ok: true, value: {
-      disposition: "relocated", home: { machineId: destination, epoch: 3, state: "running" },
-    } });
-    expect(remote.snapshots.size).toBe(1); expect(remote.segments.size).toBe(1);
+    expect(await relocate(request, ports(remote))).toMatchObject({ ok: false, step: "check", moveId: null,
+      home: { machineId: source, epoch: 1, state: "stopped" }, refusal: { code: "home-unavailable" },
+    });
+    expect(remote.snapshots.size).toBe(0); expect(remote.segments.size).toBe(0);
     const local = state(), home = { ...running(), state: "stopped" } as const;
     local.home = home; local.processes.clear();
     const stop = { sessionId, machineId: source, homeEpoch: 1, homeState: "stopped", status: "stopped", reason: null, observedAt: 123 } as const;

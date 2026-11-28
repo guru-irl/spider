@@ -13,16 +13,16 @@ import type { Clock, GitPorts, Transport } from "../contracts";
 import { openOutgoingStaging } from "../staging";
 import { createHomeStore, type HubHomeStore } from "./home";
 import { withV0HomeLifecycle } from "./home-lifecycle";
-import { relocate } from "./relocate";
+import { relocate, type SettledRelocateOutcome, type StoppedPlacementPorts } from "./relocate";
 import { setHome } from "./set-home";
 import { createSessionOperations, type SessionOperations } from "./session-operations";
 import { createSessionReconciler, type SessionReconciler } from "./session-reconcile";
 import { createStopCommand } from "./session-stop";
 import { createStartCommand } from "./session-start";
-import { createSessionStopStore, projectSessionStatus } from "./session-stop-store";
+import { createSessionStopStore, hasStopProof, projectSessionStatus } from "./session-stop-store";
 import type { SessionOutcome, SessionStatus, StartRequest, StopRequest } from "./session-stop-types";
 import { createRelocateAdapters, type StopRelocateAdapters } from "./adapters";
-import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
+import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent, refusal } from "./remote";
 import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local";
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
@@ -167,6 +167,27 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     function cachedStatus(home: RelocateHome | null, id: SessionId): SessionStatus {
       return projectSessionStatus(home, home ? stopStore.current(id) : null, id, localClock.now());
     }
+    const stoppedPlacements: StoppedPlacementPorts | undefined = liveHub ? {
+      async verifyStoppedSource(home) {
+        const cached = cachedStatus(home, home.sessionId);
+        const nextStep = "Confirm Stop on the source and any displaced machines, then retry relocate.";
+        if (cached.status !== "stopped" || cached.observedAt === null)
+          return refusal("stop-timeout", "The source and any displaced machines have not all confirmed Stop.", nextStep);
+        const observed = await adapters.stop.observe(home.machineId, home);
+        if (!observed.ok || observed.value.observedAt === null || observed.value.observedAt < cached.observedAt ||
+            !hasStopProof(home, home.machineId, { observations: [observed.value] }))
+          return refusal("stop-timeout", "The source could not verify absence for the exact stopped home.", nextStep);
+        return { ok: true, value: undefined };
+      },
+      installDestination: adapters.ports.installDestination,
+      commitStopped(expected, home) {
+        const operationId = home.moveId;
+        if (!operationId) throw new Error("A stopped relocation requires a move ID");
+        return homes.compareAndSwap(expected, home, undefined, () => stopStore.write({
+          action: "relocate", operationId, expected, committed: home, mode: "graceful", displaced: [], observations: [], contactReason: null,
+        }));
+      },
+    } : undefined;
     reconciler = liveHub ? createSessionReconciler({ ...stopPorts, machines: adapters.stop, localMachineId: config.machineId,
       mayContact: machine => config.enabled && (machine === config.machineId || config.peers.some(peer => peer.machineId === machine)),
       reconcileStart: start?.reconcile,
@@ -185,8 +206,8 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         }
         return summarizeSync(await sync.sync(machineId));
       },
-      relocate(request) {
-        return operations.relocate(request.sessionId, async mark => {
+      async relocate(request) {
+        const outcome = await operations.relocate<SettledRelocateOutcome>(request.sessionId, async mark => {
           if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };
           if (!config.enabled) return { ok: false, step: "check", home: null, moveId: null, refusal: {
             code: "replication-disabled", message: "Relocation needs replication enabled.", nextStep: "Run spider roam enable on the Mac, then retry relocation.",
@@ -213,9 +234,19 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
               return result;
             },
           };
-          return relocate(request, { ...relocatePorts, homes: moveHomes, stoppedStatus: home => cachedStatus(home, home.sessionId) },
+          return relocate(request, { ...relocatePorts, homes: moveHomes, stoppedPlacements, stoppedStatus: home => cachedStatus(home, home.sessionId) },
             { clock: localClock, timeoutMs: config.limits.readyMs });
         }, () => homes.read(request.sessionId));
+        // Reconciliation may queue writes for this session. Wait only after
+        // releasing the turn and the operation's process lock.
+        const home = outcome.ok ? outcome.value.home : outcome.home;
+        if (reconciler && home?.state === "stopped" &&
+            (outcome.ok || outcome.step !== "check" && outcome.moveId !== null && outcome.moveId === home.moveId)) {
+          await reconciler.reconcile(home);
+          if (outcome.ok && "stop" in outcome.value)
+            return { ok: true, value: { ...outcome.value, stop: cachedStatus(home, home.sessionId) } };
+        }
+        return outcome;
       },
       setHome(request) {
         return operations.enqueue(request.sessionId, async () => {

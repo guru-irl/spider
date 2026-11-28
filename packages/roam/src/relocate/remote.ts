@@ -15,7 +15,7 @@ import { artifactId } from "../staging";
 import { object, text } from "./journal";
 import { isMachineId } from "../machine-id";
 import { withV0HomeLifecycle } from "./home-lifecycle";
-import type { V0RefusalCode, V0Result, RelocateAdapterOptions, RelocatePlan, SessionId, SessionPlacement, RunningHome, MovingHome, StoppedHome } from "./types";
+import type { V0RefusalCode, V0Result, RelocateAdapterOptions, RelocatePlan, SessionId, SessionPlacement, RunningHome, MovingHome, SettledHome, StoppedHome } from "./types";
 
 export const dataKinds: ReadonlySet<string> = new Set(["stores", "inventory", "enable-capture", "export", "release-export", "split", "assemble", "cursor", "receipt", "import", "recheck-store"]);
 export function refusal<T = never>(code: V0RefusalCode, message: string, nextStep = "Retry spider roam relocate with the same session and target."): V0Result<T> {
@@ -105,7 +105,7 @@ export type RelocateAgentRequest =
   | {version:1;kind:"seed";placement:SessionPlacement;epoch:number;allowStopped?:boolean}
   | {version:1;kind:"prerequisite";sessionId:SessionId;candidate:string;allowStopped?:boolean}
   | {version:1;kind:"authorize"|"capture";plan:RelocatePlan}
-  | {version:1;kind:"install";plan:RelocatePlan;captured:NonNullable<import("./types").RelocateCheckpoint["captured"]>;home:RunningHome}
+  | {version:1;kind:"install";plan:RelocatePlan;captured:NonNullable<import("./types").RelocateCheckpoint["captured"]>;home:SettledHome}
   | {version:1;kind:"activate"|"start";home:RunningHome;placement:SessionPlacement}
   | {version:1;kind:"confirm";home:RunningHome;placement:SessionPlacement;exact?:true;admitted?:true}
   | {version:1;kind:"stop";sessionId:SessionId;moving:MovingHome|null}
@@ -123,7 +123,11 @@ export function parseAgentRequest(input: unknown): RelocateAgentRequest {
     case "seed":parsePlacement(r.placement);if(!Number.isSafeInteger(r.epoch)||(r.epoch as number)<1 || r.allowStopped!==undefined && typeof r.allowStopped!=="boolean")throw new Error("Invalid seed epoch");break;
     case "prerequisite":text(r.sessionId);if(typeof r.candidate!=="string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(r.candidate))throw new Error("Invalid prerequisite");break;
     case "authorize":case "capture":parsePlan(r.plan);break;
-    case "install":parsePlan(r.plan);parseCaptured(r.captured);if(parseHome(r.home).state!=="running")throw new Error("Invalid install home");break;
+    case "install": {
+      const plan=parsePlan(r.plan);parseCaptured(r.captured);
+      if(parseHome(r.home).state!==plan.source.state)throw new Error("Invalid install home");
+      break;
+    }
     case "activate":case "start":case "confirm":
       if (parseHome(r.home).state !== "running") throw new Error("Invalid launch home");
       parsePlacement(r.placement);
@@ -201,15 +205,11 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         return {ok:true,value:{version:1,available}};
       }
       case "seed":{
-        const home=r.allowStopped?await options.homes.read(r.placement.sessionId):null;
-        const stopped=!!r.allowStopped && home?.state==="stopped" && home.machineId===options.config.machineId && home.epoch===r.epoch;
-        const source=await inspectLocalSource(r.placement.sessionId,options,stopped);
+        if(r.allowStopped || (await options.homes.read(r.placement.sessionId))?.state==="stopped")
+          return refusal("home-conflict","A stopped source cannot be seeded.");
+        const source=await inspectLocalSource(r.placement.sessionId,options);
         if(!source.ok)return source;
         if(source.value.epoch!==r.epoch || JSON.stringify(source.value.placement)!==JSON.stringify(r.placement))return refusal("home-conflict","The active source placement changed before seeding.");
-        if(stopped && source.value.state==="frozen") {
-          const stores=createStorePort(options.config,options.globalDb);
-          try{for(const key of r.placement.stores)if(key.startsWith("worktree:"))stores.openStore(key).db.prepare("UPDATE roam_sessions SET state='active' WHERE session_id=? AND epoch=? AND state='frozen'").run(r.placement.sessionId,r.epoch);}finally{stores.close();}
-        }
         await seedLocalPlacement(r.placement,r.epoch,options);return {ok:true,value:{version:1}};
       }
       case "authorize":return await receive(async () => {

@@ -480,6 +480,7 @@ export interface LocalRuntime extends SessionMachinePorts {
   entries(): Promise<readonly SupervisorEntry[]>;
   enforceStopped(home: StoppedHome): Promise<StopObservation>;
   observeStopped(home: StoppedHome): Promise<StopObservation>;
+  freezeStoppedPlacement(home: StoppedHome, placement: SessionPlacement, moving?: MovingHome): Promise<V0Result<void>>;
 }
 async function verifyLocalTranscript(placement: SessionPlacement, options: RelocateAdapterOptions): Promise<void> {
   if (await realpath(placement.file) !== placement.file || !(await stat(placement.cwd)).isDirectory())
@@ -623,6 +624,38 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       return {ok:true,value:undefined};
     }); } catch (error) {return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("install-failed","Local capture membership could not be activated.");}
   }
+  async function freezeStoppedPlacement(home: StoppedHome, placement: SessionPlacement, moving?: MovingHome): Promise<V0Result<void>> {
+    const conflict = () => refusal("home-conflict", "The local home does not authorize this stopped placement.");
+    try { return await withSessionState(home.sessionId, async () => {
+      parsePlacement(placement);
+      if (home.state !== "stopped" || home.machineId !== options.config.machineId ||
+          placement.machineId !== home.machineId || placement.sessionId !== home.sessionId) return conflict();
+      const predecessor = moving && moving.sessionId === home.sessionId && moving.destination === home.machineId &&
+        moving.moveId === home.moveId && moving.epoch + 1 === home.epoch && moving.updatedAt === home.updatedAt ? moving : undefined;
+      const authorized = async () => {
+        const current = await options.homes.read(home.sessionId);
+        return sameManagedHome(current, home) || predecessor !== undefined && sameManagedHome(current, predecessor);
+      };
+      if (!await authorized()) return conflict();
+      await verifyLocalTranscript(placement, options);
+      const stores = createStorePort(options.config, options.globalDb);
+      try {
+        for (const key of placement.stores) {
+          if (!key.startsWith("worktree:")) continue;
+          if (!await authorized()) return conflict();
+          const db = stores.openStore(key).db;
+          if (db.prepare(`INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,?,'frozen')
+            ON CONFLICT(session_id) DO UPDATE SET epoch=excluded.epoch,state='frozen' WHERE roam_sessions.epoch<=excluded.epoch`)
+            .run(home.sessionId, home.epoch).changes !== 1)
+            return refusal("home-conflict", "The local membership has a newer epoch.");
+        }
+      } finally { stores.close(); }
+      if (!await authorized()) return conflict();
+      writeLocal(options.globalDb, "relocate-managed", home.sessionId, placement);
+      recordLocation(options.globalDb, { sessionId: home.sessionId, stores: placement.stores, home, file: placement.file, cwd: placement.cwd });
+      return { ok: true, value: undefined };
+    }); } catch { return refusal("install-failed", "Local stopped membership could not be frozen."); }
+  }
   async function stop(id: SessionId,moving: MovingHome|null=null,beforeOrdinaryCapture=false): Promise<V0Result<void>> {
     async function checkGenericStop(): Promise<V0Result<void> | undefined> {
       // An unreadable home does not authorize a managed pi to run.
@@ -721,7 +754,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     }
     return result;
   }
-  return {owner,start,confirm,stop,locate,publishHome,activate,entries,...stopped};
+  return {owner,start,confirm,stop,locate,publishHome,activate,entries,freezeStoppedPlacement,...stopped};
 }
 export function createLocalSessionMachinePorts(options: RelocateAdapterOptions): SessionMachinePorts {
   const local=createLocalRuntime(options);

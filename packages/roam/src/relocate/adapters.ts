@@ -21,6 +21,7 @@ import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePort
 export interface ExactRelocatePorts extends RelocatePorts {
   confirm(home: RunningHome, placement: SessionPlacement, exact?: true, admitted?: true): Promise<V0Result<{terminal:string}>>;
   confirmPending: RelocatePorts["confirm"];
+  installDestination(plan: RelocatePlan, captured: CapturedSession, home: SettledHome): Promise<V0Result<InstalledSession>>;
 }
 
 export interface StopMachinePorts {
@@ -98,6 +99,7 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): StopRel
     const sourceAvailable=await available(source.machineId,true);if(!sourceAvailable.ok)return sourceAvailable;
     const ready=await sourceInfo(source.machineId,request.sessionId,source.state==="stopped");if(!ready.ok)return ready;
     if(ready.value.epoch!==source.epoch || ready.value.placement.sessionId!==source.sessionId)return refusal("home-conflict","The source membership epoch changed before check.");
+    if(source.state==="stopped" && ready.value.state!=="frozen")return refusal("home-conflict","The stopped source membership is not frozen.");
     let destination:SessionPlacement,head:string;
     try {
       if(request.destinationMachine===options.config.machineId) {
@@ -113,11 +115,10 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): StopRel
       }else{
         const reply=await rpc(source.machineId,{version:1,kind:"prerequisite",sessionId:request.sessionId,candidate:head,allowStopped:source.state==="stopped"});if(!reply.ok)return reply;prerequisite=reply.value.available===true;
       }
-      if(source.machineId===options.config.machineId) {
-        if(ready.value.state==="frozen") {
-          const reply=await rpc(source.machineId,{version:1,kind:"seed",placement:ready.value.placement,epoch:source.epoch,allowStopped:true});if(!reply.ok)return reply;
-        }else await seedLocalPlacement(ready.value.placement,source.epoch,options);
-      }else{const reply=await rpc(source.machineId,{version:1,kind:"seed",placement:ready.value.placement,epoch:source.epoch,allowStopped:source.state==="stopped"});if(!reply.ok)return reply;}
+      if(source.state==="running") {
+        if(source.machineId===options.config.machineId)await seedLocalPlacement(ready.value.placement,source.epoch,options);
+        else{const reply=await rpc(source.machineId,{version:1,kind:"seed",placement:ready.value.placement,epoch:source.epoch,allowStopped:false});if(!reply.ok)return reply;}
+      }
       const plan=parsePlan({moveId,source,sourcePlacement:ready.value.placement,destinationPlacement:destination,destinationPrerequisites:prerequisite?[head]:[],startedAt:options.clock.now()});
       return {ok:true,value:plan};
     }catch(error){return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("unsupported-workspace","The source or destination checkout could not pass v0 check.");}
@@ -239,7 +240,8 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): StopRel
     confirmPending:(home,placement)=>machines.confirm(home,placement,true),
     async stopSource(plan,moving){
       if(plan.source.machineId===options.config.machineId){
-        const stopped=await local.stop(plan.source.sessionId,moving,true);if(!stopped.ok)return stopped;
+        const stopped=await local.stop(plan.source.sessionId,moving,plan.source.state==="running");
+        if(!stopped.ok || plan.source.state==="stopped")return stopped;
         try {await captureOrdinarySource(plan,options);}
         catch (error) {return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("stop-timeout","The stopped ordinary source could not be captured.");}
         // Freeze any membership created after the first, confirmed stop.

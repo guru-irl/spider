@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { AgentFooter } from "../agents/footer";
 import { AgentStore } from "../agents/store";
 import type { RunRow, RunSource, RunEvent, ThemeAdapter } from "../agents/types";
@@ -96,11 +96,22 @@ describe("AgentFooter selection cursor", () => {
     const footer = new AgentFooter(store, { ...id, iconStyle }, { now: () => 5000 });
     expect(footer.render(40)[2]).toContain("4 running · +2 more");
     store.beginSelect();
-    expect(footer.render(40)[2]).toBe(`↓ view more${" ".repeat(18)}4 subagents`);
-    store.moveSelect(2);
-    expect(footer.render(40)[2]).toBe(`↓ view more${" ".repeat(18)}4 subagents`);
+    let lines = footer.render(40);
+    expect(lines[0]).toContain("agent-4");
+    expect(lines[2]).toBe(`↓ view more · 1/4${" ".repeat(12)}4 subagents`);
     store.moveSelect(1);
-    expect(footer.render(40)[2]).toBe(`↑ view more${" ".repeat(18)}4 subagents`);
+    lines = footer.render(40);
+    expect(lines[1]).toContain("agent-3");
+    expect(lines[2]).toBe(`↓ view more · 2/4${" ".repeat(12)}4 subagents`);
+    store.moveSelect(1);
+    lines = footer.render(40);
+    expect(lines[1]).toContain("agent-2");
+    expect(lines[2]).toBe(`↓ view more · 3/4${" ".repeat(12)}4 subagents`);
+    store.moveSelect(1);
+    lines = footer.render(40);
+    expect(lines[1]).toContain("agent-1");
+    expect(lines[2]).toBe(`↑ view more · 4/4${" ".repeat(12)}4 subagents`);
+    expect(footer.render(16)[2]).toBe("↑ view more · 4…");
     for (let width = 1; width <= 30; width++) {
       expect(footer.render(width).every(line => visibleWidth(line) <= width), `${width} columns`).toBe(true);
     }
@@ -116,7 +127,43 @@ describe("AgentFooter selection cursor", () => {
     expect(footer.render(40)[2]).toMatch(/^↓ view more/);
     footer.handleMouse({ type: "wheel", button: "none", wheelDelta: 2, x: 0, y: 2, width: 40, height: 3,
       screenX: 0, screenY: 2, shift: false, alt: false, ctrl: false });
-    expect(footer.render(40)[2]).toMatch(/^↑ view more +4 subagents$/);
+    expect(footer.render(40)[2]).toMatch(/^↑ view more · 1\/4 +4 subagents$/);
+  });
+
+  it("updates the total when another agent joins", () => {
+    const src = new Src();
+    for (let i = 1; i <= 4; i++) src.rows.set(`r${i}`, row({ id: `r${i}`, started_at: i }));
+    const store = new AgentStore(src); store.start(); store.beginSelect(); store.moveSelect(1);
+    const footer = new AgentFooter(store, id, { now: () => 5000 });
+    expect(footer.render(40)[2]).toMatch(/^↓ view more · 2\/4 +4 subagents$/);
+    src.rows.set("r5", row({ id: "r5", started_at: 0 }));
+    src.emit({ runId: "r5", sessionId: "s", ts: 1, type: "log" });
+    expect(footer.render(40)[2]).toMatch(/^↓ view more · 2\/5 +5 subagents$/);
+  });
+
+  it.each([undefined, "missing"])("omits the position when the selected run is %s", (selected) => {
+    const src = new Src();
+    for (let i = 1; i <= 4; i++) src.rows.set(`r${i}`, row({ id: `r${i}`, started_at: i }));
+    const store = new AgentStore(src); store.start(); store.beginSelect();
+    const selection = vi.spyOn(store, "selectedRunId").mockReturnValue(selected);
+    try {
+      const footer = new AgentFooter(store, id, { now: () => 5000 });
+      expect(footer.render(40)[2]).toBe(`↓ view more${" ".repeat(18)}4 subagents`);
+    } finally { selection.mockRestore(); }
+  });
+
+  it("renders the separator dim and the remaining summary muted", () => {
+    const src = new Src();
+    for (let i = 1; i <= 4; i++) src.rows.set(`r${i}`, row({ id: `r${i}`, started_at: i }));
+    const store = new AgentStore(src); store.start(); store.beginSelect();
+    const theme: ThemeAdapter = { ...id, fg: (token, text) =>
+      token === "muted" ? `\x1b[37m${text}\x1b[39m` : token === "dim" ? `\x1b[90m${text}\x1b[39m` : text };
+    const footer = new AgentFooter(store, theme, { now: () => 5000 });
+    const summary = footer.render(40)[2];
+    expect(summary).toContain("\x1b[37m↓ view more");
+    expect(summary).toContain("\x1b[90m·\x1b[39m");
+    expect(summary).toContain("\x1b[37m 1/4");
+    expect(visibleWidth(summary)).toBe(40);
   });
 
   it("renders a ▸ cursor on the selected row while the store is selecting", () => {

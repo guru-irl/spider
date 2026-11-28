@@ -11,7 +11,7 @@ const from = { sessionId: "sender", scopeId: "scope" }, to = { sessionId: "recip
 const endpoint = { address: to, machineId: B, homeEpoch: 1, activationEpoch: "activation-1" };
 const reverseEndpoint = { address: from, machineId: A, homeEpoch: 1, activationEpoch: "activation-2" };
 const roots: string[] = [], resources: Array<{ stop(): Promise<void> }> = [], stores: Array<{ close(): void }> = [];
-afterEach(async () => { for (const resource of resources.splice(0)) await resource.stop(); for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { try { for (const resource of resources.splice(0)) await resource.stop(); for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); } finally { vi.useRealTimers(); } });
 const clock = { now: () => Date.now(), later: (ms: number, fn: () => void) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
 const peer = (machineId: string) => ({ machineId, alias: `fixture-${machineId.slice(-1)}.invalid`, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: "/fixture/global" });
 const batch = (senderMachine: string, recipientMachine: string, generation: number, channel: "push" | "poll" = "push"): IntercomExchange => (withHopExchange({
@@ -176,11 +176,14 @@ it("forwards a durable receipt and stops replay only after its explicit acknowle
 
 it("a newer poll preempts the old generation and only the new one can claim queued frames", async () => {
   const { inbox } = pair(), b = await create(B, A, inbox);
-  const old = b.exchange(request(batch(A, B, 1, "poll"), 2000));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  let settled = false;
+  const old = b.exchange(request(batch(A, B, 1, "poll"), 2000)).then((value: any) => { settled = true; return value; });
+  await Promise.resolve(); expect(settled).toBe(false);
   inbox.acceptOutbound({ from: to, endpoint: reverseEndpoint, nextHop: A, message: { id: "out", timestamp: 1, content: { text: "synthetic" } } });
-  const begun = performance.now(), current = b.exchange(request(batch(A, B, 2, "poll")));
+  const current = b.exchange(request(batch(A, B, 2, "poll")));
+  // No fake time advances: the older poll can finish only through preemption.
   const older = await old;
-  expect(performance.now() - begun).toBeLessThan(100);
   const newer = await current;
   expect(older.exchange.frames).toEqual([]);
   expect(newer.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["out"]);
@@ -189,11 +192,14 @@ it("a newer poll preempts the old generation and only the new one can claim queu
 
 it("wakes a waiting long-poll when local outbound work arrives", async () => {
   const { inbox } = pair(), b = await create(B, A, inbox);
-  const waiting = b.exchange(request(batch(A, B, 1, "poll"), 25_000));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  let settled = false;
+  const waiting = b.exchange(request(batch(A, B, 1, "poll"), 25_000)).then((value: any) => { settled = true; return value; });
+  await Promise.resolve(); expect(settled).toBe(false);
   inbox.acceptOutbound({ from: to, endpoint: reverseEndpoint, nextHop: A, message: { id: "wake", timestamp: 1, content: { text: "synthetic" } } });
-  const begun = performance.now(); b.wake(A);
+  b.wake(A);
+  // A timer or periodic check cannot finish the poll without advancing fake time.
   const result = await waiting;
-  expect(performance.now() - begun).toBeLessThan(25);
   expect(result.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["wake"]);
 }, 5000);
 

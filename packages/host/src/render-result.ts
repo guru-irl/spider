@@ -4,8 +4,8 @@
 // renderResult renders only the BODY. `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, stripTerminalSequences, type Component as PiComponent } from "@earendil-works/pi-tui";
-import { icon, type Component, type IconStyle } from "@spider/ui";
-import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { icon, reopenBackground, type Component, type IconStyle } from "@spider/ui";
+import { isAgentModelRole, cachedLines, shortModel, renderRoleAccent, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -18,12 +18,12 @@ import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
 import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
 import { createHalfBox } from "./input-band/box.js";
-import { reopenBackground } from "./input-band/ansi.js";
 import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
 import { restoreExecDetails } from "./exec-session-storage";
+import { piTheme } from "./agents/theme-adapter";
 
-interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; iconStyle?: IconStyle; }
+interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; iconStyle?: IconStyle; modelName?: (model: string) => string | undefined; roleTint?: ThemeAdapter["roleTint"]; }
 function mkTheme(theme: any, iconStyle?: IconStyle): T {
   // Theme.fg/bg THROW on a token the active theme lacks; swallow it so one unknown token never
   // aborts a whole render (pi's CustomMessageComponent would silently fall back to raw content).
@@ -31,8 +31,10 @@ function mkTheme(theme: any, iconStyle?: IconStyle): T {
     if (typeof fn !== "function") return s;
     try { return fn(tok, s); } catch { return s; }
   };
+  const roleTint = typeof theme?.fg === "function" ? piTheme(theme, iconStyle).roleTint : undefined;
   return {
     iconStyle,
+    roleTint: roleTint ? (hex, s, strength) => { try { return roleTint(hex, s, strength); } catch { return guard(theme?.fg?.bind(theme), "accent", s); } } : undefined,
     fg: (tok, s) => guard(theme?.fg?.bind(theme), tok, s),
     bold: (s) => { try { return typeof theme?.bold === "function" ? theme.bold(s) : s; } catch { return s; } },
     italic: (s) => { try { return typeof theme?.italic === "function" ? theme.italic(s) : s; } catch { return s; } },
@@ -52,7 +54,6 @@ function restoreCardBackground(lines: string[], theme: any, background: string):
 }
 
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
-function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
 function nonblankLines(text: string): string[] { return text.split(/\r?\n/u).filter(line => stripTerminalSequences(line).trim()); }
 function textComponent(result: any, expanded = false): Component {
   const blocks: any[] = Array.isArray(result?.content) ? result.content : [];
@@ -79,21 +80,31 @@ function cardRow(prefix: string, text: string, width: number, expanded: boolean)
 
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunCost: RunCostFormatter, includeSubject: boolean): string[] {
   const status = r.status ?? "running";
-  const glyph = t.fg("toolTitle", status === "failed" ? icon(t.iconStyle, "failure")
-    : status === "cancelled" ? icon(t.iconStyle, "warning")
-    : icon(t.iconStyle, status === "done" ? "success" : status === "running" ? "running" : "open"));
+  const glyph = t.fg(status === "failed" ? "error" : status === "cancelled" ? "warning" : status === "done" ? "success" : "toolTitle",
+    status === "failed" ? icon(t.iconStyle, "failure")
+      : status === "cancelled" ? icon(t.iconStyle, "warning")
+      : icon(t.iconStyle, status === "done" ? "success" : status === "running" ? "running" : "open"));
   const agent = r.agent ?? "worker";
-  const segments = [status];
+  const sep = ` ${t.fg("dim", "·")} `;
+  const subjects: string[] = [];
   if (includeSubject) {
-    if (r.name && r.name !== agent) segments.push(t.bold(r.name));
-    segments.push(t.italic(t.fg("toolTitle", agent)));
+    if (r.name && r.name !== agent) subjects.push(t.bold(r.name));
+    subjects.push(t.italic(renderRoleAccent(adaptTheme(t), agent, agent)));
   }
-  segments.push(t.fg("muted", shortModel(r.model)));
-  if (r.thinking) segments.push(t.fg("muted", r.thinking));
-  if (["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)) {
-    segments.push(t.fg("dim", formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount, r.costText ?? (r.usageCosts ? formatRunCost(r.usageCosts) : undefined))));
-  }
-  const lines = cardRow(` ${glyph} `, segments.join(` ${t.fg("dim", "·")} `), width, expanded);
+  // Unlike the indented detail rows, this full-width row gets its lead cell from the box.
+  const base = glyph + (subjects.length ? ` ${subjects.join(sep)}` : "");
+  const usage = ["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)
+    ? (subjects.length ? sep : " ") + t.fg("dim", formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount, r.costText ?? (r.usageCosts ? formatRunCost(r.usageCosts) : undefined)))
+    : "";
+  const model = t.fg("muted", shortModel(r.model, t.modelName));
+  let left = base + usage;
+  let right = model + (r.thinking ? sep + t.fg("muted", r.thinking) : "");
+  const fits = () => visibleWidth(left) + 1 + visibleWidth(right) <= width;
+  if (!fits()) left = base;
+  if (!fits()) right = model;
+  if (!fits()) right = truncateToWidth(model, Math.max(0, width - visibleWidth(base) - 1), "…");
+  const header = right ? left + " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right))) + right : left;
+  const lines = cardRow("", header, width, expanded);
   const taskLines = nonblankLines((r.task ?? "").trim());
   if (taskLines.length) {
     const [first, ...rest] = taskLines;
@@ -148,7 +159,7 @@ function wrapBespoke(c: Component): Component {
 
 /** Build a ThemeAdapter (fg/bg/bold/glyph) for the pure @spider/ui renderers from the host `T`. */
 function adaptTheme(t: T): ThemeAdapter {
-  return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: icon(t.iconStyle, "agent"), iconStyle: t.iconStyle };
+  return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: icon(t.iconStyle, "agent"), iconStyle: t.iconStyle, modelName: t.modelName, roleTint: t.roleTint };
 }
 
 const SEARCH_GLYPH = { memory: "active", content: "content", todo: "todo", message: "message" } as const;
@@ -607,7 +618,7 @@ function renderSpiderResultBody(
   theme: any,
   context: any,
 ): Component {
-  const t = mkTheme(theme, context?.iconStyle);
+  const t = { ...mkTheme(theme, context?.iconStyle), modelName: context?.modelName };
   const expanded = options?.expanded === true;
   const action = String(context?.args?.action ?? "");
   const sub = String(context?.args?.sub ?? context?.args?.command ?? "");
@@ -758,8 +769,8 @@ export function renderSpiderResult(result: any, options: any, theme: any, contex
   const liveCosts = runs.flatMap(r => ["done", "failed", "cancelled"].includes(r.status ?? "running")
     && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0) && r.costText == null && r.usageCosts ? [r.usageCosts] : []);
   // Completed run costs use the footer's live calibration, not just stored result details.
-  const contentKey = liveCosts.length && typeof context?.formatRunCost === "function"
-    ? () => JSON.stringify(liveCosts.map(costs => context.formatRunCost(costs))) : undefined;
+  const contentKey = (liveCosts.length && typeof context?.formatRunCost === "function") || (runs.length && typeof context?.modelName === "function")
+    ? () => JSON.stringify([liveCosts.map(costs => context.formatRunCost?.(costs)), runs.map(run => run.model ? context.modelName?.(run.model) : undefined)]) : undefined;
   let body: Component | undefined;
   return cachedLines(width => {
     body ??= renderSpiderResultBody(result, options, theme, context);
@@ -803,7 +814,7 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
     }
     if (context?.titleDetails?.length) {
       for (const detail of context.titleDetails as { text: string; agent: boolean }[]) {
-        suffix += t.fg("toolTitle", " · ") + (detail.agent ? t.italic(t.fg("toolTitle", detail.text)) : t.fg("toolTitle", detail.text));
+        suffix += t.fg("toolTitle", " · ") + (detail.agent ? t.italic(renderRoleAccent(adaptTheme(t), detail.text, detail.text)) : t.fg("toolTitle", detail.text));
       }
     }
     const line = ` ${t.fg("toolTitle", icon(t.iconStyle, "spider"))} ${suffix}`;
@@ -828,13 +839,13 @@ function runTitleDetails(name: unknown, agent: unknown): { text: string; agent: 
   return details.length ? details : [{ text: "subagent", agent: false }];
 }
 
-export function renderSubagentDone(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): PiComponent {
+export function renderSubagentDone(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle, modelName?: T["modelName"]): PiComponent {
   const d = message?.details ?? {};
   // C-LOW: a malformed completion event without status is not proof of `done`.
   const status = String(d.status ?? "unknown");
   const background = status === "failed" ? "toolErrorBg" : status === "done" ? "toolSuccessBg" : "toolPendingBg";
   const expanded = options?.expanded === true;
-  const t = mkTheme(theme, iconStyle);
+  const t = { ...mkTheme(theme, iconStyle), modelName };
   const run: RunLike = { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount };
   const detail = renderRun(t, { run }, expanded, undefined, false);
   const box = createHalfBox(options.outputPad ?? 1, text => t.bg(background, text));
@@ -853,7 +864,8 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
     },
     invalidate: () => detail.invalidate?.(),
   }));
-  return cachedLines(width => box.render(width), () => box.invalidate());
+  return cachedLines(width => box.render(width), () => box.invalidate(),
+    modelName && run.model ? () => modelName(run.model!) : undefined);
 }
 
 /** Transcript renderer for the `spider.command` message a slash command emits. Renders the
@@ -861,7 +873,7 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
  *  the dispatch result normalized via toToolResult (so control's {ok,lines}/{details} shapes both
  *  populate result.details) — wrapped in the tool box, so /spider, /stats, /doctor look
  *  identical to the tool result. ctrl+o (options.expanded) expands. */
-export function renderCommandOutput(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): PiComponent {
+export function renderCommandOutput(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle, modelName?: T["modelName"]): PiComponent {
   const d = message?.details;
   const args = d?.args ?? { action: "command" };
   const result = d?.result ?? {};
@@ -872,7 +884,7 @@ export function renderCommandOutput(message: any, options: NotificationOptions, 
     ["queued", "child-accepted", "accepted but not confirmed", "no reply yet, delivery unknown"].includes(details?.delivery ?? "")
     || details?.delivery === "broker-accepted" && details.recipientAcknowledged !== true
   );
-  const context = { args, expanded, isError: normalized.isError, isPartial: !normalized.isError && (Boolean(details?.warning) || pendingMessage), iconStyle };
+  const context = { args, expanded, isError: normalized.isError, isPartial: !normalized.isError && (Boolean(details?.warning) || pendingMessage), iconStyle, modelName };
   const background = cardBackground(context);
   const box = createHalfBox(options.outputPad ?? 1, text => mkTheme(theme).bg(background, text));
   const titleArgs = args.action ? args : { action: args.command ?? "command" };
@@ -893,7 +905,11 @@ export function renderCommandOutput(message: any, options: NotificationOptions, 
   } else {
     box.addChild(flushLeft(renderSpiderResult(normalized, { expanded }, theme, context)));
   }
-  return cachedLines(width => box.render(width), () => box.invalidate());
+  const runDetails = normalized.details as { runs?: RunLike[]; run?: RunLike } | undefined;
+  const runs: RunLike[] = args.action === "run" ? Array.isArray(runDetails?.runs) ? runDetails.runs
+    : runDetails?.run ? [runDetails.run] : [] : [];
+  return cachedLines(width => box.render(width), () => box.invalidate(),
+    modelName && runs.length ? () => JSON.stringify(runs.map(run => run.model ? modelName(run.model) : undefined)) : undefined);
 }
 
 /** TUI-only receipt: proposed knowledge stays pending and never masquerades as completed user work. */

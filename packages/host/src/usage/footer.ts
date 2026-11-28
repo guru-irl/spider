@@ -5,6 +5,7 @@ import type { FooterTotals } from "./footer-state.js";
 import type { CalibrationResult } from "./dashboard-contract.js";
 import { calibrationFallback } from "./calibration.js";
 import { toAicDisplay } from "./aic-display.js";
+import { FOOTER_SNAPSHOT, type FooterSnapshot } from "./footer-snapshot.js";
 
 export type CounterSnapshotView = { creditsUsed: number; entitlement?: number; ts: number };
 export type CounterStateView = {
@@ -16,6 +17,7 @@ export type FooterInput = {
   branch: string | null;
   sessionName: string | null;
   modelId: string | null;
+  modelName?: string | null;
   /** Caller supplies off for non-reasoning models; the footer always shows it. */
   thinking: string;
   context: { percent: number | null; contextWindow: number } | null;
@@ -34,6 +36,8 @@ export type FooterInput = {
    * the branch. The footer then leaves them out and puts the model on the stats line.
    */
   inPane?: boolean;
+  /** Viewer-only fallbacks when the model window or some run prices are unavailable. */
+  subagent?: { contextTokens: number | null; creditsKnown: boolean };
 };
 
 /** Whether the footer runs inside a Herdr pane: a Herdr terminal, with spider's Herdr support not disabled. */
@@ -91,7 +95,7 @@ function modelSide(input: FooterInput, width: number, theme?: Theme): string {
   const shorten = (text: string, budget: number) => truncateToWidth(dim(text), budget, dim("..."));
   const thinking = label(input.thinking) || "off";
   const suffix = ` · ${thinking}`;
-  const model = label(input.modelId ?? "no-model");
+  const model = label(input.modelName || input.modelId || "no-model");
   // Even an unexpectedly long model must leave its thinking level visible.
   return visibleWidth(suffix) < width
     ? shorten(model, width - visibleWidth(suffix)) + dim(suffix)
@@ -101,7 +105,10 @@ function modelSide(input: FooterInput, width: number, theme?: Theme): string {
 function heading(input: FooterInput, width: number, theme?: Theme): string {
   const dim = (text: string) => theme ? theme.fg("dim", text) : text;
   const shorten = (text: string, budget: number) => truncateToWidth(dim(text), budget, dim("..."));
-  const right = modelSide(input, width, theme);
+  const leftReserve = input.sessionName || input.cwd ? Math.min(12, Math.floor(width / 3)) : 0;
+  const fullRight = modelSide(input, width, theme);
+  const right = visibleWidth(fullRight) + leftReserve + 1 > width
+    ? modelSide(input, Math.max(0, width - leftReserve - 1), theme) : fullRight;
   const budget = width - visibleWidth(right) - 1;
   if (budget <= 0) return right;
 
@@ -131,10 +138,13 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
   const percent = context ? context.percent : 0;
   const percentText = typeof percent === "number" && Number.isFinite(percent) ? `${percent.toFixed(1)}%` : "?";
   const window = tokens(context?.contextWindow ?? 0);
-  const contextText = `${percentText}/${window}${input.autoCompaction === true ? " (auto)" : ""}`;
+  const contextText = input.subagent && !context?.contextWindow
+    ? input.subagent.contextTokens === null ? "context unknown" : `${tokens(input.subagent.contextTokens)} context`
+    : `${percentText}/${window}${input.autoCompaction === true ? " (auto)" : ""}`;
   const calibration = input.calibration ?? calibrationFallback();
   const display = toAicDisplay(totals.aic, totals.unpricedEntries, calibration);
-  const items = [contextText, `${credits(display.primaryAic ?? 0)} AIC`];
+  const creditText = input.subagent?.creditsKnown === false ? "?" : credits(display.primaryAic ?? 0);
+  const items = [contextText, `${creditText} AIC`];
   if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && totals.latestCacheHitRate !== null) {
     items.push(`CH${totals.latestCacheHitRate.toFixed(1)}%`);
   }
@@ -142,11 +152,11 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
   const positive = (n: number | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
   const denominator = positive(input.monthlyBudget) ? input.monthlyBudget : positive(input.counter.snapshot?.entitlement) ? input.counter.snapshot!.entitlement : undefined;
   const used = input.monthUsed !== undefined ? input.monthUsed : snapshot?.creditsUsed;
-  if (typeof used === "number" && Number.isFinite(used) && used >= 0 && denominator !== undefined) {
+  if (!input.subagent && typeof used === "number" && Number.isFinite(used) && used >= 0 && denominator !== undefined) {
     const percent = 100 * (used / denominator);
     if (Number.isFinite(percent)) items.push(`month ${Math.round(percent)}%`);
   }
-  if (totals.input || totals.output) items.push(`${icon("text", "arrowUp")}${tokens(totals.input)} ${icon("text", "arrowDown")}${tokens(totals.output)}`);
+  if (!input.subagent && (totals.input || totals.output)) items.push(`${icon("text", "arrowUp")}${tokens(totals.input)} ${icon("text", "arrowDown")}${tokens(totals.output)}`);
   if (totals.cacheRead || totals.cacheWrite) items.push(`R${tokens(totals.cacheRead)} W${tokens(totals.cacheWrite)}`);
   // Drop the entire lowest-priority item. Context alone can also be omitted.
   while (items.length && visibleWidth(items.join(" · ")) > width) items.pop();
@@ -156,7 +166,7 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
       return theme.fg(percent > 90 ? "error" : "warning", item);
     }
     return theme.fg("dim", item);
-  }).join(" · ");
+  }).join(theme ? theme.fg("dim", " · ") : " · ");
 }
 
 function statsWithMoon(input: FooterInput, width: number, moon: string, theme?: Theme): string {
@@ -170,7 +180,11 @@ function statsWithMoon(input: FooterInput, width: number, moon: string, theme?: 
 function paneLine(input: FooterInput, width: number, moon: string, theme?: Theme): string {
   const moonWidth = visibleWidth(moon);
   if (width <= moonWidth) return truncateToWidth(moon, width, "");
-  const right = modelSide(input, width - moonWidth - 1, theme);
+  const rightBudget = width - moonWidth - 1;
+  const fullRight = modelSide(input, rightBudget, theme);
+  const reserve = input.modelName ? Math.min(16, Math.floor(width * 0.4)) : moonWidth;
+  const right = visibleWidth(fullRight) + reserve + 1 > width
+    ? modelSide(input, Math.max(0, width - reserve - 1), theme) : fullRight;
   const left = statsWithMoon(input, width - visibleWidth(right) - 1, moon, theme);
   return left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right;
 }
@@ -200,10 +214,11 @@ export function createUsageFooter(
   footerData: ReadonlyFooterDataProvider,
   requestRender: () => void,
   onDispose?: () => void,
-): Component & { refresh(): void; setWorking(since?: number): void; dispose(): void } {
+): Component & FooterSnapshot & { refresh(): void; setWorking(since?: number): void; dispose(): void } {
   let disposed = false, pending = false;
   let lastWidth: number | undefined;
   let lastLines: string[] | undefined;
+  let snapshot: string[] | undefined;
   let workingSince: number | undefined;
   let frameTimer: ReturnType<typeof setTimeout> | undefined;
   const elapsed = () => workingSince === undefined ? undefined : Math.max(0, Date.now() - workingSince);
@@ -246,8 +261,17 @@ export function createUsageFooter(
     },
     render(width) {
       lastWidth = width; pending = false;
-      return lastLines = linesAt(width);
+      const time = elapsed();
+      const data = { ...getInput(), branch: footerData.getGitBranch(), statuses: footerData.getExtensionStatuses() };
+      lastLines = render(data, width, theme, time);
+      snapshot = [...lastLines];
+      const moonRow = data.inPane ? 0 : 1;
+      const glyph = moonFrame(data.iconStyle ?? "text", time);
+      if (snapshot[moonRow] !== undefined) snapshot[moonRow] = snapshot[moonRow].replace(
+        theme.fg(time === undefined ? "dim" : "accent", glyph), theme.fg("dim", glyph));
+      return lastLines;
     },
+    [FOOTER_SNAPSHOT]: () => snapshot && [...snapshot],
     // Saved lines only gate refresh requests; every render uses live inputs, without history work.
     invalidate() {},
     dispose() {

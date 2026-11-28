@@ -242,8 +242,13 @@ function ipcPage(value, runId) {
 }
 function ipcView(value) {
   return ipcObject(value) && ipcCount(value.protocol)
-    && ['sessionFile', 'model', 'thinking'].every(key => value[key] === undefined || value[key] === null || ipcString(value[key]))
-    && (value.contextWindow === undefined || value.contextWindow === null || ipcCount(value.contextWindow) && value.contextWindow > 0);
+    && ['sessionFile', 'model', 'modelName', 'thinking'].every(key => value[key] === undefined || value[key] === null || ipcString(value[key]))
+    && (value.contextWindow === undefined || value.contextWindow === null || ipcCount(value.contextWindow) && value.contextWindow > 0)
+    && (value.iconStyle === undefined || ipcString(value.iconStyle))
+    && (value.inputBand === undefined || typeof value.inputBand === 'boolean')
+    && (value.accent === undefined || ipcString(value.accent))
+    && (value.working === undefined || typeof value.working === 'boolean')
+    && (value.creditFactor === undefined || value.creditFactor === null || typeof value.creditFactor === 'number' && Number.isFinite(value.creditFactor) && value.creditFactor >= 0);
 }
 function ipcFrame(value) {
   if (!ipcObject(value) || !ipcString(value.runId) || !ipcCursor(value.cursor) || !ipcObject(value.data)) return false;
@@ -313,7 +318,12 @@ export function parseSessionIpcEnvelope(line) {
 /** Decode a single bounded action reply, preserving typed refusal information. */
 export function parseSessionIpcReply(line) { return ipcDecode(line, ipcReply); }
 /** Decode a bounded stream frame and enforce the smaller serialized transcript-page limit. */
-export function parseRunViewFrame(line) { return ipcDecode(line, ipcFrame); }
+export function parseRunViewFrame(line) {
+  const frame = ipcDecode(line, ipcFrame);
+  if (frame?.kind === 'snapshot' && frame.data.view?.iconStyle !== undefined
+    && !ipcOne(frame.data.view.iconStyle, ['text', 'nerd'])) delete frame.data.view.iconStyle;
+  return frame;
+}
 /** Build the packaged CLI's argv using descriptor paths, never capability contents. */
 export function panelIpcArgv(nodePath, cliPath, descriptor, request) {
   const publicDescriptor = { version: descriptor.version, sessionId: descriptor.sessionId,

@@ -459,7 +459,8 @@ const redactEmbeddedPaths = (() => {
           if (i - begin >= 2 && boundary && !driveLike) {
             let path = i + 3;
             if (!(letter(value[path] ?? "") && value[path + 1] === ":" && separator(value[path + 2] ?? ""))) {
-              while (path < end && !separator(value[path]!) && !/^%(?:2f|5c)/i.test(value.slice(path, path + 3)) && !value.startsWith("~/", path) && !value.startsWith("…/~", path)) path++;
+              // A substituted root is part of the path, even without a trailing slash.
+              while (path < end && !mappedRoots.has(path) && !separator(value[path]!) && !/^%(?:2f|5c)/i.test(value.slice(path, path + 3)) && !value.startsWith("~/", path) && !value.startsWith("…/~", path)) path++;
             }
             explicitlyRelative = false;
             i = path - 1;

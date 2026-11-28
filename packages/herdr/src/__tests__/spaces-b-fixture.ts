@@ -29,7 +29,6 @@ function applyFragment(text: string, patch: SpacesAPatch): string {
 
 /** Reconstruct all stages from verified clean fixtures; never replay consumed anchors on final output. */
 export function replaySpacesBRecipe(version: SpacesAVersion, files: SpacesAFiles, bFragments: SpacesAFragments): SpacesAFiles {
-  if (version !== '0.1.13' && version !== '0.1.16') throw new Error('unsupported B fixture version');
   const clean = loadSpacesAFiles(version);
   const recipe = loadPublishedSpacesARecipe(version);
   const afterA = replaySpacesARecipe(version, clean, recipe.aFragments, recipe);

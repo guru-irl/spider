@@ -203,7 +203,7 @@ declare namespace Wire {
   export type RunCursor = string & { readonly __kind: 'run-cursor' };
   export interface RunViewEvent { runId: RunId; id: number; type: string; text?: string; summary?: string; tool?: string; messageId?: string; streamed?: boolean }
   export interface TranscriptPage { text: string; events: RunViewEvent[] }
-  export type RunViewFrame = { runId: RunId; cursor: RunCursor; kind: 'snapshot'; data: { run: Actual.RunSummary; view?: { protocol: number; sessionFile?: string | null; model?: string | null; thinking?: string | null; contextWindow?: number | null } } }
+  export type RunViewFrame = { runId: RunId; cursor: RunCursor; kind: 'snapshot'; data: { run: Actual.RunSummary; view?: { protocol: number; sessionFile?: string | null; model?: string | null; modelName?: string | null; thinking?: string | null; contextWindow?: number | null; iconStyle?: 'text' | 'nerd'; inputBand?: boolean; creditFactor?: number | null; working?: boolean; accent?: string } } }
     | { runId: RunId; cursor: RunCursor; kind: 'event'; data: TranscriptPage }
     | { runId: RunId; cursor: RunCursor; kind: 'live'; data: { event: { type: string } & Record<string, unknown> } }
     | { runId: RunId; cursor: RunCursor; kind: 'gap'; data: { reason: string } }

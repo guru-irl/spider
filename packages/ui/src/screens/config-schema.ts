@@ -1,5 +1,6 @@
 import { isAbsolutePathList } from "./absolute-paths.js";
 import { ICON_STYLES } from "../icons.js";
+import { ACCENTS, SPIDER_BLUE } from "../accent-palette.js";
 
 export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map" | "absolute-path-list" | "tool-selector-list" | "model-ref";
 export interface ConfigField {
@@ -91,6 +92,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "ui.inputBand", label: "Input band", type: "boolean", default: true, description: "Draw the input band and sent-message caret. Changes apply on reload.", restart: true },
 		{ key: "ui.spiderGlyphs", label: "Patched Spider glyphs", type: "boolean", default: false, description: "Enable robot eye animation with a patched Nerd Font. Changes apply next session.", restart: true },
 		{ key: "ui.icons", label: "Icon style", type: "enum", default: "text", enum: ICON_STYLES, description: "Choose text or Nerd Font icons. New messages update immediately; footer and copy buttons update next session, command descriptions on reload.", restart: true },
+		{ key: "ui.accent", label: "Accent", type: "enum", default: SPIDER_BLUE.id, enum: ACCENTS.map(accent => accent.id), scope: "global", description: "Global-only accent. Use /color for live preview; config changes apply to new sessions." },
 	]},
 	{ id: "copyButtons", label: "Copy buttons", fields: [
 		{ key: "copyButtons.enabled", label: "Copy buttons", type: "boolean", default: true, description: "Show copy buttons on finished assistant replies in fullscreen mode. Changes apply on reload.", restart: true },

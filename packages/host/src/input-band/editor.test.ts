@@ -19,7 +19,7 @@ const stock = () => new CustomEditor(tui, editorTheme, keys);
 const plain = (rows: string[]) => rows.map(stripTerminalSequences);
 const BLUE = "\x1b[38;2;130;170;255m";
 const GREEN = "\x1b[38;2;80;250;123m";
-const STRIP = "\x1b[48;2;6;6;7m";
+const STRIP = "\x1b[48;2;16;16;18m";
 
 function session(existing?: typeof stock, register = registerInputBand) {
   type Factory = Parameters<ExtensionUIContext["setEditorComponent"]>[0];
@@ -94,13 +94,13 @@ describe("input band", () => {
     const e = editor("hello");
     const rows = e.render(16);
     expect(plain(rows)).toEqual([`▖${"▄".repeat(15)}`, "▌ hello         ", `▘${"▀".repeat(15)}`]);
-    expect(rows[0]).toBe(`${BLUE}▖\x1b[39m\x1b[38;2;6;6;7m${"▄".repeat(15)}\x1b[39m`);
+    expect(rows[0]).toBe(`${BLUE}▖\x1b[39m\x1b[38;2;16;16;18m${"▄".repeat(15)}\x1b[39m`);
     expect(rows[1].startsWith(`${BLUE}▌\x1b[39m${STRIP}`)).toBe(true);
     expect(rows[1]).toMatch(/ +\x1b\[49m$/u);
     expect(rows.map(visibleWidth)).toEqual([16, 16, 16]);
     expect(rows[1]).toContain(CURSOR_MARKER);
     expect(rows[1]).toContain(renderFakeCursor(" "));
-    expect(rows[2]).toBe(`${BLUE}▘\x1b[39m\x1b[38;2;6;6;7m${"▀".repeat(15)}\x1b[39m`);
+    expect(rows[2]).toBe(`${BLUE}▘\x1b[39m\x1b[38;2;16;16;18m${"▀".repeat(15)}\x1b[39m`);
     e.setText("");
     expect(e.render(16)[1]).toContain(`▌\x1b[39m${STRIP} ${CURSOR_MARKER}`);
   });

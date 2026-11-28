@@ -278,5 +278,21 @@
         "file": "main.js"
       }
     ]
+  },
+  "0.1.18": {
+    "pane": [
+      {
+        "id": "a-pane-imports",
+        "anchor": "import { openOverlay } from \"herdr\";\nimport { View, div, svg, image } from \"gpui-kit\";\nimport { h_flex } from \"gpui-base\";\n/* spider-look:style-4 */import { panes, props, run, theme, home, layout, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";\nimport { identityPill } from \"./shared/look.js\";",
+        "replacement": "import { openOverlay } from \"herdr\";\nimport { View, div, svg, image } from \"gpui-kit\";\nimport { h_flex } from \"gpui-base\";\n/* spider-look:style-4 */import { panes, props, run, theme, home, layout, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";\nimport { identityPill } from \"./shared/look.js\";",
+        "file": "main.js"
+      },
+      {
+        "id": "a-pane-park",
+        "anchor": "if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }",
+        "replacement": "if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }",
+        "file": "main.js"
+      }
+    ]
   }
 }

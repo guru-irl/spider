@@ -9,7 +9,7 @@ import { setupHerdr, type SetupParts, type SetupRequest } from '../setup/install
 import { parseHerdrConfig } from '../config.js';
 import { prepareRemoteProgram } from '../../../context/src/remote-plan.js';
 import { executeRemote, type RemoteExecutionPorts } from './execute.js';
-import { sha256, installRuntimeDirectory } from './runtime.js';
+import { sha256, installRuntimeDirectory, probeRuntimeDirectory } from './runtime.js';
 import { createJobMonitor, type JobNotice, type JobMonitorOptions } from '../jobs/monitor.js';
 import { createJobStore, type JournalJob } from '../jobs/store.js';
 import { doctorHerdr, type DoctorParts } from '../setup/doctor.js';
@@ -45,12 +45,14 @@ async function fixture(nodeVersion?: string) {
   await mkdir(join(root, 'dist/herdr'), { recursive: true });
   await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), await readFile(resolve('dist/herdr/remote-runtime.mjs')));
   await writeFixturePaneEndpoint(root);
-  const production = createProductionHerdrCliPorts(request.packageRoot, { ...process.env, HC_SESSION: 'isolated', HC_TERMINAL_SOCKET: owner.terminal.socket, XDG_STATE_HOME: root, XDG_CONFIG_HOME: join(root, 'config') });
+  const production = createProductionHerdrCliPorts(request.packageRoot, { ...process.env, HC_SESSION: 'isolated', HC_SOCKET: owner.terminal.socket, HC_TERMINAL_SOCKET: owner.terminal.socket, XDG_STATE_HOME: root, XDG_CONFIG_HOME: join(root, 'config') });
   const runtimeParts = await production.setupParts(request);
   const parts: SetupParts = { ...runtimeParts, hc,
+    runtimeInventory: async () => ({ unreachable: [], missing: [] }),
     preflight: async () => ({ fingerprint: 'runtime-only', coreIdentity: owner.terminal, mods: [], targets: nodeVersion ? [{ machine: on, nodePath: process.execPath, coreStartedAt: 'start' }] : [], retiredTerminals: [], layoutExport: true }),
     stageLook: async () => [], installFiles: async () => [], generateTemplates: async () => [], installResume: async () => [],
     probeMachineNode: async () => nodeVersion ?? process.version,
+    runtimeRootsHealthy: async () => !!await probeRuntimeDirectory(runtimeDirectory).catch(() => null),
     bootstrapRuntime: async () => { await installRuntimeDirectory(runtimeDirectory); },
     cutover: async () => ({ terminals: [], identities: {} }), verify: async () => ({ failures: [], warnings: [], probes: [] }), warn() {} };
   await setupHerdr(request, parts); // Real installer writes only the digest-named artifact supplied by production.

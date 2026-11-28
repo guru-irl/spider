@@ -167,8 +167,8 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
       const receipt = row.value && typeof row.value === "object" && !Array.isArray(row.value) ? row.value as Record<string, unknown> : null;
       const validReceipt = receipt && token(receipt.batchId) && token(receipt.stream) && Number.isSafeInteger(receipt.through) &&
         typeof receipt.sha256 === "string" && /^[a-f0-9]{64}$/.test(receipt.sha256) &&
-        (receipt.applyMs === null || Number.isSafeInteger(receipt.applyMs) && Number(receipt.applyMs) >= 0)
-        ? { batchId: receipt.batchId, stream: receipt.stream, through: receipt.through, sha256: receipt.sha256, applyMs: receipt.applyMs } : null;
+        (receipt.applyMs === null || typeof receipt.applyMs === "number" && Number.isFinite(receipt.applyMs) && receipt.applyMs >= 0)
+        ? { batchId: receipt.batchId, stream: receipt.stream, through: receipt.through, sha256: receipt.sha256, applyMs: receipt.applyMs === null ? null : Math.round(receipt.applyMs as number) } : null;
       const causeCode = safeCauseCode(row.causeCode), operationKind = row.code === 0 ? undefined : safeAgentOperationKind(row.operationKind);
       return [{ code: row.code, reason: safeReason(row.reason), operationId: token(row.operationId) ?? "", home: safeHome(row.home),
         epoch: Number.isSafeInteger(row.epoch) ? row.epoch : null, repairCommand: safeRepair(row.repairCommand), value: validReceipt,

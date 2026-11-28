@@ -119,6 +119,24 @@ test('fullscreen shows the saved tail, streaming updates, thinking toggle and re
   await vi.waitFor(() => { expect(terminalState.screen!.getScreenLines()).toHaveLength(12); expect(plain()).toContain('TAIL_AFTER_STREAM'); });
 });
 
+test('invalid saved records mark the viewer credits as incomplete', async () => {
+  const root = fixture({ tuiMode: 'fullscreen' });
+  const file = join(root, 'session.jsonl');
+  const saved = { type: 'message', id: 'priced', parentId: null, timestamp: '2026-10-02T12:00:00Z', message: {
+    ...message('SAVED_ANSWER', Date.parse('2026-10-02T12:00:00Z')), provider: 'github-copilot', model: 'gpt-6.1-sol',
+    usage: { input: 10000, output: 1000, cacheRead: 0, cacheWrite: 0, totalTokens: 11000,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  } };
+  writeFileSync(file, JSON.stringify(saved) + '\n{invalid json}\n');
+  const viewer = await start(root);
+  viewer.presenter.snapshot(run, { protocol: RUN_VIEW_PROTOCOL, sessionFile: file, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });
+  await vi.waitFor(() => {
+    expect(plain()).toContain('Some saved session records could not be shown.');
+    expect(plain()).toContain('partial totals');
+    expect(plain()).toContain('? AIC');
+  });
+});
+
 test.each(['always', 'hidden'] as const)('fullscreen applies the %s scrollbar setting', async setting => {
   const viewer = await start(fixture({ tuiMode: 'fullscreen', fullscreenScrollbar: setting }));
   for (let i = 0; i < 40; i++) viewer.presenter.page(`HISTORY_${i}`);

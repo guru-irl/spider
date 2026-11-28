@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { cleanup, fixture, type SetupFixture } from './herdr-setup-fixture.js';
+import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -22,7 +23,8 @@ it.each([
   { kind: 'owned file', action: 'remove' },
   { kind: 'managed field', action: 'repair' },
 ])('rollback retains a changed $kind, then $action completes it', async ({ kind, action }) => {
-  const f = await fixture(), appSettings = join(f.request.config.app.home, 'settings.json'), originalApp = await readFile(appSettings);
+  const f = await (kind === 'owned file' && action === 'repair' ? fixture() : focusedSetupFixture({ coreTransport: 'socket' }));
+  const appSettings = join(f.request.config.app.home, 'settings.json'), originalApp = await readFile(appSettings);
   await setupHerdr(f.request, f.parts);
   await copyFile(resolve('dist/herdr/cli.mjs'), join(f.root, 'dist/herdr/cli.mjs'));
   const theme = join(f.request.config.agentDirectory, 'themes/dracula-plus-glass.json');

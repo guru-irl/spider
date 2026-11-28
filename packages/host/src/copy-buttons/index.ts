@@ -31,6 +31,7 @@ export type CopyButtonsOptions = {
   border?: (text: string) => string;
 };
 type State = { activation: object; options: CopyButtonsOptions; enabled: boolean; preparing?: boolean; hovered?: object; trackingMove?: boolean; hoverSeen?: boolean; detach?: () => void };
+let userHoverState: State | undefined;
 type MarkdownInternals = {
   // Pi's Markdown stores horizontal padding as a private runtime field.
   paddingX?: unknown;
@@ -166,10 +167,7 @@ function handleMarkdownMouse(slot: MarkdownBinding, state: State, event: TuiMous
     if (state.trackingMove) state.hoverSeen = true;
     // A shared seam belongs to the reply whose frame is currently visible.
     if (out?.sharedTop && event.y === out.lines.length - 1) return undefined;
-    if (state.hovered !== seam.group) {
-      state.hovered = seam.group;
-      state.options.requestRender();
-    }
+    trackHover(state, seam.group);
     return undefined;
   }
   if (event.type !== "click" || event.button !== "left" || state.hovered !== seam.group || out?.activation !== state.activation) return undefined;
@@ -194,6 +192,41 @@ function handleMarkdownMouse(slot: MarkdownBinding, state: State, event: TuiMous
 }
 
 const markdownHandlers = { render: renderMarkdown, handleMouse: handleMarkdownMouse };
+
+function trackHover(state: State, group: object): void {
+  if (state.trackingMove) state.hoverSeen = true;
+  if (state.hovered !== group) {
+    state.hovered = group;
+    state.options.requestRender();
+  }
+}
+
+/** Sent bands use the same hover owner and frame as assistant text. */
+export function userFrameEnabled(): boolean {
+  return !!userHoverState?.enabled && userHoverState.options.isFullscreen();
+}
+
+export function moveUserFrame(group: object): void {
+  if (userFrameEnabled()) trackHover(userHoverState!, group);
+}
+
+export function frameUserMessage(group: object, rows: string[], width: number, time: string): string[] {
+  const state = userHoverState!;
+  const show = state.hovered === group;
+  const border = state.options.border ?? dim;
+  const innerWidth = width - 2;
+  const label = visibleWidth(time) <= innerWidth ? time : "";
+  const bottom = show
+    ? border(FRAME.bottomLeft) + dim(label) + border(FRAME.bottom.repeat(innerWidth - visibleWidth(label)) + FRAME.bottomRight)
+    : " ".repeat(width);
+  return frameLines(rows, width, show, false, bottom, border);
+}
+
+function frameLines(lines: string[], width: number, show: boolean, omitTop: boolean, bottom: string, border: (text: string) => string): string[] {
+  const edge = (text: string) => show ? border(text) : " ".repeat(visibleWidth(text));
+  return [...(omitTop ? [] : [edge(`${FRAME.topLeft}${FRAME.top.repeat(width - 2)}${FRAME.topRight}`)]),
+    ...lines.map(line => `${edge(FRAME.left)}${line}${edge(FRAME.right)}`), bottom];
+}
 
 function decorate(layout: BlockLayout, copied: Copied | undefined, width: number, padding: number, show: boolean, omitTop: boolean, sharedTop: boolean, reply: CopyTarget | undefined, time: string, border: (text: string) => string, iconStyle?: IconStyle): { lines: string[]; hits: Hit[] } {
   const LABELS = labels(iconStyle);
@@ -240,10 +273,7 @@ function decorate(layout: BlockLayout, copied: Copied | undefined, width: number
     : reply && last >= 0 && innerWidth >= groupWidth
       ? `${edge(FRAME.bottomLeft)}${actionRow(reply, true, finalBlock)}${edge(FRAME.bottomRight)}`
       : edge(`${FRAME.bottomLeft}${FRAME.bottom.repeat(innerWidth)}${FRAME.bottomRight}`);
-  return {
-    lines: [...(omitTop ? [] : [edge(`${FRAME.topLeft}${FRAME.top.repeat(innerWidth)}${FRAME.topRight}`)]), ...lines.map(line => `${edge(FRAME.left)}${line}${edge(FRAME.right)}`), bottom],
-    hits,
-  };
+  return { lines: frameLines(lines, width, show, omitTop, bottom, border), hits };
 }
 
 function clearHover(state: State): void {
@@ -402,6 +432,7 @@ export function installCopyButtons(host: CopyButtonsHost, options: CopyButtonsOp
   // The legacy wrapper may be captured by another extension. Leave the stack
   // intact and wrap it once, with the old wrapper's captured state disabled.
   const state: State = { activation: {}, options, enabled: true };
+  userHoverState = state;
   const patch: Patch = previous?.implementation ? previous : { original: proto.updateContent, state };
   patch.state = state;
   patch.markdown = markdownHandlers;

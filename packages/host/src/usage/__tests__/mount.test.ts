@@ -58,6 +58,15 @@ describe("public usage footer mount", () => {
     expect(f.render().join("\n")).toMatch(/AIC/g); expect(f.render().join("\n")).not.toMatch(/\$/);
     expect(f.render(40)[0]).toMatch(/gpt-6.1-sol.*high/);
   });
+  it("shows the active model's display name and falls back when the name is blank", () => {
+    const f = fixture();
+    f.ctx.model = { ...f.ctx.model!, name: "GPT 6.1 Sol" };
+    mount(f);
+    expect(f.render(80)[0]).toContain("GPT 6.1 Sol · high");
+    f.ctx.model = { ...f.ctx.model!, name: " " };
+    mounted!.refresh();
+    expect(f.render(80)[0]).toContain("gpt-6.1-sol · high");
+  });
   it("takes over Pi's working row once and renders only at activity-frame boundaries", () => {
     vi.stubEnv("HC_TERMINAL_ID", "");
     const f = fixture(); mount(f);

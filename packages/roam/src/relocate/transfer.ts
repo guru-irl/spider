@@ -108,48 +108,97 @@ async function initialImportSnapshot(snapshot:CapturedSession["workspace"],bundl
   const manifest=await stageArtifact(file,"workspace",options.limits,{root:stagingRoot(options),artifactId:`${snapshot.bundle.artifactId}-initial`});
   return {snapshot:{...snapshot,stage:"pre",refs:newRefs,bundle:{kind:"ready",artifactId:manifest.id,byteLength:manifest.byteLength}},file};
 }
+function hasPrivateDiagnostic(text: string): boolean {
+  const credentialLabel = /(?:^|[^a-z0-9])(?:passwords?|passwd|auth(?:entication|orization)?|bearer|basic|cookies?|credentials?|tokens?|secrets?|(?:api|access|private)[ _-]?key)(?=$|[^a-z0-9])/iu;
+  const credentialPrefix = /\b(?:github_pat_|gh[pours]_|npm_|sk-|xox[a-z]-|xapp-|ntn_|(?:AKIA|ASIA)[A-Z0-9]{16}\b)/iu;
+  return /[\\/~@=%\p{C}]/u.test(text) || credentialLabel.test(text) || credentialPrefix.test(text);
+}
+function diagnosticAtom(value: unknown): string | null {
+  return typeof value === "string" && /^[a-z0-9_.-]{1,80}$/i.test(value) && !hasPrivateDiagnostic(value) ? value : null;
+}
+function installDiagnostic(error: unknown, lastCompleted: string) {
+  const rawCode = error && typeof error === "object" && "code" in error ? error.code : null;
+  const code = typeof rawCode === "number" && Number.isSafeInteger(rawCode) ? rawCode : diagnosticAtom(rawCode);
+  if (!(error instanceof Error)) return {name: "Error", code, message: "Unknown install error", lastCompleted};
+  // Child-process errors can include argv and stderr. Omit those and path-bearing
+  // or credential-bearing messages rather than guessing where a private value ends.
+  const message = "stdout" in error || "stderr" in error || error.message.length > 4096 ||
+    hasPrivateDiagnostic(error.message) ? "[private error message omitted]" : error.message.slice(0,512);
+  return {name: diagnosticAtom(error.name) ?? "Error", code, message, lastCompleted};
+}
+
 export async function installLocalSession(plan:RelocatePlan,captured:CapturedSession,home:RunningHome,options:RelocateAdapterOptions,withBothLocks?:<T>(id:string,run:()=>Promise<T>)=>Promise<T>,owner?:()=>Promise<SessionOwner>):Promise<V0Result<InstalledSession>> {
+  let lastCompleted = "none";
   try {
-    beginLocalMove(plan,options);parseCaptured(captured);
+    beginLocalMove(plan,options);
+    lastCompleted = "journal-begun";
+    parseCaptured(captured);
     const placement=parsePlacement(plan.destinationPlacement),current=await options.homes.read(home.sessionId);
     if(home.sessionId!==plan.source.sessionId || home.machineId!==options.config.machineId || home.machineId!==placement.machineId || home.epoch!==plan.source.epoch+2 || home.moveId!==plan.moveId || !(exactHome(current,home) || current?.state==="moving" && current.moveId===plan.moveId && current.machineId===plan.source.machineId && current.destination===home.machineId && current.epoch===plan.source.epoch+1))return refusal("home-conflict","The home does not authorize this destination install.");
+    lastCompleted = "home-verified";
     const cwdParts=captured.workspace.relativeCwd.split(/[\\/]/).filter(Boolean);
     let checkout=placement.cwd;for(const _part of cwdParts)checkout=dirname(checkout);
     if(join(checkout,captured.workspace.relativeCwd)!==placement.cwd)return refusal("install-failed","The destination cwd does not match the mapped checkout.");
+    lastCompleted = "checkout-located";
     const observed=await (owner ? owner() : createLocalRuntime(options).owner(home.sessionId,existsSync(checkout) ? plan.destinationPlacement : undefined));
     if(observed.kind!=="free")return refusal("install-failed","The destination ID lock is occupied or uncertain.");
+    lastCompleted = "owner-verified";
     const transcript=await resolveVerifiedArtifact(captured.transcriptArtifact,options.config.hubMachineId,options);
+    lastCompleted = "transcript-verified";
     const bundle=await resolveVerifiedArtifact(captured.bundleArtifact,options.config.hubMachineId,options);
+    lastCompleted = "bundle-verified";
     const repo=options.globalDb.prepare("SELECT path,worktree_command_json FROM roam_repo_maps WHERE repo_key=?").get(placement.repoKey) as {path:string;worktree_command_json:string|null}|undefined;
     if(!repo || repo.path!==placement.repository)return refusal("repo-unmapped","The destination repository mapping changed.","Run spider roam repo map on the destination, then retry.");
     if(repo.worktree_command_json!==null)return refusal("unsupported-workspace","Configured worktree commands are not supported by v0.");
+    lastCompleted = "repository-verified";
     privateDirectory(dirname(checkout));
     const initial=await initialImportSnapshot(captured.workspace,bundle,options);
+    lastCompleted = "initial-bundle-staged";
     const imports={...options.workspaceImport,journal:options.journal,worktreeCommand:null,
       run:async(cwd:string,argv:readonly string[],call?:{env?:Readonly<NodeJS.ProcessEnv>;stdin?:Buffer})=>argv.length===4 && argv[0]==="git" && argv[1]==="fetch" && argv[2]==="--quiet" && argv[3]==="origin" ? Buffer.alloc(0) : options.workspaceImport.run(cwd,argv,call),
       resolveCommonRepository:async()=>repo.path,
       verifiedArtifactPath:async(id:string)=>id===captured.workspace.bundle.artifactId?bundle:initial.snapshot.bundle.kind==="ready" && id===initial.snapshot.bundle.artifactId?initial.file:options.workspaceImport.verifiedArtifactPath(id),
     };
     const prior=options.journal.read(plan.moveId).some(row=>row.action==="workspace-prepared" && row.result.root===checkout && row.result.stage==="final");
-    if(!prior){const prepared=await prepareWorkspace(initial.snapshot,checkout,imports);await verifyWorkspace(prepared,imports);}
-    const prepared=await prepareWorkspace(captured.workspace,checkout,imports);await verifyWorkspace(prepared,imports);
+    if(!prior){
+      const prepared=await prepareWorkspace(initial.snapshot,checkout,imports);
+      lastCompleted = "initial-workspace-prepared";
+      await verifyWorkspace(prepared,imports);
+      lastCompleted = "initial-workspace-verified";
+    }
+    const prepared=await prepareWorkspace(captured.workspace,checkout,imports);
+    lastCompleted = "workspace-prepared";
+    await verifyWorkspace(prepared,imports);
+    lastCompleted = "workspace-verified";
     const branchDetached = captured.workspace.branch !== null &&
       (await options.workspaceImport.run(checkout, ["git", "rev-parse", "--abbrev-ref", "HEAD"])).toString().trim() === "HEAD";
+    lastCompleted = "branch-checked";
     const incoming=createStorePort(options.config,options.globalDb,{unmappedWorktree:`worktree:${placement.repoKey}:${placement.workspaceId}`});
     try {incoming.openStore(`worktree:${placement.repoKey}:${placement.workspaceId}`);}finally{incoming.close();}
+    lastCompleted = "incoming-store-opened";
     await mapWorkspace(options.globalDb,{repoKey:placement.repoKey,workspaceId:placement.workspaceId,path:checkout});
+    lastCompleted = "workspace-mapped";
     const staged=await stageSession({source:{...captured.session,file:transcript},destinationCwd:placement.cwd,destinationParent:null,preserveBody:true,segment:{version:1,moveId:plan.moveId,epoch:home.epoch,previousMachine:plan.source.machineId,nextMachine:home.machineId,historyMachine:placement.historyMachine,parentRef:null},limits:options.limits},stagingRoot(options));
+    lastCompleted = "session-staged";
     await installSession(staged,placement.file,{preserveBody:true,journal:options.journal,limits:options.limits,
       withBothLocks:withBothLocks??((id,run)=>withPhysicalLocks(options,placement.file,id,run)),
       ownership:async()=>({kind:"absent"}),
     });
+    lastCompleted = "session-installed";
     const local=createLocalRuntime(options),activated=await local.activate(home,placement);if(!activated.ok)return activated;
+    lastCompleted = "membership-activated";
     writeLocal(options.globalDb,"relocate-incoming",`worktree:${placement.repoKey}:${placement.workspaceId}`,undefined);
+    lastCompleted = "incoming-cleared";
     const installed: InstalledSession={placement,session:{...staged,file:placement.file}, ...(branchDetached ? { branchDetached: true } : {})};
     options.journal.record(plan.moveId,"relocate-installed",json({installed}));
     return {ok:true,value:installed};
   } catch(error) {
     const message=error instanceof Error?error.message:"";
-    return /workspace-(?:baseline|diverged|preparation-diverged|busy)/.test(message)?refusal("destination-dirty","The destination checkout is not an unchanged exported backup."):refusal("install-failed","The verified destination files could not be installed.");
+    if (/workspace-(?:baseline|diverged|preparation-diverged|busy)/.test(message)) {
+      return refusal("destination-dirty","The destination checkout is not an unchanged exported backup.");
+    }
+    try { options.journal.record(plan.moveId,"relocate-install-error",installDiagnostic(error,lastCompleted)); }
+    catch { /* An unavailable or closed journal must not replace the install refusal. */ }
+    return refusal("install-failed","The verified destination files could not be installed.");
   }
 }

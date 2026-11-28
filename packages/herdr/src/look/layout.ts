@@ -2,12 +2,19 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import edits from '../../assets/look/layout-edits.json' with { type: 'json' };
 import { HerdrError, object } from '../client/parse.js';
+import { hasNativeLookFeatures, isSpacesALookVersion } from './patches.js';
 export interface CloneNames { release?: string; menu?: string; windowBlur?: boolean; agents: string; spaces: string; pane: string; tabs: string; spider: string; chrome: string; toast?: string; bodyFont?: string; autoHideTabs?: boolean; props?: Partial<Record<'agents' | 'spaces' | 'pane' | 'tabs' | 'spider' | 'chrome', Readonly<Record<string, unknown>>>> }
 export interface GlassLayout { [key: string]: unknown }
 
 const removedNodeIds: readonly string[] = edits.remove;
 
-export function buildGlassLayout(currentMain: unknown, names: CloneNames): GlassLayout {
+function cellBackgroundOpacity(layout: unknown): number | undefined {
+  if (!layout || typeof layout !== 'object' || !('cell_background_opacity' in layout)) return undefined;
+  const value = layout.cell_background_opacity;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+export function buildGlassLayout(currentMain: unknown, names: CloneNames, installed?: unknown): GlassLayout {
   const root = structuredClone(object(currentMain));
   const nodes: Record<string, unknown>[] = [];
   const walk = (node: Record<string, unknown>): void => {
@@ -50,9 +57,17 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
       }
     }
   }
-  Object.assign(root, edits.root, { colors: { ...object(root.colors ?? {}), ...edits.root.colors } });
+  Object.assign(root, edits.root, {
+    cell_background_opacity: cellBackgroundOpacity(installed) ?? cellBackgroundOpacity(root) ?? edits.root.cell_background_opacity,
+    colors: { ...object(root.colors ?? {}), ...edits.root.colors },
+  });
   delete root.window_blur;
-  if (names.release === '0.1.13' || names.release === '0.1.16') Object.assign(root, edits.spacesA[names.release].root);
+  const release = isSpacesALookVersion(names.release) ? edits.spacesA[names.release] : undefined;
+  if (release) {
+    Object.assign(root, structuredClone(release.root));
+    // Native Settings shares the popover backing with other framed overlays.
+    if ('colors' in release) Object.assign(object(root.colors), release.colors);
+  }
   if (names.menu) root.terminal_menu = names.menu;
   if (names.toast) root.toast = names.toast;
   if (names.bodyFont) root.ui_font = names.bodyFont;
@@ -60,14 +75,15 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
   Object.assign(pane, structuredClone(edits.pane)); delete pane.shadow;
   headerContent.mod = names.pane; headerContent.props = { ...object(headerContent.props ?? {}), ...names.props?.pane };
   Object.assign(panel, structuredClone(edits.dock));
+  if (hasNativeLookFeatures(names.release) && names.windowBlur !== false) root.window_blur = true;
   if (names.release === '0.1.16') {
-    if (names.windowBlur !== false) root.window_blur = true;
     root.background = edits.blur.background;
     Object.assign(object(root.colors), edits.blur.colors);
     sidebar.background = edits.blur.sidebar;
     one('tabs').background = edits.blur.panel;
     panel.background = pane.background = edits.blur.panel;
   }
+  if (release && 'paneBackground' in release) panel.background = pane.background = release.paneBackground;
   body.children.push({ id: 'spider', type: 'block', content: { mod: names.spider, props: { ...names.props?.spider } } });
   return root;
 }

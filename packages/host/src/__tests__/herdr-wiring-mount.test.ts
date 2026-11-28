@@ -241,7 +241,10 @@ it('composed host calls real transcript and command ports without editor input',
     const working = statusChanged('working');
     emitStatus(f.db, { runId: run.id, sessionId: f.owner!.sessionId, status: 'running' });
     await working;
+    const done = statusChanged('done');
     f.store.finish(run.id, { status: 'done', result: 'observed result' });
+    emitStatus(f.db, { runId: run.id, sessionId: f.owner!.sessionId, status: 'done' });
+    await done;
     expect(await f.ipc!.steerRun(run.id as never, 'next case')).toMatchObject({ ok: true, acknowledgement: { delivery: 'refused' } });
     expect(await f.ipc!.ping()).toMatchObject({ ok: true, status: { effective: 'done' } });
     await subscription.dispose();

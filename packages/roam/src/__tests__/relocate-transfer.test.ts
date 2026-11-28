@@ -118,7 +118,9 @@ describe("v0 real transfer",()=>{
  const longInstallMessage = "The install lock rejected the session. ".repeat(20);
  it.each([
   {label: "bounded", message: longInstallMessage, expected: longInstallMessage.slice(0, 512)},
-  {label: "private", message: "Could not open '/outside roots/private.json'; password: 'synthetic secret'", expected: "[private error message omitted]"},
+  {label: "path-bearing", message: "Could not open '/outside roots/private.json'", expected: "[private error message omitted]"},
+  {label: "credential-bearing", message: "DATABASE_PASSWORD: fixture-phrase", expected: "[private error message omitted]"},
+  {label: "authorization-bearing", message: "Basic Zml4dHVyZTplbnRyeQ", expected: "[private error message omitted]"},
  ])("records a $label destination install error without changing the public refusal", async ({message, expected}) => {
   const f = transferFixture();
   const captured = await captureLocalSession(f.plan, f.options, async () => ({kind: "free"}));

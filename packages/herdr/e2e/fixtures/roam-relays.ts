@@ -23,7 +23,9 @@ import { deadline, waitFor } from '../harness/wait.js';
 const RELAY_ID = '00000000-0000-4000-8000-000000000001';
 const SENDER_ID = '00000000-0000-4000-8000-000000000002';
 const TARGET_ID = '00000000-0000-4000-8000-000000000003';
+const BACKUP_ID = '00000000-0000-4000-8000-000000000004';
 const RELAY_ALIAS = 'relay-1.invalid';
+const BACKUP_ALIAS = 'relay-2.invalid';
 const SENDER_ALIAS = 'dest.invalid';
 const TARGET_ALIAS = 'target.invalid';
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
@@ -41,6 +43,7 @@ export interface RelayFixture {
   startRelay(index: 0 | 1): Promise<void>;
   stopRelay(index: 0 | 1): Promise<void>;
   waitForDown(): Promise<DoctorObservation>;
+  withoutBackupTargetRoute<T>(run: () => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -51,23 +54,21 @@ function checked(result: HcResult, what: string): Record<string, unknown> {
   return result.json as Record<string, unknown>;
 }
 
-/** A third core has no route to either other core. Only the relay dials it. */
-async function targetCore(suite: Suite): Promise<Core> {
+async function extraCore(suite: Suite, namespace: 'b' | 'c', side: 'relay-target' | 'relay-backup'): Promise<Core> {
   const cores = suite.cores!;
-  const namespace = 'b', side = 'relay-target';
-  const env: Record<string, string> = { ...cores.dest.env, HC_SESSION: namespace, HOME: suite.ownPath(join(suite.root, 'hb')),
-    TMPDIR: suite.ownPath(join(suite.root, 'tb')), XDG_CONFIG_HOME: suite.ownPath(join(suite.root, 'cb')) };
+  const env: Record<string, string> = { ...cores.dest.env, HC_SESSION: namespace, HOME: suite.ownPath(join(suite.root, `h${namespace}`)),
+    TMPDIR: suite.ownPath(join(suite.root, `t${namespace}`)), XDG_CONFIG_HOME: suite.ownPath(join(suite.root, `c${namespace}`)) };
   for (const key of ['HC_SOCKET', 'HC_TERMINAL_ID', 'HC_TERMINAL_SOCKET', 'HC_SCOPE', 'XDG_RUNTIME_DIR']) delete env[key];
   for (const dir of [env.HOME, env.TMPDIR, join(env.XDG_CONFIG_HOME, 'herdr-core')]) await mkdir(dir, { recursive: true, mode: 0o700 });
   await writeFile(join(env.XDG_CONFIG_HOME, 'herdr-core', 'config.toml'), 'notes = false\n', { mode: 0o600 });
   const socket = assertSocketPath(suite.root, join(env.XDG_STATE_HOME, 'herdr-core', namespace, `${namespace}.sock`));
   suite.ledger.update(ledger => { ledger.cores.push({ side, namespace, socket, hcBinary: realHcBinary(), env }); });
   const call = (args: readonly string[]) => runHc(cores.wrapper, args, env);
-  checked(await call(['server', 'start', '--json']), 'target core start');
-  const status = checked(await call(['server', 'status', '--json']), 'target core status');
+  checked(await call(['server', 'start', '--json']), `${side} core start`);
+  const status = checked(await call(['server', 'status', '--json']), `${side} core status`);
   const core = status.core as { id?: unknown } | undefined;
   if (status.version !== '0.1.16' || typeof status.pid !== 'number' || typeof core?.id !== 'string' || !lstatSync(socket).isSocket()) {
-    throw new HarnessError('isolation-unproved', 'target core is not an owned hc 0.1.16 core', status);
+    throw new HarnessError('isolation-unproved', `${side} is not an owned hc 0.1.16 core`, status);
   }
   const identity = identityOf(status.pid);
   suite.ledger.update(ledger => {
@@ -77,16 +78,14 @@ async function targetCore(suite: Suite): Promise<Core> {
   return { side, namespace, socket, env, coreId: core.id, pid: status.pid };
 }
 
-async function addTargetRoute(suite: Suite, target: Core): Promise<void> {
-  const cores = suite.cores!;
-  const descriptor = suite.ownPath(join(suite.root, 'via-i2.json'));
-  const via = suite.ownPath(join(suite.root, 'bin', 'via-i2'));
-  await writeFile(descriptor, JSON.stringify({ root: suite.root, env: target.env, log: cores.viaLog,
-    ledgerPath: suite.ledger.path, socket: target.socket, viaDirectory: join(suite.root, 'via-processes') }), { mode: 0o600 });
+async function viaRoute(suite: Suite, destination: Core, index: 2 | 3): Promise<string> {
+  const descriptor = suite.ownPath(join(suite.root, `via-i${index}.json`));
+  const via = suite.ownPath(join(suite.root, 'bin', `via-i${index}`));
+  await writeFile(descriptor, JSON.stringify({ root: suite.root, env: destination.env, log: suite.cores!.viaLog,
+    ledgerPath: suite.ledger.path, socket: destination.socket, viaDirectory: join(suite.root, 'via-processes') }), { mode: 0o600 });
   const program = fileURLToPath(new URL('./via.mjs', import.meta.url));
   await writeFile(via, `#!/bin/sh\nexec 9<"$0"\nexec ${quote(process.execPath)} ${quote(program)} ${quote(descriptor)} "$@"\n`, { mode: 0o700 });
-  suite.ledger.update(ledger => { ledger.machines.push({ side: 'local', name: TARGET_ALIAS }); });
-  checked(await cores.hc(['machine', 'add', '--via', via, '--name', TARGET_ALIAS, '--session', target.namespace, '--json']), 'relay target route');
+  return via;
 }
 
 async function stageMachine(suite: Suite, core: Core, machineId: string, alias: string, name: string): Promise<Machine> {
@@ -123,14 +122,23 @@ async function configureMachine(suite: Suite, machine: Machine, role: 'hub' | 'b
 /** Set up private brokers and live v0 homes without starting the old federation. */
 export async function relayFixture(suite: Suite, options: { secondRelay?: boolean } = {}): Promise<RelayFixture> {
   if (!suite.cores || process.platform !== 'linux') throw new HarnessError('missing-prerequisite', 'relay story needs owned Linux cores');
-  if (options.secondRelay) throw new HarnessError('missing-prerequisite', 'this fixture has one relay');
   const cores = suite.cores;
   const brokers: OwnedProcess[] = [], sessions: RpcDriver[] = [], logs: { path: string; evidence: string }[] = [];
-  let relay: OwnedProcess | undefined, relayStart: RelayStart | undefined, relayCount = 0, closed = false;
+  const services = new Map<0 | 1, OwnedProcess>();
+  let relayStart: RelayStart | undefined, relayCount = 0, closed = false;
+  const call = (core: Core, argv: readonly string[]) => runHc(cores.wrapper, argv,
+    { ...core.env, HC_SESSION: core.namespace, HC_SOCKET: assertSocketPath(suite.root, core.socket) });
+  const addRoute = async (core: Core, destination: Core, alias: string, via: string) => {
+    checked(await call(core, ['machine', 'add', '--via', via, '--name', alias, '--session', destination.namespace, '--json']), `${core.side} route to ${alias}`);
+  };
+  const linkRoute = async (core: Core, destination: Core, alias: string, via: string) => {
+    suite.ledger.update(ledger => { ledger.machines.push({ side: core.side, name: alias }); });
+    await addRoute(core, destination, alias, via);
+  };
   const close = async (): Promise<void> => {
     if (closed) return; closed = true;
     const errors: unknown[] = [];
-    if (relay) try { await relay.stop(); } catch (error) { errors.push(error); }
+    for (const service of [...services.values()].reverse()) try { await service.stop(); } catch (error) { errors.push(error); }
     for (const pi of sessions.splice(0).reverse()) try { await pi.close(); } catch (error) { errors.push(error); }
     for (const broker of brokers.splice(0).reverse()) try { await broker.stop(); } catch (error) { errors.push(error); }
     for (const log of logs) if (existsSync(log.path)) try { await suite.keepEvidence(log.path, log.evidence); } catch (error) { errors.push(error); }
@@ -139,10 +147,17 @@ export async function relayFixture(suite: Suite, options: { secondRelay?: boolea
     if (errors.length) throw new AggregateError(errors, 'relay fixture cleanup failed');
   };
   try {
-    const third = await targetCore(suite);
-    if (new Set([cores.local.coreId, cores.dest.coreId, third.coreId]).size !== 3 ||
-        new Set([cores.local.socket, cores.dest.socket, third.socket]).size !== 3) throw new HarnessError('isolation-unproved', 'relay cores are not independent');
-    await addTargetRoute(suite, third);
+    const third = await extraCore(suite, 'b', 'relay-target');
+    const fourth = options.secondRelay ? await extraCore(suite, 'c', 'relay-backup') : undefined;
+    const ownedCores = [cores.local, cores.dest, third, ...(fourth ? [fourth] : [])];
+    if (new Set(ownedCores.map(core => core.coreId)).size !== ownedCores.length ||
+        new Set(ownedCores.map(core => core.socket)).size !== ownedCores.length) throw new HarnessError('isolation-unproved', 'relay cores are not independent');
+    const targetVia = await viaRoute(suite, third, 2);
+    await linkRoute(cores.local, third, TARGET_ALIAS, targetVia);
+    if (fourth) {
+      await linkRoute(fourth, cores.dest, SENDER_ALIAS, await viaRoute(suite, cores.dest, 3));
+      await linkRoute(fourth, third, TARGET_ALIAS, targetVia);
+    }
     const relayMachine: Machine = { machineId: RELAY_ID, alias: RELAY_ALIAS, core: cores.local,
       root: suite.directories.SPIDER_GLOBAL_ROOT, agent: suite.directories.PI_CODING_AGENT_DIR, cli: suite.packed.roamCli,
       env: { ...suite.env, ...cores.local.env, HC_SESSION: cores.local.namespace, HC_SOCKET: cores.local.socket,
@@ -150,35 +165,43 @@ export async function relayFixture(suite: Suite, options: { secondRelay?: boolea
         SPIDER_ROAM_PI: suite.pi.launcher } };
     const senderMachine = await stageMachine(suite, cores.dest, SENDER_ID, SENDER_ALIAS, 'm1');
     const targetMachine = await stageMachine(suite, third, TARGET_ID, TARGET_ALIAS, 'm2');
-    for (const [machine, role] of [[relayMachine, 'hub'], [senderMachine, 'box'], [targetMachine, 'box']] as const)
-      await configureMachine(suite, machine, role);
+    const backupMachine = fourth ? await stageMachine(suite, fourth, BACKUP_ID, BACKUP_ALIAS, 'm3') : undefined;
+    const carriers = [relayMachine, ...(backupMachine ? [backupMachine] : [])];
+    const sessionMachines = [senderMachine, targetMachine];
+    const machines = [...carriers, ...sessionMachines];
+    for (const machine of machines) await configureMachine(suite, machine, machine === relayMachine ? 'hub' : 'box');
 
     const peer = (machine: Machine) => ({ machineId: machine.machineId, alias: machine.alias, node: process.execPath,
       pi: suite.pi.launcher, cli: machine.cli, core: cores.wrapper, globalRoot: machine.root, agentDir: machine.agent });
+    const relays = carriers.map(machine => machine.machineId);
+    const carrierConfig = { version: 2, sendTo: sessionMachines.map(peer), acceptFrom: [], relays, linkTo: [SENDER_ID, TARGET_ID] };
     const configs = [
-      { version: 2, sendTo: [peer(senderMachine), peer(targetMachine)], acceptFrom: [], relays: [RELAY_ID], linkTo: [SENDER_ID, TARGET_ID] },
-      { version: 2, sendTo: [], acceptFrom: [{ machineId: TARGET_ID, alias: TARGET_ALIAS }], relays: [RELAY_ID], linkTo: [] },
-      { version: 2, sendTo: [], acceptFrom: [{ machineId: SENDER_ID, alias: SENDER_ALIAS }], relays: [RELAY_ID], linkTo: [] },
+      ...carriers.map(() => carrierConfig),
+      { version: 2, sendTo: [], acceptFrom: [{ machineId: TARGET_ID, alias: TARGET_ALIAS }], relays, linkTo: [] },
+      { version: 2, sendTo: [], acceptFrom: [{ machineId: SENDER_ID, alias: SENDER_ALIAS }], relays, linkTo: [] },
     ];
-    for (const [index, machine] of [relayMachine, senderMachine, targetMachine].entries())
+    for (const [index, machine] of machines.entries())
       await writeFile(join(machine.root, 'roam', 'intercom-v0.json'), JSON.stringify(configs[index]), { mode: 0o600 });
 
-    const relayList = await cores.hc(['machine', 'ls', '--json']);
-    const senderList = await runHc(cores.wrapper, ['machine', 'ls', '--json'], senderMachine.core.env);
-    const relayRows = checked(relayList, 'relay route list').machines;
+    const senderList = await call(cores.dest, ['machine', 'ls', '--json']);
     const senderRows = checked(senderList, 'sender route list').machines;
-    if (!Array.isArray(relayRows) || !Array.isArray(senderRows)) throw new HarnessError('isolation-unproved', 'machine lists are malformed');
-    expect(relayRows).toContainEqual(expect.objectContaining({ name: SENDER_ALIAS, id: cores.dest.coreId }));
-    expect(relayRows).toContainEqual(expect.objectContaining({ name: TARGET_ALIAS, id: third.coreId }));
+    if (!Array.isArray(senderRows)) throw new HarnessError('isolation-unproved', 'sender machine list is malformed');
     expect(senderRows.filter(row => row?.name === TARGET_ALIAS || row?.id === third.coreId)).toEqual([]);
-    const identityReads = [];
-    for (const machine of [senderMachine, targetMachine]) {
-      const result = await cores.hc(['exec', '--on', machine.alias, '--timeout', '15', '--', 'cat', '--', join(machine.root, 'roam', 'machine.json')]);
-      expect(result.exitCode, result.stderr).toBe(0);
-      expect(result.json).toEqual({ machineId: machine.machineId });
-      identityReads.push({ alias: machine.alias, result });
+    const relayLists = [], identityReads = [];
+    for (const carrier of carriers) {
+      const listing = await call(carrier.core, ['machine', 'ls', '--json']);
+      const rows = checked(listing, `${carrier.alias} route list`).machines;
+      expect(rows).toHaveLength(2);
+      relayLists.push({ alias: carrier.alias, listing });
+      for (const machine of sessionMachines) {
+        expect(rows).toContainEqual(expect.objectContaining({ name: machine.alias, id: machine.core.coreId }));
+        const result = await call(carrier.core, ['exec', '--on', machine.alias, '--timeout', '15', '--', 'cat', '--', join(machine.root, 'roam', 'machine.json')]);
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(result.json).toEqual({ machineId: machine.machineId });
+        identityReads.push({ relay: carrier.alias, alias: machine.alias, result });
+      }
     }
-    const routes = { relay: relayList, sender: senderList, identityReads, configs };
+    const routes = { relays: relayLists, sender: senderList, identityReads, configs };
     await suite.evidence('R19-routes.json', routes);
 
     const ids = [randomUUID() as SessionId, randomUUID() as SessionId];
@@ -186,7 +209,7 @@ export async function relayFixture(suite: Suite, options: { secondRelay?: boolea
     const hubDb = openDb(join(relayMachine.root, 'spider.db'));
     try {
       const store = createHomeStore({ db: hubDb, hubMachineId: RELAY_ID, localMachineId: RELAY_ID });
-      for (const [index, machine] of [senderMachine, targetMachine].entries()) {
+      for (const [index, machine] of sessionMachines.entries()) {
         const initial = await store.initialize(ids[index], RELAY_ID);
         const moving = { ...initial, state: 'moving', destination: machine.machineId, moveId: `v0-${randomUUID()}` as RelocateId, epoch: initial.epoch + 1 } as const;
         const running: RunningHome = { ...moving, state: 'running', machineId: machine.machineId, destination: null, epoch: moving.epoch + 1 };
@@ -195,8 +218,15 @@ export async function relayFixture(suite: Suite, options: { secondRelay?: boolea
         homes.push(running);
       }
     } finally { hubDb.close(); }
+    for (const machine of machines.slice(1)) {
+      const db = openDb(join(machine.root, 'spider.db'));
+      try {
+        const insert = db.prepare('INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,?,?,?,?,?)');
+        for (const home of homes) insert.run(home.sessionId, home.machineId, home.epoch, home.moveId, home.updatedAt, home.state, home.destination);
+      } finally { db.close(); }
+    }
     const files: string[] = [], cwds: string[] = [], placements: SessionPlacement[] = [];
-    for (const [index, machine] of [senderMachine, targetMachine].entries()) {
+    for (const [index, machine] of sessionMachines.entries()) {
       const cwd = await suite.project(`relay-${index}`), file = suite.ownPath(join(machine.agent, 'sessions', `${ids[index]}.jsonl`));
       await writeFile(file, [
         { type: 'session', version: 3, id: ids[index], cwd, timestamp: '2026-01-01T00:00:00Z' },
@@ -205,17 +235,14 @@ export async function relayFixture(suite: Suite, options: { secondRelay?: boolea
       const placement: SessionPlacement = { sessionId: ids[index], machineId: machine.machineId, historyMachine: RELAY_ID,
         repoKey: randomUUID(), workspaceId: randomUUID(), repository: cwd, cwd, file, stores: ['global'] };
       const db = openDb(join(machine.root, 'spider.db'));
-      try {
-        for (const home of homes) db.prepare('INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,?,?,?,?,?)')
-          .run(home.sessionId, home.machineId, home.epoch, home.moveId, home.updatedAt, home.state, home.destination);
-        writeLocal(db, 'relocate-managed', ids[index], placement);
-      } finally { db.close(); }
+      try { writeLocal(db, 'relocate-managed', ids[index], placement); }
+      finally { db.close(); }
       files.push(file); cwds.push(cwd); placements.push(placement);
     }
     await suite.evidence('R19-homes.json', { homes, placements });
 
     const endpoints: RelayEndpoint[] = [];
-    for (const [index, machine] of [senderMachine, targetMachine].entries()) {
+    for (const [index, machine] of sessionMachines.entries()) {
       const brokerLog = join(suite.root, `R19-broker-${index}.log`);
       logs.push({ path: brokerLog, evidence: `R19-broker-${index}.log` });
       const broker = spawnOwned(suite.ledger, { label: `R19-broker-${index}`, command: process.execPath,
@@ -247,7 +274,7 @@ export async function relayFixture(suite: Suite, options: { secondRelay?: boolea
     }
     await suite.evidence('R19-live-endpoints.json', live);
     const homeObservations = [];
-    for (const machine of [relayMachine, senderMachine, targetMachine]) {
+    for (const machine of machines) {
       const db = openDb(join(machine.root, 'spider.db'), { fileMustExist: true });
       try {
         const store = createHomeStore({ db, hubMachineId: RELAY_ID, localMachineId: machine.machineId });
@@ -266,36 +293,52 @@ export async function relayFixture(suite: Suite, options: { secondRelay?: boolea
       return { result, diagnostics: report.value.diagnostics };
     };
     const startRelay: RelayFixture['startRelay'] = async index => {
-      if (index !== 0 || relay) throw new Error('only the first stopped relay can be started');
+      const carrier = carriers[index];
+      if (!carrier || services.has(index)) throw new Error('only a configured, stopped relay can be started');
       const number = ++relayCount, log = join(suite.root, `R19-relay-${number}.log`);
       logs.push({ path: log, evidence: `R19-relay-${number}.log` });
-      relay = spawnOwned(suite.ledger, { label: `R19-relay-${number}`, command: process.execPath,
-        args: [relayMachine.cli, 'roam', 'agent', '--v0', 'relay'], env: relayMachine.env, cwd: suite.root, stdio: { log } });
-      const relayProcess = relay;
-      relayStart = await waitFor('relay link is up', async (): Promise<RelayStart | null> => {
+      const relayProcess = spawnOwned(suite.ledger, { label: `R19-relay-${number}`, command: process.execPath,
+        args: [carrier.cli, 'roam', 'agent', '--v0', 'relay'], env: carrier.env, cwd: suite.root, stdio: { log } });
+      services.set(index, relayProcess);
+      relayStart = await waitFor(`${carrier.alias} link is up`, async (): Promise<RelayStart | null> => {
         if (relayProcess.child.exitCode !== null || relayProcess.child.signalCode !== null) {
           const exit = await relayProcess.exited, text = await readFile(log, 'utf8');
           throw new Error(`relay exited before the link was up: ${JSON.stringify(exit)} ${text}`);
         }
         const observation = await doctor();
-        const row = observation.diagnostics.find(item => typeof item.reason === 'string' && item.reason.startsWith(`intercom-link: ${RELAY_ALIAS} up;`));
+        const row = observation.diagnostics.find(item => typeof item.reason === 'string' && item.reason.startsWith(`intercom-link: ${carrier.alias} up;`));
         return row ? { kind: 'up', doctor: observation, reason: row.reason } : null;
       }, value => value !== null, deadline(30_000), { reconcileMs: 500 }) ?? undefined;
       await suite.evidence(`R19-relay-start-${number}.json`, relayStart!);
     };
     const stopRelay: RelayFixture['stopRelay'] = async index => {
-      if (index !== 0 || !relay) throw new Error('only the running first relay can be stopped');
-      await relay.stop(); relay = undefined;
+      const service = services.get(index);
+      if (!service) throw new Error('only a running relay can be stopped');
+      await service.stop(); services.delete(index);
     };
     const waitForDown = async (): Promise<DoctorObservation> => {
       const down = await waitFor('relay link lease goes down', doctor,
         observation => observation.diagnostics.some(row => typeof row.reason === 'string' && row.reason.startsWith(`intercom-link: ${RELAY_ALIAS} down;`)),
         deadline(40_000), { reconcileMs: 1_000 });
-      await suite.evidence('R19-relay-down.json', down);
+      await suite.evidence(`R19-relay-down-${relayCount}.json`, down);
       return down;
     };
+    const withoutBackupTargetRoute = async <T>(run: () => Promise<T>): Promise<T> => {
+      if (!fourth) throw new Error('the backup relay is not configured');
+      const status = checked(await call(fourth, ['server', 'status', '--json']), 'backup core before removing its route');
+      if (status.pid !== fourth.pid || (status.core as { id?: unknown } | undefined)?.id !== fourth.coreId)
+        throw new HarnessError('isolation-unproved', 'backup core identity changed');
+      const removal = await call(fourth, ['machine', 'rm', TARGET_ALIAS, '--json']);
+      if (removal.exitCode !== 0) throw new HarnessError('hc-failed', 'could not remove the owned backup-to-target route', removal);
+      try {
+        await suite.evidence('R19-backup-route-removed.json', removal);
+        return await run();
+      } finally {
+        await addRoute(fourth, third, TARGET_ALIAS, targetVia);
+      }
+    };
     return { sender: endpoints[0], target: endpoints[1], controls: { routes, homes, homeObservations, endpoints: live },
-      get relayStart() { return relayStart; }, startRelay, stopRelay, waitForDown, close };
+      get relayStart() { return relayStart; }, startRelay, stopRelay, waitForDown, withoutBackupTargetRoute, close };
   } catch (error) {
     try { await close(); } catch (cleanup) { throw new AggregateError([error, cleanup], 'relay fixture setup and cleanup failed'); }
     throw error;

@@ -36,26 +36,26 @@ export async function startV0Relay(root: string): Promise<{ stop(): Promise<void
     const relay: RelayPeer = { machineId: config.machineId, alias };
     const transport = createTransport({ ...connection, enrolled: routes.sendTo });
     const forward = createV0RelayForwarder(root, { transport: peers => createTransport({ ...connection, enrolled: peers }) });
-    let available: readonly RelayPeer[] = [relay];
-    async function refreshReach(): Promise<void> {
+    async function readReach(): Promise<readonly RelayPeer[]> {
       try {
         const states = await observeV0HerdrRoutes(connection, routes.sendTo, signal);
-        available = [relay, ...routes.sendTo.filter(peer => states.get(peer.machineId) === "connected")
+        return [relay, ...routes.sendTo.filter(peer => states.get(peer.machineId) === "connected")
           .map(({ machineId, alias }) => ({ machineId, alias }))];
-      } catch { available = [relay]; }
+      } catch { return [relay]; }
     }
+    let reach = await readReach();
     async function refreshUntilStopped(): Promise<void> {
       while (!signal.aborted) {
         try { await delay(REACH_REFRESH_MS, undefined, { signal }); }
         catch { break; }
-        await refreshReach();
+        // Refresh independently of held polls. The next call advertises the new snapshot.
+        reach = await readReach();
       }
     }
 
-    await refreshReach();
     const loops = routes.linkTo.map(id => {
       const peer = routes.sendTo.find(candidate => candidate.machineId === id)!;
-      return runRelayPollLoop({ relay, peer, transport, clock, signal, reach: () => available, forward,
+      return runRelayPollLoop({ relay, peer, transport, clock, signal, reach: () => reach, forward,
         observe(view) {
           const now = clock.now();
           writeRelayObservation(root, "out", peer, view, view.state === "down" ? null : now + RELAY_POLL_CALL_MS, now);

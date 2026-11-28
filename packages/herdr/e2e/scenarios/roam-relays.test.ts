@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect } from 'vitest';
-import { listV0RelayLinks, submitV0Relay } from '@spider/intercom/broker/roam-relay-client';
+import { listV0RelayLinks, submitV0Relay, type RelayLinkView } from '@spider/intercom/broker/roam-relay-client';
 import { requestV0Broker } from '@spider/intercom/broker/roam-v0-client';
 import { decodeRelayPollReply, encodeRelayPoll, type RelayPoll, type RelayResult, type RelaySubmit } from '@spider/intercom/relay-protocol';
 import { mark, parentTurns } from '../fixtures/child-scripts.js';
@@ -21,6 +21,10 @@ interface PhysicalEntry { type?: string; customType?: string; details?: { messag
 const firstText = 'first relay delivery';
 const stoppedText = 'relay stopped, this must not arrive';
 const restartedText = 'fresh relay delivery after restart';
+const preferredText = 'use the first configured relay when both are up';
+const switchedText = 'use the backup after the first relay stops';
+const noReachText = 'the open link cannot reach the target, this must not arrive';
+const recoveredText = 'use the first configured relay again after recovery';
 
 function sendTurn(id: string, to: string, message: string): ScriptTurn[] {
   return parentTurns({ steps: [{ tool: { id, name: 'intercom', arguments: { action: 'send', to, message } } }] });
@@ -40,17 +44,40 @@ async function send(pi: RpcDriver, marker: string): Promise<{ event: object; res
 }
 
 async function relayDelivery(suite: Suite): Promise<void> {
-  const fixture = await relayFixture(suite);
+  const fixture = await relayFixture(suite, { secondRelay: true });
   const entries = async (): Promise<PhysicalEntry[]> => (await readFile(fixture.target.file, 'utf8')).split('\n').slice(0, -1)
     .filter(Boolean).map(line => JSON.parse(line) as PhysicalEntry)
     .filter(entry => entry.type === 'custom_message' && entry.customType === 'intercom_message');
   const receivedWithId = async (id: string): Promise<PhysicalEntry[]> => (await entries()).filter(entry => entry.details?.message?.id === id);
   const receivedWithText = async (text: string): Promise<PhysicalEntry[]> => (await entries()).filter(entry => entry.details?.message?.content?.text === text);
+  const backupAlias = 'relay-2.invalid';
+  const links = () => listV0RelayLinks(fixture.sender.agent);
+  async function waitForBackup(reachesTarget: boolean, after?: RelayLinkView): Promise<RelayLinkView> {
+    const matching = (link: RelayLinkView) => link.relay.alias === backupAlias && link.state === 'up' &&
+      link.reach.some(peer => peer.machineId === fixture.target.machineId) === reachesTarget &&
+      (!after || link.linkId === after.linkId && (link.lastCallMs ?? 0) > (after.lastCallMs ?? 0));
+    const observed = await waitFor(reachesTarget ? 'backup advertises target reach' : 'next backup poll withdraws target reach', links,
+      views => views.some(matching), deadline(40_000));
+    return observed.find(matching)!;
+  }
+  async function sendThrough(marker: string, alias: string): Promise<string> {
+    const { event, result } = await send(fixture.sender.pi, marker);
+    await suite.evidence(`R19-${marker}-send.json`, { event, result });
+    expect(result.details).toMatchObject({ delivered: true, path: `relay ${alias}`, messageId: expect.any(String) });
+    const id = String(result.details.messageId);
+    const receipts = await waitFor(`${marker} is physically recorded`, () => receivedWithId(id), found => found.length > 0, deadline(30_000));
+    expect(receipts).toHaveLength(1);
+    return id;
+  }
   try {
     await writeScript(suite.pi.scriptPath, { story: suite.story, scripts: {
       'relay-first': sendTurn('relay-first', fixture.target.id, firstText),
       'relay-stopped': sendTurn('relay-stopped', fixture.target.id, stoppedText),
       'relay-restarted': sendTurn('relay-restarted', fixture.target.id, restartedText),
+      'preferred': sendTurn('preferred', fixture.target.id, preferredText),
+      'switched': sendTurn('switched', fixture.target.id, switchedText),
+      'no-reach': sendTurn('no-reach', fixture.target.id, noReachText),
+      'recovered': sendTurn('recovered', fixture.target.id, recoveredText),
     } });
     await fixture.startRelay(0);
     expect(fixture.relayStart).toBeDefined();
@@ -92,6 +119,46 @@ async function relayDelivery(suite: Suite): Promise<void> {
     expect(await receivedWithId(firstId)).toHaveLength(1);
     expect(await receivedWithText(stoppedText)).toHaveLength(0);
     await suite.evidence('R19-physical-receipts.json', { firstEntries, restartedEntries, stopped: await receivedWithText(stoppedText) });
+
+    await fixture.startRelay(1);
+    await waitForBackup(true);
+    const both = await links();
+    for (const alias of ['relay-1.invalid', 'relay-2.invalid']) {
+      expect(both).toContainEqual(expect.objectContaining({ relay: expect.objectContaining({ alias }), state: 'up',
+        reach: expect.arrayContaining([expect.objectContaining({ machineId: fixture.target.machineId })]) }));
+    }
+    await suite.evidence('R19-both-links-up.json', both);
+    const preferredId = await sendThrough('preferred', 'relay-1.invalid');
+
+    await fixture.stopRelay(0);
+    await fixture.waitForDown();
+    const switchedId = await sendThrough('switched', 'relay-2.invalid');
+    const beforeCut = await waitForBackup(true);
+    const withoutTarget = await fixture.withoutBackupTargetRoute(async () => {
+      const observed = await waitForBackup(false, beforeCut);
+      await suite.evidence('R19-live-link-without-target.json', { previous: beforeCut, current: observed });
+      const { event, result: noReach } = await send(fixture.sender.pi, 'no-reach');
+      await suite.evidence('R19-no-reach-send.json', { event, noReach, received: await receivedWithText(noReachText) });
+      expect(noReach.content[0].text.split('\n')[0]).toBe('target.invalid is not reachable through any relay right now. Nothing was queued.');
+      expect(noReach.details).toMatchObject({ code: 'relay-unreachable', relaySkips: [
+        { relay: 'relay-1.invalid', reason: 'down' }, { relay: 'relay-2.invalid', reason: 'cannot reach the target' },
+      ] });
+      expect(await receivedWithText(noReachText)).toHaveLength(0);
+      return observed;
+    });
+    await suite.evidence('R19-target-reach-restored.json', await waitForBackup(true, withoutTarget));
+    await fixture.startRelay(0);
+    const recoveredId = await sendThrough('recovered', 'relay-1.invalid');
+
+    const ids = [firstId, restartedId, preferredId, switchedId, recoveredId];
+    expect(new Set(ids).size).toBe(ids.length);
+    const receipts = await Promise.all(ids.map(receivedWithId));
+    for (const entries of receipts) expect(entries).toHaveLength(1);
+    const stoppedReceipts = await receivedWithText(stoppedText), noReachReceipts = await receivedWithText(noReachText);
+    expect(stoppedReceipts).toHaveLength(0);
+    expect(noReachReceipts).toHaveLength(0);
+    await suite.evidence('R19-failover-receipts.json', { ids, receipts, stoppedReceipts, noReachReceipts });
+    console.log(`R19 ordered paths: relay-1.invalid, relay-2.invalid, relay-1.invalid; physical receipts: ${receipts.map(group => group.length).join(', ')}; refused receipts: ${stoppedReceipts.length}, ${noReachReceipts.length}`);
   } finally {
     try { await suite.keepEvidence(fixture.target.file, 'R19-target.jsonl'); }
     finally { await fixture.close(); }
@@ -178,7 +245,7 @@ async function relayPoll(suite: Suite): Promise<void> {
 }
 
 export const scenarios: readonly ScenarioDefinition[] = [
-  { id: storyId('R19'), title: 'intercom sends through an owned relay', tiers: ['headless'], run: relayDelivery },
+  { id: storyId('R19'), title: 'intercom sends through ordered owned relays', tiers: ['headless'], run: relayDelivery },
   { id: storyId('H-relay-poll'), title: 'buffered exec carries a held intercom relay poll', tiers: ['headless'], run: relayPoll },
 ];
 registerScenarios(scenarios);

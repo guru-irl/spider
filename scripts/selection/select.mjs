@@ -294,9 +294,10 @@ export async function lookupMainMap({ root, mergeBase, repo, workflowRun, api = 
     const asOf = api.get(`actions/runs/${workflowRun}`).created_at;
     const since = new Date(Date.parse(asOf) - 30 * 24 * 60 * 60 * 1000).toISOString();
     return await lookupMap({ mergeBase, asOf,
-      listRuns: async () => api.pages(`actions/workflows/selection-map.yml/runs?branch=main&event=push&status=success&created=${encodeURIComponent(`>=${since}`)}&per_page=100`)
+      listRuns: async () => api.pages(`actions/workflows/selection-map.yml/runs?branch=main&status=success&created=${encodeURIComponent(`>=${since}`)}&per_page=100`)
         .flatMap(page => page.workflow_runs)
-        .filter(run => run.event === 'push' && run.head_repository?.full_name === repo
+        .filter(run => (run.event === 'workflow_run' || run.event === 'workflow_dispatch')
+          && run.head_branch === 'main' && run.conclusion === 'success' && run.head_repository?.full_name === repo
           && run.path === '.github/workflows/selection-map.yml' && Date.parse(run.updated_at) <= Date.parse(asOf)),
       isAncestor: (commit, target) => isAncestor(root, commit, target),
       load: id => api.artifact(id, 'selection-map', 'selection-map.json'),

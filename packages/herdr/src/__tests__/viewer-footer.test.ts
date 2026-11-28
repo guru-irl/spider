@@ -104,6 +104,17 @@ test('viewer context includes trailing tool and user messages and ignores failed
   expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('22.3%/200k');
 });
 
+test('a context edit invalidates the last usage until a new response', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });
+  view.addEntries([entry, { type: 'context_edit', id: 'edit', parentId: 'message', timestamp: '2026-10-02T12:00:01Z',
+    targetId: 'older-message', replacement: null }]);
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('?/200k');
+  view.addEntries([{ ...entry, timestamp: '2026-10-02T12:00:02Z', message: { ...message,
+    timestamp: message.timestamp + 2000, usage: { ...message.usage, totalTokens: 50000 } } }]);
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('25.0%/200k');
+});
+
 test('late saved history does not replace the live context with an older response', () => {
   const view = make();
   view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });

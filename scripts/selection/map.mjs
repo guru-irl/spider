@@ -26,8 +26,9 @@ export function shardProblems({ reportedFiles, records, stats }) {
     if (!Array.isArray(record.unresolved) || record.unresolved.some(path => typeof path !== 'string' || !path)) {
       problems.push(`Invalid unresolved bundle list for ${file}`);
     }
-    if (typeof record.ranBundle !== 'boolean' || (record.unresolved?.length && !record.ranBundle)) {
-      problems.push(`Invalid bundle-use flag for ${file}`);
+    if (typeof record.ranBundle !== 'boolean' || (record.unresolved?.length && !record.ranBundle) ||
+        typeof record.incomplete !== 'boolean' || (!record.incomplete && record.unknownCpu > 0)) {
+      problems.push(`Invalid bundle or recording completeness flags for ${file}`);
     }
     const { processes, cpuMs, knownCpuMs, unknownCpu, missingCpu } = record;
     if (!Number.isSafeInteger(processes) || processes < 1 || !Number.isSafeInteger(unknownCpu) ||
@@ -75,11 +76,11 @@ export function buildSelectionMap({ shards, expectedFiles, commit, runId, create
   if (!problems.length) {
     const index = new Map(files.map((file, i) => [file, i]));
     const tests = Object.fromEntries([...records.keys()].sort().map(file => {
-      const { reads, unresolved, ranBundle, ms, result, processes, cpuMs, knownCpuMs, unknownCpu, missingCpu } = records.get(file);
+      const { reads, unresolved, ranBundle, incomplete, ms, result, processes, cpuMs, knownCpuMs, unknownCpu, missingCpu } = records.get(file);
       return [file, { reads: [...new Set(reads)].map(path => index.get(path)).sort((a, b) => a - b),
-        unresolved, ranBundle, ms, result, processes, cpuMs, knownCpuMs, unknownCpu, missingCpu }];
+        unresolved, ranBundle, incomplete, ms, result, processes, cpuMs, knownCpuMs, unknownCpu, missingCpu }];
     }));
-    map = { version: 1, commit, runId, createdAt, files, tests };
+    map = { version: 2, commit, runId, createdAt, files, tests };
   }
   return { map, problems, recordedFiles: records.size, reportedFiles: reported.size,
     sourceFiles: files.length, hookErrors, unresolvedGroups, failedFiles: [...failed].sort() };

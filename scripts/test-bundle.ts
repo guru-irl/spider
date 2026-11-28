@@ -1,7 +1,6 @@
 import { builtinModules } from "node:module";
 import { dirname, resolve } from "node:path";
-import { build } from "vite";
-import { archiveFixtureMaps, fixtureMaps } from "./selection/build-maps.mjs";
+import { buildViteFixture } from "./test-fixture-build.js";
 
 /** Test-only Node bundles. Do not depend on pi's private build dependencies. */
 export async function buildFixture(options: {
@@ -23,7 +22,7 @@ export async function buildFixture(options: {
   }));
   const inputs = new Set<string>();
   const external = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), ...options.external ?? []]);
-  const result = await build({
+  const result = await buildViteFixture({
     configFile: false,
     define: { "import.meta.spiderIntercomBrokerRelative": JSON.stringify(resolve("dist/intercom/broker.mjs")) },
     logLevel: "silent",
@@ -38,7 +37,7 @@ export async function buildFixture(options: {
         // their code. Chunk.modules alone hides such inputs.
         for (const id of this.getModuleIds()) if (this.getModuleInfo(id)?.code != null) inputs.add(id);
       },
-    }, ...(options.write === false ? [] : archiveFixtureMaps())],
+    }],
     build: {
       ssr: true,
       target: options.target ?? "node22",
@@ -46,7 +45,7 @@ export async function buildFixture(options: {
       outDir: options.outfile ? dirname(options.outfile) : undefined,
       emptyOutDir: false,
       minify: false,
-      sourcemap: fixtureMaps && options.write !== false ? "hidden" : false,
+      sourcemap: false,
       rolldownOptions: {
         input: entry,
         external: id => !Object.hasOwn(aliases, id) && (external.has(id) ||

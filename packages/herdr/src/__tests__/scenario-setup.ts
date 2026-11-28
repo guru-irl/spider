@@ -1,3 +1,4 @@
+import { fixtureInput } from '../../../../scripts/test-fixture-input.js';
 import { buildRuntimeArtifact } from './runtime-artifact.js';
 import { runPanelScene } from './acceptance/i.js';
 // SPDX-License-Identifier: MIT
@@ -53,8 +54,8 @@ export async function createAcceptanceHarness(mode: AcceptanceMode): Promise<Her
   if (mode === 'fake') {
     const h = await createHerdrHarness(mode);
     const log = join(h.root, 'acceptance-calls.jsonl'); await writeFile(log, '');
-    const logger = fileURLToPath(new URL('./acceptance-call-log.mjs', import.meta.url));
-    const fake = fileURLToPath(new URL('./fake-hc.mjs', import.meta.url));
+    const logger = fixtureInput(new URL('./acceptance-call-log.mjs', import.meta.url));
+    const fake = fixtureInput(new URL('./fake-hc.mjs', import.meta.url));
     const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
     await writeFile(h.hcBinary, `#!/bin/sh\nexec ${quote(process.execPath)} --import ${quote(logger)} ${quote(fake)} "$@"\n`);
     h.calls = async (side = 'local') => (await readFile(log, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as { argv: string[]; env: NodeJS.ProcessEnv }).filter(call => call.env.HC_SESSION === (side === 'local' ? 'l' : 'r'));
@@ -307,7 +308,7 @@ export const scenarioShared: AcceptanceScenario = async h => {
       await writeFile(join(h.directories.local, 'app-calls.jsonl'), '');
       const coreEntry = join(h.root, 'shared-core.ts');
       await writeFile(coreEntry, `export { invokeCli } from ${JSON.stringify(fileURLToPath(new URL('../client/hc.ts', import.meta.url)))};\n`);
-      const { build } = await import('vite');
+      const { buildViteFixture: build } = await import('../../../../scripts/test-fixture-build.js');
       await build({ configFile: false, logLevel: 'silent', build: { ssr: coreEntry, outDir: h.root, emptyOutDir: false, minify: false, rollupOptions: { output: { entryFileNames: 'shared-core.mjs' } } } });
       const coreCli = join(h.root, 'shared-hc.mjs');
       await writeFile(coreCli, `import { invokeCli } from './shared-core.mjs';

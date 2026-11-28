@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { openDb } from '@spider/db-core';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../../scripts/test-fixture-build.js';
 import { expect, it } from 'vitest';
 import { seedPlanLedger } from './fixtures/dashboard-plan.js';
 

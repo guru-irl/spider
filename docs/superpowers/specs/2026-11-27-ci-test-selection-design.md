@@ -30,11 +30,13 @@ Date: 2026-11-27. Status: approved by the user on 2026-11-27, with the test spee
 
 ### Recording on main
 
-- A separate `selection map` workflow runs on every push to main, next to the normal full run:
+- A separate `selection map` workflow starts after full CI finishes for the current main push:
   - it runs the suite in six shards under the recorder from `ci/tia-measure`;
-  - the recorder is a `NODE_OPTIONS` preload that records which files each test process loads or runs,
-    including child processes, worker threads and Spider bundles, which it maps back to source through
-    source maps.
+  - the recorder writes dependency observations when scripts load or Node reads data files, including
+    in child processes and workers. Test bundle helpers record their resolved inputs, and source maps
+    identify sources behind the normal Spider bundles;
+  - the two workflows share a concurrency group. A push cannot interrupt an active map, and the map
+    skips a commit already superseded when it acquires the group.
 - The normal full run doesn't change, so recorder side effects can't make the miss detector flaky.
 - The recorded build makes bundles with source maps through an environment switch. Release builds and the
   npm package don't change.
@@ -71,7 +73,7 @@ same one. The steps:
    | Selection code and policy | the selector's tests, plus the guard tests |
    | Files that bundle readers read | the tests in the existing consumer rules that read, hash or pack bundles |
    | Any file in a package whose bundle a test ran without a source map | that test; the map lists such bundles per test |
-   | A test whose recorded result is failed or skipped | always selected, because its record may be partial |
+   | A test whose recording is incomplete or whose result is failed or skipped | always selected |
 
 3. **No budget.** Nothing is deferred to main.
 
@@ -84,8 +86,8 @@ same one. The steps:
 ### Miss detector on main
 
 - Every push to main runs the full suite, Herdr acceptance, Chrome and stories, as today.
-- A newer push to main cancels a full run that is still going. A burst of merges then costs one full run,
-  and a failure points at a range of commits that the audit can narrow.
+- A newer push does not cancel a running full run or map recording in the shared concurrency group.
+  A burst can replace a pending full run. Recording checks main's head again before allocating shards.
 - A `selection audit` job compares the main run's failing tests with the selection the merged PR ran,
   taken from its `test-selection` artifact.
 - A failure outside that selection, in a test that isn't a known flake, is a miss. The job fails and writes
@@ -101,8 +103,10 @@ break the 3-minute target, so this design limits it in three ways:
 
 1. **No manual full runs before merge.** Once PR B ships, PRs get the complete answer, so the pre-merge
    full runs stop. They were the largest load that afternoon.
-2. **Main cancels superseded full runs**, as described above.
-3. **Main uses 6 test shards instead of 12.** A main push holds about 11 runners instead of 23.
+2. **Main CI and map recording do not overlap.** The recorder uses at most six runners, followed by one
+   to publish the map. A later main run can wait behind a running map.
+3. **Main uses 6 test shards instead of 12.** At most 15 jobs can run together: six test shards, four
+   Chrome partitions, three stories, compile and Herdr acceptance. This leaves five runners for one PR.
    Main's run is the miss detector, so 12-15 minutes is acceptable there.
 
 ### Workflows and names

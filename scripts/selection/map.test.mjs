@@ -13,7 +13,7 @@ const c = 'packages/c/src/c.test.ts';
 const shared = 'packages/shared/src/shared.ts';
 const own = 'packages/b/src/b.ts';
 const record = (reads, result = 'passed', ms = 10, unresolved = [], ranBundle = unresolved.length > 0) => ({
-  reads, result, ms, unresolved, ranBundle,
+  reads, result, ms, unresolved, incomplete: false, ranBundle,
   processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 });
 const shard = (records, extra = {}) => ({
   reportedFiles: Object.keys(records),
@@ -26,7 +26,7 @@ const build = (shards, expectedFiles = shards.flatMap(shard => shard.reportedFil
 
 test('publishes the tested commit, producing run, timestamp, and map version', () => {
   const { map } = build([shard({ [a]: record([]) })]);
-  assert.deepEqual({ version: map.version, commit: map.commit, runId: map.runId, createdAt: map.createdAt }, { version: 1, ...metadata });
+  assert.deepEqual({ version: map.version, commit: map.commit, runId: map.runId, createdAt: map.createdAt }, { version: 2, ...metadata });
 });
 
 test('indexes deduplicated source paths across shards in stable order', () => {
@@ -40,15 +40,18 @@ test('indexes deduplicated source paths across shards in stable order', () => {
 test('keeps failure and skip results with their reported durations', () => {
   const { map } = build([shard({ [a]: record([], 'passed', 15), [b]: record([], 'failed', 47), [c]: record([], 'skipped', 0) })]);
   assert.deepEqual(map.tests, {
-    [a]: { reads: [], unresolved: [], ranBundle: false, ms: 15, result: 'passed', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 },
-    [b]: { reads: [], unresolved: [], ranBundle: false, ms: 47, result: 'failed', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 },
-    [c]: { reads: [], unresolved: [], ranBundle: false, ms: 0, result: 'skipped', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 },
+    [a]: { reads: [], unresolved: [], incomplete: false, ranBundle: false, ms: 15, result: 'passed', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 },
+    [b]: { reads: [], unresolved: [], incomplete: false, ranBundle: false, ms: 47, result: 'failed', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 },
+    [c]: { reads: [], unresolved: [], incomplete: false, ranBundle: false, ms: 0, result: 'skipped', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 },
   });
 });
 
 test('publishes partial CPU without turning it into a complete measurement', () => {
-  const partial = { ...record([]), processes: 3, cpuMs: null, knownCpuMs: 55, unknownCpu: 1, missingCpu: 1 };
+  const partial = { ...record([]), incomplete: true, ranBundle: true,
+    processes: 3, cpuMs: null, knownCpuMs: 55, unknownCpu: 1, missingCpu: 1 };
   const { map } = build([shard({ [a]: partial })]);
+  assert.equal(map.tests[a].incomplete, true);
+  assert.equal(map.tests[a].ranBundle, true);
   assert.deepEqual({ processes: map.tests[a].processes, cpuMs: map.tests[a].cpuMs,
     knownCpuMs: map.tests[a].knownCpuMs, unknownCpu: map.tests[a].unknownCpu, missingCpu: map.tests[a].missingCpu },
   { processes: 3, cpuMs: null, knownCpuMs: 55, unknownCpu: 1, missingCpu: 1 });
@@ -76,6 +79,12 @@ test('distinguishes an executor with a mapped bundle from a direct source reader
   const { map } = build([shard({ [a]: record([shared], 'passed', 10, [], true), [b]: record([shared]) })]);
   assert.equal(map.tests[a].ranBundle, true);
   assert.equal(map.tests[b].ranBundle, false);
+});
+
+test('rejects unresolved bundles on a record that claims no bundle use', () => {
+  const { map, problems } = build([shard({ [a]: record([], 'passed', 10, ['dist/example.js'], false) })]);
+  assert.equal(map, null);
+  assert.match(problems.join('\n'), /bundle.*a\.test\.ts/i);
 });
 
 test('aggregates unresolved observation groups across shards', () => {

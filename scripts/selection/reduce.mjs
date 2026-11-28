@@ -82,8 +82,8 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     unresolvedGroups: { checkout: 0, temporary: 0, other: 0 },
   };
   const group = file => {
-    if (!groups.has(file)) groups.set(file, { reads: new Set(), unresolved: new Set(), ranBundle: false, workerPids: new Set(),
-      processes: new Map(), threads: new Set(), launches: new Set(), observedLaunches: new Set() });
+    if (!groups.has(file)) groups.set(file, { reads: new Set(), unresolved: new Set(), workerPids: new Set(), ranBundle: false,
+      processes: new Map(), threads: new Set(), observedThreads: new Set(), launches: new Set(), observedLaunches: new Set() });
     return groups.get(file);
   };
   const launches = join(rawDir, 'launches.ndjson');
@@ -100,7 +100,11 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
       } else stats.malformedSnapshots++;
     }
   }
-  for (const name of readdirSync(rawDir).filter(name => /^\d+-[a-f0-9-]+\.json$/.test(name))) {
+  const rawFiles = readdirSync(rawDir);
+  const journals = new Set(rawFiles.filter(name => /^\d+-[a-f0-9-]+\.ndjson$/.test(name)));
+  for (const name of rawFiles.filter(name => /^\d+-[a-f0-9-]+\.json$/.test(name))) {
+    const journal = name.replace(/\.json$/, '.ndjson');
+    const input = journals.delete(journal) ? readFileSync(join(rawDir, journal), 'utf8') : '';
     let proc;
     try { proc = read(join(rawDir, name)); }
     catch { stats.malformedSnapshots++; continue; }
@@ -113,8 +117,20 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     if ((proc.threadId ?? 0) === 0 && proc.ended) process.ended = true;
     entry.processes.set(processId, process);
     if (proc.launchId) entry.observedLaunches.add(proc.launchId);
-    if (proc.threadId > 0) entry.threads.add(`${processId}:${proc.threadId}`);
-    for (const script of proc.scripts) {
+    if (proc.threadId > 0) {
+      const thread = `${processId}:${proc.threadId}`;
+      entry.threads.add(thread);
+      if (proc.ended) entry.observedThreads.add(thread);
+    }
+    for (const line of input.split('\n').filter(Boolean)) {
+      let script;
+      try { script = JSON.parse(line); }
+      catch { stats.malformedSnapshots++; continue; }
+      if (script?.kind === 'build') { entry.ranBundle = true; continue; }
+      if (!['source', 'bundle', 'fixture'].includes(script?.kind) || typeof script.url !== 'string' || !script.url) {
+        stats.malformedSnapshots++;
+        continue;
+      }
       if (script.kind === 'bundle' || script.kind === 'fixture') {
         entry.ranBundle = true;
         if (script.sha256 && !maps.has(script.sha256) && !fixtures.has(script.sha256)) {
@@ -138,6 +154,8 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
       }
     }
   }
+  // A journal without its startup checkpoint cannot be attributed to a test.
+  stats.malformedSnapshots += journals.size;
   const reportedFiles = [...outcomes.keys()].sort();
   const failedFiles = [];
   const records = {};
@@ -155,8 +173,9 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     const knownCpuMs = Math.round(processValues.reduce((sum, proc) => sum + (proc.cpuMs ?? 0), 0) * 1000) / 1000;
     const missingCpu = missingLaunches + processValues.filter(proc => proc.cpuMs === null).length;
     const unknownCpu = missingLaunches + processValues.filter(proc => proc.cpuMs === null || !proc.ended).length;
-    records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), ranBundle: entry.ranBundle, workerPids: [...entry.workerPids],
-      ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
+    const incomplete = unknownCpu > 0 || entry.threads.size !== entry.observedThreads.size;
+    records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), workerPids: [...entry.workerPids],
+      ranBundle: entry.ranBundle, incomplete, ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
   }
   return { reportedFiles, failedFiles, records, stats };
 }

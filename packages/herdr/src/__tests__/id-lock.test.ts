@@ -5,7 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile 
 import { join, resolve } from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { claimIdLock as claim, localBootId } from '../sessions/id-lock.js';
 import type { ProcessIdentity, ProcessProbe } from '../sessions/lease.js';
 import { hash } from '../sessions/registry.js';

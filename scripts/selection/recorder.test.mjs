@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
@@ -30,7 +30,11 @@ function fixture(t) {
 const runNode = (args, options) => spawnSync(process.execPath, args, { encoding: 'utf8', ...options });
 
 function records(raw) {
-  return readdirSync(raw).filter(name => name.endsWith('.json')).map(name => JSON.parse(readFileSync(join(raw, name))));
+  return readdirSync(raw).filter(name => name.endsWith('.json')).map(name => {
+    const journal = join(raw, name.replace(/\.json$/, '.ndjson'));
+    const scripts = existsSync(journal) ? readFileSync(journal, 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(row => row.url) : [];
+    return { ...JSON.parse(readFileSync(join(raw, name))), scripts };
+  });
 }
 
 function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', launches = [] } = {}) {
@@ -44,7 +48,9 @@ function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', laun
   for (const [i, snapshot] of snapshots.entries()) {
     const scripts = snapshot.scripts?.map(script => ({ ...script, url: resolve(root, script.url) }))
       ?? snapshot.paths.map(path => ({ kind: 'source', url: resolve(root, path) }));
-    writeFileSync(join(raw, `${i + 1}-abc.json`), JSON.stringify({ ...snapshot, scripts }));
+    const { scripts: _, paths: _paths, ...metadata } = snapshot;
+    writeFileSync(join(raw, `${i + 1}-abc.json`), JSON.stringify(metadata));
+    writeFileSync(join(raw, `${i + 1}-abc.ndjson`), scripts.map(row => JSON.stringify(row) + '\n').join(''));
   }
   if (hookErrors) writeFileSync(join(raw, 'hook-errors.ndjson'), hookErrors);
   if (launches.length) writeFileSync(join(raw, 'launches.ndjson'), launches.map(row => JSON.stringify(row)).join('\n') + '\n');
@@ -159,8 +165,8 @@ test('decodes file URLs and does not mistake a temporary-root prefix for the roo
   const reportFile = join(workspace, 'vitest.json');
   writeFileSync(reportFile, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
   const url = new URL('file://' + join(root, 'tmp-other/a b.mjs'));
-  writeFileSync(join(raw, '1-abc.json'), JSON.stringify({ test: id, worker: true, pid: 3,
-    scripts: [{ kind: 'bundle', url: url.href, sha256: 'unmatched' }] }));
+  writeFileSync(join(raw, '1-abc.json'), JSON.stringify({ test: id, worker: true, pid: 3 }));
+  writeFileSync(join(raw, '1-abc.ndjson'), JSON.stringify({ kind: 'bundle', url: url.href, sha256: 'unmatched' }) + '\n');
   const { records } = reduce({ root, tmpRoot: join(root, 'tmp'), rawDir: raw, mapsDir: maps, reportFile });
   assert.deepEqual(records[id].unresolved, ['tmp-other/a b.mjs']);
 });
@@ -420,6 +426,136 @@ test('a native signal can kill a Node process blocked inside Atomics.wait', { sk
     clearTimeout(cleanup);
   `], { env: recorderEnv(root, raw), timeout: 5000 });
   assert.equal(result.status, 0, result.stderr);
+});
+
+function reduceProbe({ root, raw, maps, workspace }) {
+  writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
+  writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
+  const reportFile = join(workspace, 'vitest.json');
+  writeFileSync(reportFile, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
+  return reduce({ root, rawDir: raw, mapsDir: maps, reportFile }).records[id];
+}
+
+test('keeps scripts loaded by an externally killed child and marks its record incomplete', { skip: process.platform === 'win32' }, t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'dependency.mjs'), 'export const value = 42;');
+  writeFileSync(join(root, 'child.mjs'), `
+    import { value } from './dependency.mjs';
+    process.stdout.write(String(value));
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  `);
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { spawn } from 'node:child_process';
+    import { once } from 'node:events';
+    const child = spawn(process.execPath, ['child.mjs']);
+    const exited = once(child, 'close');
+    const [ready] = await once(child.stdout, 'data');
+    child.kill('SIGKILL');
+    assert.deepEqual(await exited, [null, 'SIGKILL']);
+    assert.equal(String(ready), '42');
+  `], { cwd: root, env: recorderEnv(root, raw), timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  const record = reduceProbe(paths);
+  assert.deepEqual(record.reads, ['child.mjs', 'dependency.mjs']);
+  assert.equal(record.incomplete, true);
+  assert.equal(record.cpuMs, null);
+});
+
+test('records non-code file reads through Node fs APIs in a child with a replacement environment', t => {
+  const paths = fixture(t);
+  const { root, raw, workspace, installed } = paths;
+  for (const name of ['callback.json', 'copy.json', 'handle.html', 'open.sql', 'openSync.txt', 'promise.css', 'stream.svg', 'sync.yaml', 'output.txt']) {
+    writeFileSync(join(root, name), name);
+  }
+  writeFileSync(join(workspace, 'outside.txt'), 'outside');
+  writeFileSync(join(installed, 'dependency.txt'), 'dependency');
+  writeFileSync(join(root, 'data-child.mjs'), `
+    import assert from 'node:assert/strict';
+    import { createReadStream, open, openSync, close, readFile, readFileSync, closeSync } from 'node:fs';
+    import { copyFile, open as openPromise, readFile as readPromise } from 'node:fs/promises';
+    import { promisify } from 'node:util';
+    assert.equal(readFileSync(new URL('./sync.yaml', import.meta.url), 'utf8'), 'sync.yaml');
+    assert.equal(await promisify(readFile)(Buffer.from('callback.json'), 'utf8'), 'callback.json');
+    assert.equal(await readPromise('promise.css', 'utf8'), 'promise.css');
+    await copyFile('copy.json', '../copied.json');
+    assert.equal(await readPromise('../copied.json', 'utf8'), 'copy.json');
+    closeSync(await promisify(open)('open.sql', 'r'));
+    closeSync(openSync('openSync.txt', 'r'));
+    const handle = await openPromise('handle.html', 'r');
+    assert.equal(await handle.readFile('utf8'), 'handle.html');
+    await handle.close();
+    let body = '';
+    for await (const chunk of createReadStream('stream.svg')) body += chunk;
+    assert.equal(body, 'stream.svg');
+    closeSync(openSync('output.txt', 'w'));
+    readFileSync('../outside.txt');
+    readFileSync(${JSON.stringify(join(installed, 'dependency.txt'))});
+  `);
+  const result = runNode(['--input-type=module', '-e', `
+    import { execFileSync } from 'node:child_process';
+    execFileSync(process.execPath, ['data-child.mjs'], { env: {} });
+  `], { cwd: root, env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const record = reduceProbe(paths);
+  assert.deepEqual(record.reads, ['callback.json', 'copy.json', 'data-child.mjs', 'handle.html', 'open.sql', 'openSync.txt',
+    'promise.css', 'stream.svg', 'sync.yaml']);
+  assert.equal(record.incomplete, false);
+});
+
+test('records a declared fixture input even when only a shell reads it', { skip: process.platform === 'win32' }, t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'fixture.sh'), 'printf shell-output');
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { execFileSync } from 'node:child_process';
+    import { fixtureInput } from './scripts/test-fixture-input.ts';
+    const input = fixtureInput(new URL(${JSON.stringify(`file://${join(root, 'fixture.sh')}`)}));
+    assert.equal(execFileSync('/bin/sh', [input], { encoding: 'utf8' }), 'shell-output');
+  `], { env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(reduceProbe(paths).reads.includes('fixture.sh'));
+});
+
+test('records all inputs of an in-memory bundle even when no output script runs', t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'entry.mjs'), "import { unused } from './elided.mjs'; export const live = 42;");
+  writeFileSync(join(root, 'elided.mjs'), 'export const unused = 10;');
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { buildViteFixture } from './scripts/test-fixture-build.ts';
+    const output = await buildViteFixture({ configFile: false, logLevel: 'silent',
+      build: { ssr: ${JSON.stringify(join(root, 'entry.mjs'))}, write: false } });
+    assert.match(output.output[0].code, /live = 42/);
+    assert.doesNotMatch(output.output[0].code, /unused/);
+  `], { env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const record = reduceProbe(paths);
+  assert.deepEqual(record.reads, ['elided.mjs', 'entry.mjs']);
+  assert.equal(record.ranBundle, true);
+});
+
+test('resolves a renamed in-memory fixture output run from dist', t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'fixture-source.mjs'), 'export const original = 42;');
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { writeFileSync } from 'node:fs';
+    import { buildViteFixture } from './scripts/test-fixture-build.ts';
+    const output = await buildViteFixture({ configFile: false, logLevel: 'silent',
+      build: { ssr: ${JSON.stringify(join(root, 'fixture-source.mjs'))}, write: false } });
+    const copied = ${JSON.stringify(join(root, 'dist/renamed.mjs'))};
+    writeFileSync(copied, output.output[0].code);
+    assert.equal((await import(copied)).original, 42);
+  `], { env: { ...recorderEnv(root, raw), SPIDER_SELECTION_BUNDLE_KEYS: '1:unmatched' } });
+  assert.equal(result.status, 0, result.stderr);
+  const record = reduceProbe(paths);
+  assert.deepEqual(record.unresolved, []);
+  assert.ok(record.reads.includes('fixture-source.mjs'));
 });
 
 test('an intentionally tiny Worker keeps recoverable OOM behavior', t => {

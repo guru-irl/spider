@@ -8,9 +8,10 @@ const workerPreload = `--require=${__filename}`;
 const dir = threads.isMainThread ? process.env.SPIDER_SELECTION_DIR
   : process.execArgv.at(-1) === workerPreload ? threadContext?.dir : null;
 if (dir) {
-  const { appendFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } = require('node:fs');
+  const fs = require('node:fs');
+  const { appendFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } = fs;
   const { basename, join, relative, resolve, isAbsolute, sep } = require('node:path');
-  const { fileURLToPath } = require('node:url');
+  const { fileURLToPath, pathToFileURL } = require('node:url');
   const { createHash, randomUUID } = require('node:crypto');
   const { syncBuiltinESMExports } = require('node:module');
   const cp = require('node:child_process');
@@ -23,6 +24,7 @@ if (dir) {
   delete process.env.SPIDER_SELECTION_LAUNCH_ID;
   const id = `${process.pid}-${randomUUID()}`;
   const dest = join(dir, `${id}.json`);
+  const journal = join(dir, `${id}.ndjson`);
   const preload = `--require=${JSON.stringify(__filename)}`;
   if (threadContext) process.execArgv.pop();
   const savedOptions = 'SPIDER_SELECTION_SAVED_NODE_OPTIONS';
@@ -35,7 +37,7 @@ if (dir) {
     else delete process.env.NODE_OPTIONS;
   }
   delete process.env[savedOptions];
-  const scripts = new Map();
+  const observed = new Set();
   const fileCache = new Map();
   let test = threadContext?.test ?? (process.env.SPIDER_SELECTION_TEST || null);
   let worker = false;
@@ -105,15 +107,59 @@ if (dir) {
     return isAbsolute(url) ? url.split(/[?#]/, 1)[0] : null;
   }
 
-  function classify(file, scriptHash) {
+  function isRepoInput(file) {
     const name = relative(root, file);
+    return name && name !== '..' && !name.startsWith(`..${sep}`) && !isAbsolute(name)
+      && !name.split(sep).some(part => part === 'node_modules' || part === '.spider' || part === '.git')
+      && !name.startsWith(`scripts${sep}selection${sep}`);
+  }
+
+  function record(kind, url = null, sha256 = null) {
+    const line = JSON.stringify({ kind, url, sha256 });
+    if (observed.has(line)) return;
+    try {
+      appendFileSync(journal, line + '\n', { mode: 0o600 });
+      observed.add(line);
+    } catch (error) { note('append dependency', error); }
+  }
+
+  function recordRead(path) {
+    try {
+      if (path instanceof URL) path = fileURLToPath(path);
+      if (Buffer.isBuffer(path)) path = path.toString();
+      if (typeof path !== 'string' || path === '' || path.includes('\0')) return;
+      const file = resolve(path);
+      if (isRepoInput(file)) record('source', pathToFileURL(file).href);
+    } catch { /* Leave invalid arguments for the original fs method to handle. */ }
+  }
+
+  function captureFsReads() {
+    function wrapRead(api, name, shouldRecord = () => true) {
+      api[name] = new Proxy(api[name], {
+        apply(target, receiver, args) {
+          if (shouldRecord(args)) recordRead(args[0]);
+          return Reflect.apply(target, receiver, args);
+        },
+      });
+    }
+    function readable([, flags]) {
+      if (typeof flags === 'number') return !(flags & fs.constants.O_WRONLY);
+      return typeof flags !== 'string' || flags.startsWith('r') || flags.includes('+');
+    }
+    for (const name of ['readFile', 'readFileSync', 'createReadStream', 'copyFile', 'copyFileSync']) wrapRead(fs, name);
+    for (const name of ['open', 'openSync']) wrapRead(fs, name, readable);
+    for (const name of ['readFile', 'copyFile']) wrapRead(fs.promises, name);
+    wrapRead(fs.promises, 'open', readable);
+  }
+
+  function classify(file, scriptHash) {
     const dist = file.split(sep).includes('dist');
     const dependency = file.split(sep).includes('node_modules');
     if ((!dependency || dist) && /\.[cm]?js$/.test(file) && scriptHash
       && existsSync(join(dir, 'fixture-maps', `${scriptHash}.json`))) return 'fixture';
     if (dist && !dependency) return 'bundle';
-    if (!dependency && !isAbsolute(name) && !name.startsWith(`..${sep}`) && !name.startsWith(`.spider${sep}`)
-      && !name.startsWith(`scripts${sep}selection${sep}`)) return 'source';
+    // A file URL can name a synthetic inspector script (for example [eval1]).
+    if (isRepoInput(file) && existsSync(file)) return 'source';
     // Installed copies can be renamed, including content-addressed runtime
     // files outside dist. Ordinary node_modules scripts are not recorded.
     if (!/\.[cm]?js$/.test(file)) return null;
@@ -191,7 +237,10 @@ if (dir) {
         catch (error) { note(method, error); }
       });
 
-      let bundleCheckpoint = false;
+      // Associate the journal with this process before it can have entries.
+      // Each dependency is durable without a JS exit hook or CPU checkpoint.
+      collect = flush;
+      flush();
       session.on('Debugger.scriptParsed', ({ params: { url, hash } }) => {
         try {
           const file = scriptPath(url);
@@ -218,12 +267,7 @@ if (dir) {
               }
             }
           }
-          if (!disk) return;
-          if (!bundleCheckpoint && (disk.kind === 'bundle' || disk.kind === 'fixture')) {
-            bundleCheckpoint = true;
-            setImmediate(flush).unref();
-          }
-          scripts.set(cacheKey, { url, ...disk });
+          if (disk) record(disk.kind, disk.kind === 'source' ? pathToFileURL(file).href : url, disk.sha256);
         } catch (error) { note('scriptParsed', error); }
       });
       post('Debugger.enable');
@@ -234,14 +278,26 @@ if (dir) {
           const cpu = process.cpuUsage();
           writeFileSync(`${dest}.tmp`, JSON.stringify({
             pid: process.pid, processId, launchId, threadId: threads.threadId, test, argv: process.argv, worker, ended: finished,
-            cpuMs: (cpu.user + cpu.system) / 1000, scripts: [...scripts.values()],
+            cpuMs: (cpu.user + cpu.system) / 1000,
           }), { mode: 0o600 });
           renameSync(`${dest}.tmp`, dest);
         } catch (error) { note('flush', error); }
       }
 
-      collect = flush;
-      flush();
+      captureFsReads();
+      globalThis[Symbol.for('spider.selection.input')] = recordRead;
+      globalThis[Symbol.for('spider.selection.bundle-inputs')] = ids => {
+        record('build');
+        const files = new Set();
+        for (const id of ids) {
+          if (!isAbsolute(id) || !isRepoInput(id)) continue;
+          const file = existsSync(id) ? id : id.split(/[?#]/, 1)[0];
+          if (!existsSync(file)) continue;
+          recordRead(file);
+          files.add(file);
+        }
+        return [...files].sort();
+      };
       setInterval(flush, 2_000).unref();
       process.on('exit', () => flush(true));
       if (threads.isMainThread && process.platform !== 'win32') {

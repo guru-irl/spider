@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 
 type BundledFile = { name: string; bytes: Buffer };
 

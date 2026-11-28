@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { build } from "vite";
+import { buildViteFixture as build } from "../../../../scripts/test-fixture-build.js";
 import type { buildChildSpawnSpec as buildChildSpawnSpecType } from "../pi-args";
 
 let root: string;

@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { build } from "vite";
+import { buildViteFixture as build } from "../../../../scripts/test-fixture-build.js";
 import { openDb } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import type { Operation } from "../contracts";

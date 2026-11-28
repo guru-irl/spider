@@ -127,7 +127,7 @@ describe("renderSpiderResult dispatcher", () => {
     expect(c.render(140).join("\n")).toMatch(/next session/i);
   });
 
-  it("control doctor → status line + guttered checks (no raw JSON, heading stripped)", () => {
+  it("control doctor → status line + aligned checks (no raw JSON, heading stripped)", () => {
     const details = {
       ok: true,
       lines: [
@@ -147,11 +147,11 @@ describe("renderSpiderResult dispatcher", () => {
     expect(text).toContain("loaded");
   });
 
-  it("control doctor → ❌ status when ok is false", () => {
+  it("control doctor → × status when ok is false", () => {
     const details = { ok: false, lines: ["- sqlite-vec: NOT loaded"] };
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "doctor" }));
     assertComponent(c);
-    expect(c.render(80).join("\n")).toContain("❌");
+    expect(c.render(80).join("\n")).toContain("×");
   });
 
   it("control doctor does not invent success when ok evidence is absent (C-LOW)", () => {
@@ -356,8 +356,8 @@ describe("run status rows", () => {
     const details = { run: { agent: "worker", status: "running" } };
     expect(renderSpiderResult({ details }, {}, theme, mkCtx({ action: "run" })).render(120)[0]).toBe(" ● running · worker · —");
     const msg = { details: { agent: "worker", status: "done", severity: "warning", summary: "Check the logs" } };
-    expect(renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("spider · run · worker\n");
-    expect(renderEscalationMessage(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("spider · escalation · worker\n");
+    expect(renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("run · worker\n");
+    expect(renderEscalationMessage(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("escalation · worker\n");
   });
 
   it("does not render a task or expansion hint for ANSI-only task text", () => {
@@ -365,13 +365,13 @@ describe("run status rows", () => {
     const text = renderSpiderResult({ details }, {}, theme, mkCtx({ action: "run" })).render(120).join("\n");
     expect(text).not.toContain("undefined");
     expect(text).not.toContain("ctrl+o");
-    expect(text).not.toContain("↳");
+    expect(text).not.toContain("→");
   });
 
   it("marks the first output line separately from an expanded task continuation", () => {
     const details = { run: { name: "audit", agent: "worker", status: "done", task: "Check manifest\nRead logs", result: "Build failed\nManifest missing" } };
     const rows = renderSpiderResult({ details }, { expanded: true }, theme, mkCtx({ action: "run" })).render(120);
-    expect(rows.slice(1)).toEqual(["   ↳ Check manifest", "   Read logs", "   ⤴ Build failed", "   Manifest missing"]);
+    expect(rows.slice(1)).toEqual(["   → Check manifest", "   Read logs", "   ↑ Build failed", "   Manifest missing"]);
   });
 
   it("shows one named status row per run, with a blank line between runs", () => {
@@ -382,8 +382,8 @@ describe("run status rows", () => {
     const args = { action: "run", tasks: [{ agent: "worker" }, { agent: "reviewer" }] };
     const lines = renderSpiderResult({ details }, { expanded: true }, theme, mkCtx(args)).render(120);
     expect(lines).toEqual([
-      " ❌ failed · tia-2 · worker · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
-      "   ↳ Check the manifest", "   Read the build logs", "",
+      " × failed · tia-2 · worker · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
+      "   → Check the manifest", "   Read the build logs", "",
       " ● running · audit · reviewer · opus-5.5",
     ]);
   });
@@ -521,7 +521,7 @@ describe("exec: command shown on the call, output on the result", () => {
       [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "signal", signal: "SIGTERM" }],
       false,
     );
-    expect(out).toContain("❌");
+    expect(out).toContain("×");
     expect(out).toMatch(/signal/i);
     expect(out).not.toMatch(/exit unknown/i);
   });
@@ -532,7 +532,7 @@ describe("exec: command shown on the call, output on the result", () => {
       [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "spawn-error" }],
       false,
     );
-    expect(out).toContain("❌");
+    expect(out).toContain("×");
     expect(out).toMatch(/spawn error/i);
     expect(out).not.toMatch(/exit unknown/i);
   });
@@ -543,7 +543,7 @@ describe("exec: command shown on the call, output on the result", () => {
       [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "unknown" }],
       false,
     );
-    expect(out).not.toContain("❌");
+    expect(out).not.toContain("×");
     expect(out).toMatch(/unknown/i);
   });
 
@@ -557,7 +557,7 @@ describe("exec: command shown on the call, output on the result", () => {
       ],
       false,
     );
-    expect(out).toContain("❌");
+    expect(out).toContain("×");
     expect(out).toMatch(/signal/i);
     expect(out).toMatch(/unknown/i);
   });
@@ -568,7 +568,7 @@ describe("exec: command shown on the call, output on the result", () => {
       { stdout: "", stderr: "", exitCode: null, outcome: "signal", signal: "SIGTERM" },
       false,
     );
-    expect(out).toContain("❌");
+    expect(out).toContain("×");
     expect(out).toMatch(/signal/i);
   });
 
@@ -629,8 +629,8 @@ describe("exec: command shown on the call, output on the result", () => {
   });
 });
 
-describe("renderSpiderCall verb italics (UI standard)", () => {
-  const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»` };
+describe("renderSpiderCall bold commands (UI standard)", () => {
+  const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => `«${s}»`, italic: (s: string) => `italic(${s})` };
   const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");
   it("identifies the memory subject and operation in control titles", () => {
     expect(call({ action: "control", command: "memory", sub: "status" })).toContain("«control» · memory · status");
@@ -638,7 +638,7 @@ describe("renderSpiderCall verb italics (UI standard)", () => {
     expect(call({ action: "control", command: "doctor" })).toContain("«control» · doctor");
   });
 
-  it("italicises the action verb for every command", () => {
+  it("bolds the action verb for every command", () => {
     expect(call({ action: "remember" })).toContain("«remember»");
     expect(call({ action: "recall" })).toContain("«recall»");
     expect(call({ action: "search" })).toContain("«search»");
@@ -683,12 +683,12 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
     const msg = { details: { name: "tia-2", agent: "worker", model: "github-copilot/gpt-6.2-sol", thinking: "high", status: "failed", tokenCount: 13616326, costText: "0.0 credits", output: "line one\nline two\nline three" } };
     const rows = renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd());
     expect(rows).toEqual([
-      "", " 🕸️ spider · run · tia-2 · worker",
-      "  ❌ failed · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
-      "    ⤴ line one", "    line two", "    … 1 more line", "  ctrl+o to expand output", "",
+      "", " ◆ run · tia-2 · worker",
+      " × failed · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
+      "   ↑ line one", "   line two", "   … 1 more line", " ctrl+o to expand output", "",
     ]);
     const expanded = renderSubagentDone(msg, { expanded: true }, theme).render(120).map(line => line.trimEnd());
-    expect(expanded.slice(3, -1)).toEqual(["    ⤴ line one", "    line two", "    line three"]);
+    expect(expanded.slice(3, -1)).toEqual(["   ↑ line one", "   line two", "   line three"]);
   });
   it.each([["done", "toolSuccessBg"], ["failed", "toolErrorBg"], ["cancelled", "toolPendingBg"]])("paints the %s shell", (status, background) => {
     const out = renderSubagentDone({ ...msg, details: { ...msg.details, status } }, {}, th).render(200).join("\n");
@@ -725,7 +725,7 @@ describe("renderCommandOutput (slash-command transcript message)", () => {
     ["text blocks", [{ type: "text", text: "First line" }, { type: "text", text: "Second line" }]],
   ])("renders %s content without details instead of an empty object", (_kind, content) => {
     const output = renderCommandOutput({ customType: "spider.command", content }, { expanded: true }, {}).render(80).join("\n");
-    expect(output).toContain("spider · command");
+    expect(output).toContain("◆ command");
     expect(output).toContain("First line");
     expect(output).toContain("Second line");
     expect(output).not.toContain("{}");
@@ -737,18 +737,18 @@ describe("renderCommandOutput (slash-command transcript message)", () => {
   ])("collapses and expands %s output with hanging wrapped rows", (_kind, message, title) => {
     const collapsed = renderCommandOutput(message, { expanded: false }, {}).render(30).map(line => line.trimEnd());
     const expanded = renderCommandOutput(message, { expanded: true }, {}).render(30).map(line => line.trimEnd());
-    expect(expanded.join("\n")).toContain(`spider · ${title}`);
+    expect(expanded.join("\n")).toContain(`◆ ${title}`);
     expect(collapsed.join("\n")).toContain("more");
     expect(collapsed.join("\n")).not.toContain("Final line");
     expect(expanded.join("\n")).toContain("Final line");
-    expect(expanded.some(line => /^ {4}\S/.test(line))).toBe(true); // box padding + column 3
+    expect(expanded.some(line => /^ {3}\S/.test(line))).toBe(true); // continuation at column 3
     expect(expanded.every(line => line.length <= 30)).toBe(true);
   });
 
   it("renders themed through the tool renderers (doctor): spider header + tool shell + checks, no raw JSON", () => {
     const msg = { customType: "spider.command", content: "spider doctor", details: { args: { action: "control", command: "doctor" }, result: { ok: true, lines: ["## spider doctor", "- better-sqlite3: loaded (wal)"] } } };
     const out = (renderCommandOutput(msg, { expanded: false }, th).render(120) as string[]).join("\n");
-    expect(out).toContain("spider");            // renderSpiderCall header
+    expect(out).toContain("◆");                 // renderSpiderCall logo
     expect(out).toContain("doctor");            // command in the header
     expect(out).toContain("better-sqlite3: loaded"); // themed doctor body (via renderSpiderResult)
     expect(out).toContain("[toolSuccessBg]");   // painted in the tool-success shell
@@ -770,19 +770,19 @@ describe("renderSpiderCall shows the command while it runs", () => {
   it.each(["exec", "exec_file", "batch"])("%s names the destination in the styled call title", (action) => {
     const args = { action, on: "Alpha.Build.invalid", code: "echo hello", path: "input.txt", commands: [{ code: "echo hello" }] };
     const title = renderSpiderCall(args, titleTheme, {}).render(200)[0];
-    expect(title).toContain(`«⟨toolTitle|${action}⟩» ⟨toolTitle|· on Alpha.Build.invalid⟩`);
+    expect(title).toContain(`⟨toolTitle|**${action}**⟩ ⟨toolTitle|· on Alpha.Build.invalid⟩`);
   });
 
   it.each(["exec", "exec_file", "batch"])("local %s keeps its existing title", (action) => {
     const title = renderSpiderCall({ action }, titleTheme, {}).render(200)[0];
-    expect(title).toBe(`⟨toolTitle|\u{1F578}\uFE0F⟩ ⟨toolTitle|**spider**⟩ ⟨toolTitle|·⟩ «⟨toolTitle|${action}⟩»`);
+    expect(title).toBe(` ⟨toolTitle|◆⟩ ⟨toolTitle|**${action}**⟩`);
   });
 
   it("keeps local title behavior for shared arguments while naming a remote destination", () => {
     const local = renderSpiderCall({ action: "exec", command: "doctor" }, titleTheme, {}).render(200)[0];
     const remote = renderSpiderCall({ action: "exec", command: "doctor", on: "Alpha.Build.invalid" }, titleTheme, {}).render(200)[0];
-    expect(local).toContain("«⟨toolTitle|exec⟩» ⟨toolTitle|· doctor⟩");
-    expect(remote).toContain("«⟨toolTitle|exec⟩» ⟨toolTitle|· on Alpha.Build.invalid⟩");
+    expect(local).toContain("⟨toolTitle|**exec**⟩ ⟨toolTitle|· doctor⟩");
+    expect(remote).toContain("⟨toolTitle|**exec**⟩ ⟨toolTitle|· on Alpha.Build.invalid⟩");
   });
 
   it("does not add the destination to unrelated actions", () => {
@@ -794,7 +794,7 @@ describe("renderSpiderCall shows the command while it runs", () => {
     const args = { action: "exec", on: "Alpha.Build.invalid", code: "echo hello" };
     const msg = { details: { args, result: { details: { stdout: "hello", stderr: "", exitCode: 0 } } } };
     const output = renderCommandOutput(msg, { expanded: false }, {}).render(120).join("\n");
-    expect(output).toContain("spider · exec · on Alpha.Build.invalid");
+    expect(output).toContain("◆ exec · on Alpha.Build.invalid");
     expect(output.match(/Alpha\.Build\.invalid/g)).toHaveLength(1);
     expect(output).toContain("hello");
   });

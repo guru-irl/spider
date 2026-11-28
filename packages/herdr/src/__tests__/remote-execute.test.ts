@@ -214,7 +214,9 @@ describe('remote result adapter', () => {
   }, 20000);
   it('remote previews contain only payload streams and retain the existing host scrub and text cap', async () => {
     const { f, ctx } = await fixture(); const token = 'ghp_' + 'A'.repeat(36); const previews: { text: string; at: number }[] = [];
-    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: `console.log(${JSON.stringify(token)});let n=0;const t=setInterval(()=>{console.log('visible '+n+' '+ 'x'.repeat(3000));if(++n===8)clearInterval(t)},120)` }, { ...ctx, onPartial: text => previews.push({ text: processToolContent(text, { secretScrub: true, injectionScan: false }).content, at: Date.now() }) });
+    // Stamp each preview when it arrives, before the scrub. On a loaded runner one scrub can take several
+    // milliseconds longer than the next, and a stamp taken after it shrinks the gap the throttle left.
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: `console.log(${JSON.stringify(token)});let n=0;const t=setInterval(()=>{console.log('visible '+n+' '+ 'x'.repeat(3000));if(++n===8)clearInterval(t)},120)` }, { ...ctx, onPartial: text => { const at = Date.now(); previews.push({ text: processToolContent(text, { secretScrub: true, injectionScan: false }).content, at }); } });
     expect(previews.length).toBeGreaterThan(1);
     for (const preview of previews) { expect(Buffer.byteLength(preview.text)).toBeLessThanOrEqual(10000); expect(preview.text).not.toContain(token); expect(preview.text).not.toContain('SPIDER_HERDR_READY'); }
     for (let i = 1; i < previews.length - 1; i++) expect(previews[i].at - previews[i - 1].at).toBeGreaterThanOrEqual(95);

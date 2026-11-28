@@ -8,10 +8,11 @@ const fixtures = cardFixtures();
 const styles = ["text", "nerd"] as const satisfies readonly IconStyle[];
 type Fixture = ReturnType<typeof cardFixtures>[number];
 
-/** Validate blank rows and markers after stripping the shell's padding. */
+/** Validate blank rows and markers at their displayed columns. */
 function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" | "groups" | "callDetails" | "itemBoundary" | "taskStarts">, style: IconStyle): Array<[string, string]> {
   const failures: Array<[string, string]> = [];
-  const statusGlyphs = ["✓", "✗", "❓", "○", "●", "◆", "⚠", icon(style, "warning"), icon(style, "failure"), icon(style, "gutter")].map(glyph => glyph.trimEnd());
+  const statusGlyphs = (["success", "question", "open", "running", "active", "warning", "failure"] as const)
+    .flatMap(role => [icon("text", role), icon(style, role)]).map(glyph => glyph.trimEnd());
   for (const [i, line] of body.entries()) {
     if (!line) {
       if (i === 0 || i === body.length - 1 || !body[i - 1] || !body[i + 1]) failures.push(["doubled spacer", String(i)]);
@@ -20,9 +21,9 @@ function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" |
       if (!callGap && !itemGap && fixture.verb !== "escalation") failures.push(["blank inside item", `${i}: ${body[i + 1] ?? "<end>"}`]);
       continue;
     }
-    if (!/^ {1}(?:\S| {2}\S)/u.test(line)) failures.push(["columns", line]);
+    const columns = style === "nerd" ? /^ {1}(?:\S| {2}\S| {3}\S)/u : /^ {1}(?:\S| {2}\S)/u;
+    if (!columns.test(line)) failures.push(["columns", line]);
     const marker = line.trimStart();
-    // Nerd task and gutter share a glyph. Only the fixture's actual task text is exempt.
     const taskText = marker.startsWith(icon(style, "task")) ? marker.slice(icon(style, "task").length).trimStart().replace(/…$/u, "").trimEnd() : "";
     const nerdTask = fixture.verb === "run" && style === "nerd" && taskText && fixture.taskStarts?.some(task => task.startsWith(taskText));
     const restartAnnotation = fixture.name === "control config list" && marker.startsWith(`${icon(style, "warning")}restart`);
@@ -33,19 +34,21 @@ function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" |
 
 const galleryPath = process.env.SPIDER_CARD_GALLERY;
 if (galleryPath) {
-  const sections = fixtures.map(({ name, render }) =>
-    `### ${name}\n\n${render(90, false, "text").map(line => stripTerminalSequences(line).trimEnd()).join("\n")}`,
-  );
+  const sections = styles.flatMap(style => fixtures.map(({ name, render }) =>
+    `### ${name} (${style})\n\n${render(90, false, style).map(line => stripTerminalSequences(line).trimEnd()).join("\n")}`,
+  ));
   writeFileSync(galleryPath, sections.join("\n\n") + "\n");
 }
 
 test("layout checks reject misplaced glyphs and invalid blank rows", () => {
   const single = { name: "probe", verb: "run", groups: 1, callDetails: false };
   for (const style of styles) {
-    for (const glyph of ["✓", icon(style, "warning"), icon(style, "failure"), icon(style, "gutter")]) {
+    for (const glyph of ["✓", icon(style, "warning"), icon(style, "failure")]) {
       expect(bodyViolations([`   ${glyph} misplaced`], single, style)).toContainEqual(["glyph column", `   ${glyph} misplaced`]);
     }
   }
+  expect(bodyViolations(["    continuation"], single, "text")).toContainEqual(["columns", "    continuation"]);
+  expect(bodyViolations(["    continuation"], single, "nerd")).toEqual([]);
   expect(bodyViolations([" item", "", " detail"], single, "text").map(([rule]) => rule)).toContain("blank inside item");
   expect(bodyViolations([" item", "", "", " next"], single, "text").map(([rule]) => rule)).toContain("doubled spacer");
   expect(bodyViolations([" item", ""], single, "text").map(([rule]) => rule)).toContain("doubled spacer");
@@ -56,12 +59,36 @@ test("layout checks reject misplaced glyphs and invalid blank rows", () => {
   expect(bodyViolations([" ⚠ warning", "", "   paragraph"], { ...single, verb: "escalation" }, "text")).toEqual([]);
 });
 
+test("command details align with the title without a marker in both styles", () => {
+  const fixture = fixtures.find(f => f.name === "exec")!;
+  for (const style of styles) {
+    const [title, detail] = fixture.render(120, false, style).map(stripTerminalSequences);
+    expect(detail).not.toContain("└");
+    expect(visibleWidth(title.slice(0, title.indexOf("exec")))).toBe(visibleWidth(detail.slice(0, detail.indexOf("sqlite3"))));
+  }
+});
+
+test("Nerd Font todos use circled pending and completed markers", () => {
+  const output = fixtures.find(f => f.name === "todo list")!.render(120, false, "nerd").map(stripTerminalSequences).join("\n");
+  expect(output).toContain("\u{F0766}  #935");
+  expect(output).toContain("\u{F05E1}  #936");
+});
+
+test("agent roles are italic in run rows and notification titles", () => {
+  for (const style of styles) {
+    for (const name of ["run single", "notification: run finished", "notification: escalation"]) {
+      const output = fixtures.find(f => f.name === name)!.render(120, true, style).join("\n");
+      expect(output).toContain("\x1b[3m\x1b[36mworker\x1b[39m\x1b[23m");
+    }
+  }
+});
+
 test.each([
   ["exec detached", "detached", "exit.json"],
   ["exec timeout", "timed out", "exit 1"],
   ["exec signal", "signal SIGTERM", "exec"],
   ["exec stderr", "warning: missing file", "ready"],
-  ["run no name", "failed · worker ·", "⤴"],
+  ["run no name", "failed · worker ·", "↑"],
   ["run thinking notice", "thinking capped to high", "running"],
   ["message remote refusal", "→ subagent · refused", "owning database"],
   ["message unavailable", "recipient unavailable", "Recipient is unavailable"],
@@ -75,12 +102,12 @@ test.each([
   ["control config errors", "Invalid configuration", "ui.icons"],
   ["control upstream-watch candidates", "Fix packaging", "1 candidates"],
   ["control upstream-watch marked", "Marked superpowers", "2a8368ee"],
-  ["notification: run no name", "run · worker", "⤴ Finished"],
+  ["notification: run no name", "run · worker", "↑ Finished"],
   ["notification: chain stopped", "chain stopped at step 2 of 3", "provider failed"],
   ["notification: organism partial", "partial", "Review timed out"],
   ["notification: organism failed", "failed", "Review failed"],
-  ["notification: escalation blocked", "❌ blocked", "The rebuild"],
-  ["notification: escalation question", "❓ question", "The rebuild"],
+  ["notification: escalation blocked", "× blocked", "The rebuild"],
+  ["notification: escalation question", "? question", "The rebuild"],
   ["run paragraph breaks", "Read the logs", "Manifest missing"],
   ["search paragraph breaks", "Check files before upload", "Check the manifest after building"],
   ["loop paragraphs", "Loop check-release", "Next check is scheduled"],
@@ -113,28 +140,40 @@ for (const fixture of fixtures) {
           const rendered = fixture.render(width, expanded, style);
           for (const line of rendered) check("width", visibleWidth(line) <= width, stripTerminalSequences(line));
           const plain = rendered.map(line => stripTerminalSequences(line).trimEnd());
-          const titleIndex = plain.findIndex(Boolean);
-          const pad = fixture.notification ? 1 : 0;
-          const title = plain[titleIndex]?.slice(pad) ?? "";
-          const titlePrefix = `${icon(style, "spider")} spider · ${fixture.verb}`;
+          const titleIndex = fixture.notification ? 1 : plain.findIndex(Boolean);
+          // Raw tool fixtures use their own lead cell; notifications get it from the box.
+          const title = plain[titleIndex]?.slice(1) ?? "";
+          const titlePrefix = `${icon(style, "spider")} ${fixture.verb}`;
           // The full escalation title cannot fit in 20 columns even without its subject.
           if (width >= 30) {
             check("title", title === titlePrefix || title.startsWith(`${titlePrefix} `), title);
-            check("italic verb", Boolean(rendered[titleIndex]?.includes(`\x1b[3m\x1b[36m${fixture.verb}\x1b[39m\x1b[23m`)), title);
+            check("title has no spider", !/\bspider\b/iu.test(title), title);
+            check("bold command", Boolean(rendered[titleIndex]?.includes(`\x1b[1m${fixture.verb}\x1b[22m`)), title);
           }
-          if (fixture.notification) check("one-spacer", titleIndex === 1, `${titleIndex} blank rows`);
+          for (const line of rendered) {
+            check("no pictographs", !/\p{Extended_Pictographic}/u.test(stripTerminalSequences(line)), stripTerminalSequences(line));
+            for (const match of line.matchAll(/\x1b\[3m(.*?)\x1b\[23m/gu)) {
+              const italic = stripTerminalSequences(match[1]);
+              check("only agent roles italic", /^(worker|reviewer|scout)$/u.test(italic), italic);
+            }
+          }
+          if (fixture.notification) {
+            check("half edges", plain[0] === "▄".repeat(width) && plain.at(-1) === "▀".repeat(width));
+            check("title follows top edge", Boolean(title));
+          }
           else check("title starts at top", titleIndex === 0, `${titleIndex} blank rows`);
-          const body = plain.slice(titleIndex + 1, fixture.notification ? -1 : undefined).map(line => line.slice(pad));
+          const body = plain.slice(titleIndex + 1, fixture.notification ? -1 : undefined);
           if (!fixture.callDetails && !fixture.callOnly) check("blank-under-title", Boolean(body[0]));
           if (fixture.callDetails) {
             const gap = body.indexOf("");
             check("call separator", fixture.callOnly ? gap === -1 : gap > 0 && Boolean(body[gap + 1]));
             const commandRows = gap === -1 ? body : body.slice(0, gap);
-            check("command gutter", commandRows[0]?.startsWith(` ${icon(style, "gutter")}`) === true, commandRows[0]);
+            check("command indent", commandRows[0]?.startsWith(" ".repeat(visibleWidth(` ${icon(style, "spider")} `))) === true, commandRows[0]);
           }
           for (const [rule, sample] of bodyViolations(body, fixture, style)) check(rule, false, sample);
           for (const line of plain) {
             check("no-bar", !line.includes("│"), line);
+            check("no-gutter", !line.includes("└"), line);
             for (const id of fixture.runIds) check("no-ids", !line.includes(id) && !line.includes(id.slice(0, 8)), line);
             if (fixture.groups === 1) check("no-single-rule", !line.includes("──"), line);
           }

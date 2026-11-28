@@ -41,7 +41,8 @@ function cells(line: string): Array<{ text: string; bg: string | undefined }> {
 function checkCard(rows: string[], width: number, background = BG) {
   for (const row of rows) {
     expect(visibleWidth(row)).toBe(width);
-    expect(cells(row).map((cell) => cell.bg)).toEqual(Array(width).fill(background));
+    const halfEdge = /^[▄▀]+$/u.test(stripTerminalSequences(row));
+    expect(cells(row).map((cell) => cell.bg)).toEqual(Array(width).fill(halfEdge ? undefined : background));
   }
 }
 
@@ -109,25 +110,38 @@ describe("card background through the right edge", () => {
       checkCard(rows, 30, backgrounds[token]);
     }
     const failed = renderCommandOutput({ details: { args: { action: "unknown" }, result: { isError: true, details: { error: "failure\x1b[0m " + "details ".repeat(20) } } } }, {}, distinct).render(30);
+    expect(failed[0]).toBe(`\x1b[38;5;162m${"▄".repeat(30)}\x1b[39m`);
+    expect(failed.at(-1)).toBe(`\x1b[38;5;162m${"▀".repeat(30)}\x1b[39m`);
     checkCard(failed, 30, backgrounds.toolErrorBg);
     for (const [severity, marker, token] of [
-      ["blocked", "❌ blocked", "toolErrorBg"],
-      ["question", "❓ question", "toolPendingBg"],
-      ["warning", "⚠️ warning", "toolPendingBg"],
-      ["unexpected", "⚠️ warning", "toolPendingBg"],
+      ["blocked", "× blocked", "toolErrorBg"],
+      ["question", "? question", "toolPendingBg"],
+      ["warning", "▲ warning", "toolPendingBg"],
+      ["unexpected", "▲ warning", "toolPendingBg"],
     ]) {
       const message = { details: { runId: "beb58fc6-193f-4247-bb38-c59612f6985d", severity, name: "tia-3", agent: "worker", summary: "short" } };
       const rows = renderEscalationMessage(message, {}, distinct).render(80);
       checkCard(rows, 80, backgrounds[token]);
       const plain = rows.map(row => stripTerminalSequences(row).trimEnd());
-      expect(plain[1]).toBe(" 🕸️ spider · escalation · tia-3 · worker");
-      expect(plain[2]).toBe(`  ${marker} · short`);
+      expect(plain[1]).toBe(" ◆ escalation · tia-3 · worker");
+      expect(plain[2]).toBe(` ${marker} · short`);
       expect(plain.join("\n")).not.toContain("beb58fc6");
     }
     const pending = renderCommandOutput({ details: { args: { action: "message", to: "peer" }, result: { details: { delivered: false, queued: true, delivery: "queued" } } } }, {}, distinct).render(60);
     checkCard(pending, 60, backgrounds.toolPendingBg);
     const done = renderSubagentDone({ details: { status: "failed", name: "worker", output: "failure ".repeat(20) } }, {}, distinct).render(30);
     checkCard(done, 30, backgrounds.toolErrorBg);
+  });
+
+  it("keeps Nerd question notifications out of the error palette", () => {
+    const colors: string[] = [];
+    const themed = { ...theme, fg: (token: string, text: string) => { colors.push(token); return text; }, bg: (token: string, text: string) => token === "toolPendingBg" ? `\x1b[${BG}m${text}\x1b[49m` : `\x1b[48;5;1m${text}\x1b[49m` };
+    const message = { details: { severity: "question", name: "tia-3", agent: "worker", summary: "short" } };
+    const rows = renderEscalationMessage(message, {}, themed, "nerd").render(80);
+    checkCard(rows, 80);
+    expect(rows.map(stripTerminalSequences).join("\n")).toContain("\u{F02D6}  question");
+    expect(colors).toContain("warning");
+    expect(colors).not.toContain("error");
   });
 
   it.each([0, 3])("uses Pi's notification padding of %i", (outputPad) => {
@@ -141,7 +155,7 @@ describe("card background through the right edge", () => {
     for (const component of renderers) {
       const rows = component.render(60);
       checkCard(rows, 60);
-      const firstText = rows.map(stripTerminalSequences).find(line => line.trim())!;
+      const firstText = rows.slice(1, -1).map(stripTerminalSequences).find(line => line.trim())!;
       expect(firstText.match(/^ */)?.[0].length).toBe(outputPad);
     }
   });
@@ -152,8 +166,8 @@ describe("card background through the right edge", () => {
       const rows = renderEscalationMessage({ details: { runId: "identifier-" + "x".repeat(100), severity: "warning", name: "worker-" + "n".repeat(100), summary } }, { expanded }, theme).render(width);
       checkCard(rows, width);
       const text = rows.map((row) => stripTerminalSequences(row).trim());
-      expect(text[2]).toMatch(/^⚠️ warning · /u);
-      const body = text.slice(2, -1).join(" ").replace(/^⚠️ warning · /u, "");
+      expect(text[2]).toMatch(/^▲ warning · /u);
+      const body = text.slice(2, -1).join(" ").replace(/^▲ warning · /u, "");
       expect(body.replace(/\s+/gu, " ").trim()).toBe(summary.replace(/\s+/gu, " "));
       expect(text.join("\n")).not.toContain("identifier-");
     }
@@ -164,7 +178,7 @@ describe("card background through the right edge", () => {
     const rows = renderEscalationMessage({ details: { runId: "id", severity: "question", name: "worker", summary } }, {}, theme).render(width);
     checkCard(rows, width);
     const visible = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, "").trim());
-    const body = visible.slice(2, -1).join("").replace(/^❓ question · /u, "");
+    const body = visible.slice(2, -1).join("").replace(/^\? question · /u, "");
     expect(body).toBe(summary);
   });
 

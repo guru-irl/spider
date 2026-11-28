@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { paths } from "@spider/db-core";
+import { controlConfig } from "../../control.js";
 import { UsageRuntime as RealUsageRuntime } from "../runtime.js";
 import { mountUsage, registerUsage } from "../mount.js";
 import type { UsageRuntime } from "../runtime.js";
@@ -19,6 +20,7 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
   let entries: unknown[] = [assistant("a", 100)]; let file = "fixture-a.jsonl";
   const events = new Map<string, Set<(event: unknown, ctx: ExtensionContext) => void>>();
   let footer: Footer | undefined;
+  const setWorkingVisible = vi.fn();
   const unsubBranch = vi.fn(); const requestRender = vi.fn();
   const theme = { fg: (_name: string, text: string) => text } as Theme;
   const data: ReadonlyFooterDataProvider = { getGitBranch: () => "fixture", getExtensionStatuses: () => new Map([["fixture", "status"]]), getAvailableProviderCount: () => 1, onBranchChange: () => unsubBranch };
@@ -27,14 +29,14 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
   });
   const getEntries = vi.fn(() => [...entries]); const getBranch = vi.fn(() => entries.slice(0, 1));
   const registry = { getProvider: vi.fn(() => ({ auth: { oauth: { isSubscription: true } } })), isUsingOAuth: vi.fn(() => true) };
-  const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", cwd: "/fixture/project", sessionManager: { getEntries, getBranch, getSessionFile: () => file, getSessionId: () => file }, ui: { setFooter, setWidget: vi.fn(), notify: vi.fn() }, model: { id: "gpt-6.1-sol", provider: "github-copilot", contextWindow: 100000, reasoning: true }, modelRegistry: registry, getContextUsage: vi.fn(() => ({ percent: 25, tokens: 25000, contextWindow: 100000 })), thinkingLevel: "high" } as unknown as ExtensionContext;
+  const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", cwd: paths.globalRoot, sessionManager: { getEntries, getBranch, getSessionFile: () => file, getSessionId: () => file }, ui: { setFooter, setWorkingVisible, setWidget: vi.fn(), notify: vi.fn() }, model: { id: "gpt-6.1-sol", provider: "github-copilot", contextWindow: 100000, reasoning: true }, modelRegistry: registry, getContextUsage: vi.fn(() => ({ percent: 25, tokens: 25000, contextWindow: 100000 })), thinkingLevel: "high" } as unknown as ExtensionContext;
   const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => {
     if (!events.has(name)) events.set(name, new Set()); events.get(name)!.add(handler);
     return () => events.get(name)?.delete(handler);
   }, getSessionName: () => "fixture name", getThinkingLevel: () => "high" } as unknown as ExtensionAPI;
   let snapshot: UsageRuntimeSnapshot = { health: null, counter: null, reconciliation: null, backfill: "pending", errorCode: null };
   const runtime = { snapshot: () => snapshot, configure: vi.fn(), refresh: vi.fn() } as unknown as UsageRuntime;
-  return { pi, ctx, runtime, setFooter, getEntries, getBranch, registry, unsubBranch, requestRender,
+  return { pi, ctx, runtime, setFooter, setWorkingVisible, getEntries, getBranch, registry, unsubBranch, requestRender,
     append: (entry: unknown) => entries.push(entry), replace: (next: unknown[], nextFile = file) => { entries = next; file = nextFile; },
     counter: (creditsUsed: number, ts = Date.now()) => { snapshot = { ...snapshot, counter: { availability: "available", role: "owner", lastAttemptAt: ts, lastSuccessAt: ts, nextPollAt: ts + 600000, snapshotAgeMs: 0, errorCode: null, notice: null, latest: { creditsUsed, entitlement: 100, ts, resetDate: new Date(Date.UTC(new Date().getUTCFullYear(),new Date().getUTCMonth()+1,1)).toISOString().slice(0,10), raw: {} } } }; },
     month: (used:number|null, ago=0) => { const d=new Date(Date.now()); snapshot={...snapshot,monthUsed:used,monthPeriod:{start:Date.UTC(d.getUTCFullYear(),d.getUTCMonth()-ago,1),end:Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1-ago,1)}}; },
@@ -44,7 +46,10 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
     render: (width = 200) => footer!.render(width), invalidate: () => footer!.invalidate(), listenerCount: () => [...events.values()].reduce((n, set) => n + set.size, 0) };
 }
 let mounted: ReturnType<typeof mountUsage> | undefined;
-beforeEach(() => { vi.useFakeTimers(); });
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.spyOn(paths, "projectRoot").mockReturnValue(paths.globalRoot);
+});
 afterEach(() => { mounted?.dispose(); mounted = undefined; vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 function mount(f: ReturnType<typeof fixture>) { return mounted = mountUsage(f.pi, f.ctx, f.runtime, config); }
 describe("public usage footer mount", () => {
@@ -52,6 +57,90 @@ describe("public usage footer mount", () => {
     const f = fixture(); mount(f);
     expect(f.render().join("\n")).toMatch(/credits/g); expect(f.render().join("\n")).not.toMatch(/\$/);
     expect(f.render(40)[0]).toMatch(/gpt-6.1-sol.*high/);
+  });
+  it("takes over Pi's working row once and renders only at activity-frame boundaries", () => {
+    vi.stubEnv("HC_TERMINAL_ID", "");
+    const f = fixture(); mount(f);
+    expect(f.setWorkingVisible.mock.calls).toEqual([[false]]);
+    expect(f.render()[1]).toMatch(/^○  25.0%/);
+    f.requestRender.mockClear();
+    f.emit("agent_start");
+    expect(f.render()[1]).toMatch(/^◐  25.0%/);
+    expect(f.requestRender).toHaveBeenCalledTimes(1);
+    f.getEntries.mockClear();
+    vi.advanceTimersByTime(249); expect(f.requestRender).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1); expect(f.requestRender).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(500); expect(f.requestRender).toHaveBeenCalledTimes(4);
+    expect(f.render()[1]).toMatch(/^◒  25.0%/);
+    expect(f.getEntries).not.toHaveBeenCalled();
+    f.emit("agent_end");
+    expect(f.render()[1]).toMatch(/^○  25.0%/);
+    f.requestRender.mockClear();
+    vi.advanceTimersByTime(1000); expect(f.requestRender).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1); // Usage snapshots still refresh once a second.
+  });
+  it("animates when mounted mid-run and starts idle after switching to an idle session", () => {
+    const f = fixture();
+    const isIdle = vi.fn(() => false);
+    f.ctx.isIdle = isIdle;
+    mount(f);
+    expect(f.render()[1]).toMatch(/^◐  25.0%/);
+    vi.advanceTimersByTime(250);
+    expect(f.render()[1]).toMatch(/^◓  25.0%/);
+    isIdle.mockReturnValue(true);
+    f.replace([], "fixture-idle.jsonl");
+    f.emit("session_start", { reason: "resume" });
+    expect(f.render()[1]).toMatch(/^○  25.0%/);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+  it("restores Pi's working row and leaves a replacement footer alone", () => {
+    const f = fixture(); mount(f);
+    f.emit("agent_start");
+    const replacement = { render: () => ["Another extension"], invalidate() {}, dispose: vi.fn() };
+    f.ctx.ui.setFooter(() => replacement);
+    expect(f.setWorkingVisible.mock.calls).toEqual([[false], [true]]);
+    expect(f.unsubBranch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(2000);
+    f.emit("session_shutdown", { reason: "reload" });
+    expect(f.setFooter).toHaveBeenCalledTimes(2);
+    expect(f.render()).toEqual(["Another extension"]);
+    expect(replacement.dispose).not.toHaveBeenCalled();
+  });
+  it("requests each Nerd frame once, including the boundary shared with the usage tick", () => {
+    const f = fixture();
+    controlConfig("set", f.ctx.cwd, "ui.icons", "nerd");
+    try {
+      mount(f);
+      f.render();
+      f.emit("agent_start");
+      f.requestRender.mockClear();
+      vi.advanceTimersByTime(999);
+      expect(f.requestRender).toHaveBeenCalledTimes(13); // 14 frames a second (user, 2026-11-28)
+      vi.advanceTimersByTime(1);
+      expect(f.requestRender).toHaveBeenCalledTimes(14);
+    } finally { controlConfig("unset", f.ctx.cwd, "ui.icons"); }
+  });
+  it("leaves Pi's row alone until mounted and stops the active timer on disable, reload and shutdown", () => {
+    const f = fixture();
+    mounted = mountUsage(f.pi, f.ctx, f.runtime, { ...config, footer: false });
+    f.emit("agent_start");
+    expect(f.setWorkingVisible).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    mounted.configure(config);
+    expect(vi.getTimerCount()).toBe(2);
+    mounted.configure({ ...config, footer: false });
+    expect(f.setWorkingVisible.mock.calls).toEqual([[false], [true]]);
+    expect(vi.getTimerCount()).toBe(0);
+    mounted.configure(config);
+    f.emit("session_start", { reason: "reload" });
+    expect(f.setWorkingVisible.mock.calls).toEqual([[false], [true], [false], [true], [false]]);
+    expect(vi.getTimerCount()).toBe(1);
+    f.emit("agent_start");
+    expect(vi.getTimerCount()).toBe(2);
+    f.emit("session_shutdown", { reason: "reload" });
+    expect(f.setWorkingVisible).toHaveBeenLastCalledWith(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
   it("footer false restores pi with setFooter(undefined) and leaves the agents widget alone", () => {
     const f = fixture(); mount(f); mounted!.configure({ ...config, footer: false });
@@ -199,7 +288,6 @@ it("omits the month item when the worker published a previous billing period",()
 it("session registration passes the pi identity to the runtime that owns the worker", async () => {
   const f = fixture("print"), id = "fixture-pi-session";
   f.ctx.sessionManager.getSessionId = () => id;
-  vi.spyOn(paths, "projectRoot").mockReturnValue(paths.globalRoot);
   let captured: string | null | undefined;
   vi.spyOn(RealUsageRuntime.prototype, "start").mockImplementation(function(this: RealUsageRuntime) {
     captured = (this as unknown as { options: { sessionId?: string | null } }).options.sessionId;

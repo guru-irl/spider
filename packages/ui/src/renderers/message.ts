@@ -1,19 +1,18 @@
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { icon as uiIcon } from "../icons.js";
-import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
+import { cardDetailIndent, fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { MessageDetails, RenderCtx } from "./types.js";
 
 function arrow(verb: MessageDetails["verb"], theme: RenderCtx["theme"]): string {
   switch (verb) {
-    case "send": return "→";
-    case "ask": return "→?";
+    case "send": return uiIcon(theme.iconStyle, "message");
+    case "ask": return `${uiIcon(theme.iconStyle, "message").trimEnd()}?`;
     case "reply": return uiIcon(theme.iconStyle, "reply");
     case "broadcast": return uiIcon(theme.iconStyle, "broadcast");
   }
 }
 
-/** RESULT body (no header — the spider call line already shows `🕸 spider · message`).
- *  The status starts directly under the title. */
+/** RESULT body. The call line supplies the title; the status starts directly beneath it. */
 export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
   const expanded = ctx.expanded === true;
@@ -32,18 +31,18 @@ export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): st
   const head = ` ${icon} ${theme.fg("muted", `${arrow(details.verb, theme)} ${target}`)} ${theme.fg("dim", "·")} ${theme.fg("muted", status)}`;
   const out = [trim(head, width, "")];
   const body = expanded ? details.body ?? "" : (details.body ?? "").replace(/\s+/g, " ").trim();
-  if (body) out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", body)}`, width, ""));
+  if (body) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("toolOutput", body)}`, width, ""));
   if (details.error) {
     if (details.delivery === "unavailable" || details.delivery === "refused") {
       const lines = details.error.split("\n");
       const shown = expanded ? lines : lines.slice(0, 1);
       const rows = fitResultLines(shown.map((line, i) =>
-        ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg(i === 0 ? "error" : "toolOutput", line)}`), width, true, 3);
+        `${cardDetailIndent(theme.iconStyle)}${theme.fg(i === 0 ? "error" : "toolOutput", line)}`), width, true, 3);
       out.push(...(expanded ? rows : rows.slice(0, 4)));
     }
     else {
       const lines = expanded ? details.error.split("\n") : wrapTextWithAnsi(details.error.replace(/\s+/g, " ").trim(), Math.max(1, width - 3)).slice(0, 4);
-      for (const line of lines) out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", line)}`, width, ""));
+      for (const line of lines) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("toolOutput", line)}`, width, ""));
     }
   }
   return fitResultLines(out, width, expanded, 3);

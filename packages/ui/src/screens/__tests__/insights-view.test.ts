@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { renderInsights } from "../insights-view.js";
 import type { ThemeAdapter } from "../../agents/types.js";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
 
@@ -25,6 +25,22 @@ describe("renderInsights", () => {
     expect(lines.join("\n")).toMatch(/TDD/);
     expect(lines.join("\n")).toMatch(/skill:tdd.*→.*mem:u1|mem:u1.*→.*skill:tdd/);
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
+  });
+
+  it.each(["text", "nerd"] as const)("aligns both transcript overflow counts with item labels in %s", iconStyle => {
+    const nodes = Array.from({ length: 10 }, (_, i) => ({ id: `n${i}`, label: `Label ${i}`, kind: i % 2 ? "skill" : "memory" }));
+    const edges = Array.from({ length: 7 }, (_, i) => ({ source: `n${i}`, target: "n9" }));
+    const theme: ThemeAdapter = { ...id, iconStyle, fg: (_token, text) => `\x1b[34m${text}\x1b[39m` };
+    const rows = renderInsights({ nodes, edges, stats: { nodes: nodes.length, edges: edges.length, linkedPct: 0 } }, theme, 80, false, true)
+      .map(stripTerminalSequences);
+    const column = (needle: string) => {
+      const row = rows.find(row => row.includes(needle));
+      expect(row).toBeDefined();
+      return visibleWidth(row!.slice(0, row!.indexOf(needle)));
+    };
+    expect(column("Label 0")).toBe(column("Label 1"));
+    expect(column("… 2 more")).toBe(column("Label 0"));
+    expect(column("… 1 more")).toBe(column("Label 0"));
   });
 
   it("collapses the node list when not expanded and never throws on an empty graph", () => {

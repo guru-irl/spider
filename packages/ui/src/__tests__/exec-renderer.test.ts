@@ -6,12 +6,12 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
 
 describe("exec renderer", () => {
-  it.each([false, true])("puts the command in column 1, with a two-line collapsed preview (expanded=%s)", expanded => {
+  it.each([false, true])("aligns under the command title, with a two-line collapsed preview (expanded=%s)", expanded => {
     const commands = Array.from({ length: 8 }, (_, i) => `echo line ${i + 1}`);
     const lines = renderExecCall({ kind: "batch", commands }, { theme: id, width: 40, expanded });
-    expect(lines[0]).toBe("🕸️ spider · batch");
-    expect(lines.slice(1)).toEqual(expanded ? commands.map(command => ` ⎿ ${command}`)
-      : [" ⎿ echo line 1", " ⎿ echo line 2", " ⎿ … +6 more lines"]);
+    expect(lines[0]).toBe(" ◆ batch");
+    expect(lines.slice(1)).toEqual(expanded ? commands.map(command => `   ${command}`)
+      : ["   echo line 1", "   echo line 2", "   … +6 more lines"]);
     expect(lines.every(line => visibleWidth(line) <= 40)).toBe(true);
   });
   it("result body carries ✓/exit/lines and the indexed note — but NOT a repeated 🕸 spider header", () => {
@@ -27,12 +27,12 @@ describe("exec renderer", () => {
     expect(text).toMatch(/shell:ls|2 chunks/);
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
   });
-  it("collapsed preview shows one line + more-indicator and the ❌ fail path", () => {
+  it("collapsed preview shows one line + more-indicator and the × fail path", () => {
     const lines = renderExecResult({
       kind: "exec", commands: ["ls"], ok: false, exitCode: 1, outLines: 5, preview: ["x", "y", "z"],
     }, { theme: id, width: 40, expanded: false });
     const text = lines.join("\n");
-    expect(text).toContain("❌");
+    expect(text).toContain("×");
     expect(text).toMatch(/more/);
   });
 
@@ -45,7 +45,7 @@ describe("exec renderer", () => {
       expect(output).not.toContain("echo done");
     }
     const call = renderExecCall(details, { theme: id, width: 60, expanded: true });
-    expect(call.slice(1)).toEqual([" ⎿ cd /x", " ⎿ npm test", " ⎿ echo done"]);
+    expect(call.slice(1)).toEqual(["   cd /x", "   npm test", "   echo done"]);
   });
 
   it("a detached result never renders exit 0 / ✓ — it shows detached/exit unknown plus the log and receipt paths", () => {
@@ -88,12 +88,12 @@ describe("exec renderer", () => {
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(80);
   });
 
-  it("M-c: a genuinely unknown exit code (not `detached`, e.g. a resolved batch entry) renders as neutral UNKNOWN, never as a failure (❌)", () => {
+  it("M-c: a genuinely unknown exit code (not `detached`, e.g. a resolved batch entry) renders as neutral UNKNOWN, never as a failure (×)", () => {
     const lines = renderExecResult({
       kind: "batch", commands: ["a", "b"], ok: false, exitCode: null, outLines: 2, preview: ["out-a"],
     }, { theme: id, width: 60, expanded: false });
     const text = lines.join("\n");
-    expect(text).not.toContain("❌");
+    expect(text).not.toContain("×");
     expect(text).toMatch(/unknown/i);
   });
 
@@ -103,7 +103,7 @@ describe("exec renderer", () => {
       outLines: 1, preview: ["a"],
     }, { theme: id, width: 60, expanded: false });
     const text = lines.join("\n");
-    expect(text).toContain("❌");
+    expect(text).toContain("×");
     expect(text).toMatch(/signal SIGKILL/i);
     expect(text).not.toMatch(/exit unknown/i);
   });
@@ -114,7 +114,7 @@ describe("exec renderer", () => {
       unknownCount: 1, outLines: 0, preview: [],
     }, { theme: id, width: 60, expanded: false });
     const text = lines.join("\n");
-    expect(text).toContain("❌");
+    expect(text).toContain("×");
     expect(text).toMatch(/signal SIGTERM/i);
     expect(text).toMatch(/1 unknown/i);
   });
@@ -129,7 +129,7 @@ describe("exec renderer", () => {
       failures: ["exit 2", "signal SIGKILL"], outLines: 1, preview: ["x"],
     }, { theme: id, width: 60, expanded: false });
     const text = lines.join("\n");
-    expect(text).toContain("❌");
+    expect(text).toContain("×");
     expect(text).toMatch(/exit 2/);
     expect(text).toMatch(/signal SIGKILL/);
     expect(text).not.toMatch(/exit unknown/i);

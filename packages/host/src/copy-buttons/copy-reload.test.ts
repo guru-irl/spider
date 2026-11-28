@@ -34,9 +34,9 @@ async function copyText(assistant: AssistantMessageComponent): Promise<void> {
   md.render(90);
   (md as Component).handleMouse?.(event);
   const lines = md.render(90).map(stripTerminalSequences);
-  const y = lines.findIndex(line => line.includes("⧉ text"));
+  const y = lines.findIndex(line => line.includes("□ text"));
   expect(y).toBeGreaterThanOrEqual(0);
-  const x = visibleWidth(lines[y].slice(0, lines[y].indexOf("⧉ text")));
+  const x = visibleWidth(lines[y].slice(0, lines[y].indexOf("□ text")));
   expect((md as Component).handleMouse?.({ ...event, type: "click", button: "left", x, y, screenX: x, screenY: y })).toEqual({ handled: true });
   await Promise.resolve();
 }

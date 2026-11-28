@@ -1,5 +1,4 @@
-import { icon as uiIcon } from "../icons.js";
-import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
+import { cardDetailIndent, fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { RenderCtx } from "./types.js";
 
 export interface KillResultLine {
@@ -12,7 +11,7 @@ export interface KillResultLine {
 }
 export interface KillDetails { killed: KillResultLine[]; requested: string; error?: string }
 
-/** RESULT body (no header — the spider call line already shows `🕸 spider · kill`). */
+/** RESULT body. The call line supplies the title. */
 export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
   const expanded = ctx.expanded === true;
@@ -45,10 +44,10 @@ export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[]
       width, "",
     ));
     if (r.lastActivity) {
-      out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", `was: ${r.lastActivity}`)}`, width, ""));
+      out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("toolOutput", `was: ${r.lastActivity}`)}`, width, ""));
     }
     if (r.error) {
-      out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("error", `error: ${r.error}`)}`, width, ""));
+      out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("error", `error: ${r.error}`)}`, width, ""));
     }
   }
   return fitResultLines(out, width, expanded, 3);

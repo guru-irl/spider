@@ -714,12 +714,13 @@ it.each([false, true])("never resends an ask after a lost acknowledgement (reply
   expect((await backup.poll(0)).ready.ok).toBe(true);
   const primaryHeld = f.poll(20_000), backupHeld = backup.poll(20_000);
   const submit = relayBroker.submitV0Relay;
-  const ret = Promise.withResolvers<RelayResult>();
+  let observePrimaryResult!: (result: RelayResult) => void;
+  const primaryResult = new Promise<RelayResult>(resolve => { observePrimaryResult = resolve; });
   const offers: string[] = [];
   vi.spyOn(relayBroker, "submitV0Relay").mockImplementation(async (...args) => {
     offers.push(args[1]);
     const result = await submit(...args);
-    if (args[1] === RELAY) ret.resolve(result);
+    if (args[1] === RELAY) observePrimaryResult(result);
     return result;
   });
   const ask = await askPlan(f);
@@ -728,7 +729,7 @@ it.each([false, true])("never resends an ask after a lost acknowledgement (reply
   expect(await f.forward(taken)).toMatchObject({ attempted: true, outcome: { kind: "socket_delivered", id: "ask-lost" } });
   // The real recipient has the question, but the hold-0 result never reaches the origin.
   await stopPrimary(f);
-  expect(await ret.promise).toMatchObject({ attempted: true, outcome: { kind: "unknown", id: "ask-lost" } });
+  expect(await primaryResult).toMatchObject({ attempted: true, outcome: { kind: "unknown", id: "ask-lost" } });
   const links = await listV0RelayLinks(f.sender.agentDir);
   expect(links.find(link => link.relay.machineId === RELAY)).toMatchObject({ messagesCarried: 0 });
   expect(offers).toEqual([RELAY]);

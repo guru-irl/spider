@@ -138,7 +138,8 @@ export async function beginV0RelayAsk(agentDir: string, input: V0RelayAskInput, 
   const askMs = Math.min(input.timeoutMs, V0_ASK_MAX_MS);
   const controller = new AbortController();
   const close = () => controller.abort();
-  const ready = Promise.withResolvers<void>();
+  let confirmReady!: () => void, rejectReady!: (error: unknown) => void;
+  const ready = new Promise<void>((resolve, reject) => { confirmReady = resolve; rejectReady = reject; });
   let registered = false;
   const timer = setTimeout(close, Math.min(askMs, HEALTH_MS));
   timer.unref();
@@ -149,7 +150,7 @@ export async function beginV0RelayAsk(agentDir: string, input: V0RelayAskInput, 
       if (frame.type === "roam_v0_relay_ask_ready" && !registered && Object.keys(frame).length === 2) {
         registered = true;
         clearTimeout(timer);
-        ready.resolve();
+        confirmReady();
         return;
       }
       const answer = parseV0BrokerReply(frame);
@@ -158,13 +159,13 @@ export async function beginV0RelayAsk(agentDir: string, input: V0RelayAskInput, 
       const { type: _type, requestId: _id, ...delivery } = answer;
       return delivery;
     }).then(response => {
-      if (!registered) ready.reject(new Error("The local broker could not register the ask waiter"));
+      if (!registered) rejectReady(new Error("The local broker could not register the ask waiter"));
       return response.ok ? response.value : { kind: "unknown" as const, id: input.askId };
     }, error => {
-      ready.reject(error);
+      rejectReady(error);
       return { kind: "unknown" as const, id: input.askId };
     }).finally(() => clearTimeout(timer));
-  await ready.promise;
+  await ready;
   return { result, close };
 }
 

@@ -1,10 +1,9 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
-import { build } from "vite";
 import type { Journal, Peer, Transport } from "../contracts";
 import { DEFAULT_LIMITS } from "../contracts";
 import { BOOTSTRAP_SCRIPT } from "../bootstrap-script";
@@ -37,7 +36,9 @@ type Factory = (input: unknown) => {
 const create = (adapterModule as { createHcProvisionAdapter?: Factory }).createHcProvisionAdapter;
 const remoteProgram = adapterModule.getProvisionRemoteScript();
 
-function fixture(short = false) {
+function fixture({ short = false, chunkBytes = DEFAULT_LIMITS.chunkBytes, spawnCore = false }: {
+  short?: boolean; chunkBytes?: number; spawnCore?: boolean;
+} = {}) {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, short ? "pa-" : "provision-adapter-")); roots.push(root);
   const home = join(root, "home"), globalRoot = join(home, "global"), agentDir = join(home, "agent"), npmPrefix = join(home, "prefix"), unitDir = join(home, "units"), bin = join(home, "bin");
@@ -51,9 +52,10 @@ function fixture(short = false) {
   const destination = { home, agentDir, npmPrefix, supervisor: join(releaseRoot, "dist", "roam", "supervisor.mjs") };
   const calls = join(root, "systemctl-calls"), writes: { path: string; bytes: Buffer }[] = [], requests: { action: string; argv: string[] }[] = [], launches: string[] = [];
   const launchIO: { stdout: string; stderr: string }[] = [];
-  const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false, emptyCore: false, prelude: "" }, terminalFile = join(root, "release-terminals.json"), coreLists = join(root, "core-lists");
+  const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false, prelude: "" }, terminalFile = join(root, "release-terminals.json"), coreLists = join(root, "core-lists");
   const fakeCore = `#!${process.execPath}\nimport fs from 'node:fs';
 const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(join(root, "core-spawns"))}, JSON.stringify(args) + '\\n');
 if (args[0] === 'server') console.log(JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}));
 else {
   const file = ${JSON.stringify(terminalFile)};
@@ -97,12 +99,14 @@ fi
       writes.push({ path, bytes: Buffer.from(bytes) }); mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); writeFileSync(path, bytes);
     },
   };
-  // These scenarios require an absent terminal, not a separately running fake core.
-  const emptyCorePrelude = `import paCp from 'node:child_process'; import paFs from 'node:fs'; import {syncBuiltinESMExports as paSync} from 'node:module';
+  // Most scenarios only need an idle core. Spawn the fake executable when
+  // there is terminal evidence, the binary changes, or the test requests it.
+  const corePrelude = spawnCore ? "" : `import paCp from 'node:child_process'; import paFs from 'node:fs'; import {syncBuiltinESMExports as paSync} from 'node:module';
 { const original = paCp.spawnSync; paCp.spawnSync = function(file, args, options) {
-  const isFake = file === ${JSON.stringify(peer.core)} && paFs.readFileSync(file, 'utf8') === ${JSON.stringify(fakeCoreLauncher)};
-  if (isFake && args[0] === 'server') return {status:0, stdout:JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}), stderr:''};
-  if (isFake && args[0] === 'ls' && !paFs.existsSync(${JSON.stringify(terminalFile)})) {
+  const empty = file === ${JSON.stringify(peer.core)} && !paFs.existsSync(${JSON.stringify(terminalFile)}) &&
+    paFs.existsSync(file) && paFs.readFileSync(file, 'utf8') === ${JSON.stringify(fakeCoreLauncher)};
+  if (empty && args[0] === 'server') return {status:0, stdout:JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}), stderr:''};
+  if (empty && args[0] === 'ls') {
     paFs.appendFileSync(${JSON.stringify(coreLists)}, JSON.stringify(args)+'\\n');
     return {status:0, stdout:'{"terminals":[]}', stderr:''};
   }
@@ -113,7 +117,7 @@ fi
     transport,
     async claimIdentity() { throw new Error("unexpected identity bootstrap"); },
     async executeProvision(_peer: Peer, request: Record<string, unknown>) {
-      const argv = ["--input-type=module", "-e", (launchState.emptyCore ? emptyCorePrelude : "") + launchState.prelude + remoteProgram!];
+      const argv = ["--input-type=module", "-e", corePrelude + launchState.prelude + remoteProgram!];
       requests.push({ action: String(request.action), argv });
       const child = spawnSync(process.execPath, argv, { input: JSON.stringify({ ...request, core: peer.core, coreId: "fixture-core" }), encoding: "utf8",
         timeout: request.action === "verify" ? 4900 : 4000,
@@ -133,7 +137,7 @@ fi
         writeFileSync(terminalFile, JSON.stringify({ terminals: [{ state: "live", labels: { "spider.operation": "op-1", "spider.machine": peer.machineId } }] }));
         throw Object.assign(new Error("reply lost"), { code: "cli-timeout" });
       }
-      const child = spawnSync(process.execPath, ["--input-type=module", "-e", (launchState.emptyCore ? emptyCorePrelude : "") + remoteProgram!, requestFile], {
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", corePrelude + remoteProgram!, requestFile], {
         encoding: "utf8", timeout: 4000, env: { ...process.env, HOME: home, PATH: bin, SPIDER_GLOBAL_ROOT: globalRoot },
       });
       launchIO.push({ stdout: child.stdout, stderr: child.stderr });
@@ -142,7 +146,7 @@ fi
       return { terminal: "box-1.invalid/t1" };
     },
   };
-  const options = { peer, operationId: "op-1", destination, limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote,
+  const options = { peer, operationId: "op-1", destination, limits: { ...DEFAULT_LIMITS, chunkBytes }, transport: remote,
     piProviders: ["github-copilot"] };
   const input = { bytes: Buffer.from("fixture archive"), sha256: releaseSha, npmPrefix, globalRoot, pi: "1.2.0" as const, intercom: "spider-owned" as const };
   return { root, home, globalRoot, agentDir, npmPrefix, unitDir, bin, releaseRoot, peer, destination, calls, writes, requests, launches, launchIO, launchState, terminalFile, coreLists, remote, options, input };
@@ -193,7 +197,7 @@ function installedInventory(f: ReturnType<typeof fixture>) {
 it("installs a non-writable tree under umask 002 that inventory can read", async () => {
   const previous = process.umask(0o002);
   try {
-    const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f);
+    const f = fixture({ spawnCore: true }); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f);
     writeFileSync(join(f.bin, "systemctl"), `#!${process.execPath}\nconsole.log('Transient=no\\nFragmentPath=\\nMainPID=0');\n`, { mode: 0o700 });
     const adapter = create!(f.options);
     await expect(adapter.installRelease(f.peer, f.input)).resolves.toMatchObject({ pi: f.peer.pi, cli: f.peer.cli });
@@ -211,6 +215,7 @@ it("installs a non-writable tree under umask 002 that inventory can read", async
     expect(lstatSync(join(f.npmPrefix, "spider-releases", f.input.sha256)).mode & 0o777).toBe(0o700);
     expect(lstatSync(join(f.globalRoot, "roam", "provision", "op-1")).mode & 0o777).toBe(0o700);
     expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
+    expect(readFileSync(join(f.root, "core-spawns"), "utf8")).toMatch(/\["ls"/);
     const bin = join(f.npmPrefix, "bin"), before = lstatSync(bin).mode & 0o777;
     chmodSync(bin, before | 0o020);
     expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
@@ -796,7 +801,7 @@ it("remote enrollment refuses malformed matching configuration without replacing
 
 it("reconciles a lost release-launch reply and never runs a duplicate installation", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
-  const f = fixture(), adapter = create!(f.options), log = releaseNpm(f); f.launchState.loseReply = true; f.launchState.emptyCore = true;
+  const f = fixture({ chunkBytes: 32 }), adapter = create!(f.options), log = releaseNpm(f); f.launchState.loseReply = true;
   const installed = await adapter.installRelease(f.peer, f.input);
   expect(installed).toEqual({ pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor });
   const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as { args: string[]; root: string });
@@ -830,7 +835,6 @@ it("reconciles a lost release-launch reply and never runs a duplicate installati
 it("resumes a prepared release and its short writes without sending a unit directory", async () => {
   const f = fixture(), log = releaseNpm(f), hub = "00000000-0000-4000-8000-000000000001";
   const adapter = create!(f.options);
-  f.launchState.emptyCore = true;
   const legacy = (request: Record<string, unknown>) => Object.fromEntries(Object.entries(request).flatMap(([key, value]) =>
     key === "unitDir" ? [] : key === "npmPrefix" ? [[key, value], ["unitDir", join(f.home, ".config/systemd/user")]] : [[key, value]]));
   const execute = f.remote.executeProvision, launch = f.remote.launchRelease;
@@ -860,12 +864,13 @@ it("resumes a prepared release and its short writes without sending a unit direc
 
 it("relaunches the same operation only after receipt and terminal evidence are both absent", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
-  const f = fixture(), adapter = create!(f.options), log = releaseNpm(f); f.launchState.dropBefore = 1; f.launchState.emptyCore = true;
+  const f = fixture({ spawnCore: true }), adapter = create!(f.options), log = releaseNpm(f); f.launchState.dropBefore = 1;
   expect(await adapter.installRelease(f.peer, f.input)).toEqual({ pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor });
   expect(f.launches).toHaveLength(2);
   expect(f.launches[0]).toBe(f.launches[1]);
   expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
   expect(f.requests.filter(item => item.action === "release-prepare")).toHaveLength(1);
+  expect(readFileSync(join(f.root, "core-spawns"), "utf8")).toMatch(/\["ls"/);
 }, 5000);
 
 it("does not retry a release launch that is definitely refused", async () => {
@@ -993,8 +998,7 @@ it("blocks another operation while a prior background release is unresolved", as
 }, 5000);
 
 it("abandons an old prepared release only after its deadline and an absent terminal observation", async () => {
-  const f = fixture(), first = create!(f.options), second = create!({ ...f.options, operationId: "op-2" });
-  f.launchState.emptyCore = true;
+  const f = fixture({ spawnCore: true }), first = create!(f.options), second = create!({ ...f.options, operationId: "op-2" });
   const delayedLaunch = f.remote.launchRelease.bind(f.remote);
   f.remote.launchRelease = async () => { throw Object.assign(new Error("refused"), { code: "core-changed" }); };
   await expect(first.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "core-changed" });
@@ -1009,11 +1013,11 @@ it("abandons an old prepared release only after its deadline and an absent termi
   f.remote.launchRelease = delayedLaunch; const log = releaseNpm(f);
   expect(await second.installRelease(f.peer, f.input)).toEqual({ pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor });
   expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
+  expect(readFileSync(join(f.root, "core-spawns"), "utf8")).toMatch(/\["ls"/);
 }, 5000);
 
 it("retains an expired prepared release when a labelled terminal or its core evidence is uncertain", async () => {
   const f = fixture(), first = create!(f.options), second = create!({ ...f.options, operationId: "op-2" });
-  f.launchState.emptyCore = true;
   f.remote.launchRelease = async () => { throw Object.assign(new Error("refused"), { code: "core-changed" }); };
   await expect(first.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "core-changed" });
   const stage = join(f.globalRoot, "roam", "provision", "op-1"), requestFile = join(stage, "release-request");
@@ -1215,7 +1219,7 @@ it.each(["size", "sha256"] as const)("rejects a selected file with a changed chu
 }, 5000);
 
 it("rejects a file assembled from mixed public and private chunks", async () => {
-  const f = fixture(), adapter = create!(f.options), remote = f.remote.executeProvision.bind(f.remote);
+  const f = fixture({ chunkBytes: 32 }), adapter = create!(f.options), remote = f.remote.executeProvision.bind(f.remote);
   f.remote.executeProvision = async (peer, request) => {
     if (request.action !== "install-files") return remote(peer, request);
     const file = request.file as { path: string; mode: number; chunks: { name: string; size: number; sha256: string }[] };
@@ -1305,7 +1309,7 @@ it("rejects changed file bytes for the same operation before overwriting the des
 
 it("replays a lost secret-chunk reply and rejects changed secret bytes under the same operation", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
-  const f = fixture(), execute = f.remote.executeProvision.bind(f.remote); let replayed = false;
+  const f = fixture({ chunkBytes: 32 }), execute = f.remote.executeProvision.bind(f.remote); let replayed = false;
   f.remote.executeProvision = async (peer, request) => {
     const result = await execute(peer, request);
     if (request.action === "secret-chunk" && typeof request.offset === "number" && request.offset > 0 && !replayed) {
@@ -1324,7 +1328,7 @@ it("replays a lost secret-chunk reply and rejects changed secret bytes under the
 
 it("uses bounded hc file writes to install only selected files", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
-  const f = fixture(), adapter = create!(f.options);
+  const f = fixture({ chunkBytes: 32 }), adapter = create!(f.options);
   writeFileSync(join(f.agentDir, "AGENTS.md"), "old", { mode: 0o600 });
   const bytes = Buffer.from("new instructions spanning several small chunks");
   await adapter.installFiles(f.peer, [{ path: "AGENTS.md", bytes, mode: 0o600 }]);
@@ -1491,7 +1495,7 @@ it("refuses private model credentials for a provider omitted from the transfer c
 
 it("uses private stdin rather than hc file writes for credential-bearing settings", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
-  const f = fixture(), adapter = create!(f.options), secret = Buffer.from('{"providers":{"example":{"apiKey":"fixture-secret"}}}');
+  const f = fixture({ chunkBytes: 32 }), adapter = create!(f.options), secret = Buffer.from('{"providers":{"example":{"apiKey":"fixture-secret"}}}');
   await adapter.installCredentialFiles(f.peer, [{ path: "models.json", bytes: secret, mode: 0o600 }], ["example"]);
   expect(readFileSync(join(f.agentDir, "models.json"))).toEqual(secret);
   expect(f.writes).toEqual([]);
@@ -1501,7 +1505,7 @@ it("uses private stdin rather than hc file writes for credential-bearing setting
 
 it("sends auth only through private stdin staging and removes it", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
-  const f = fixture(), execute = f.remote.executeProvision.bind(f.remote), modes: number[] = [];
+  const f = fixture({ chunkBytes: 32 }), execute = f.remote.executeProvision.bind(f.remote), modes: number[] = [];
   f.remote.executeProvision = async (peer, request) => {
     const result = await execute(peer, request);
     if (request.action === "secret-chunk") {
@@ -1587,7 +1591,7 @@ function readyIntercomDeclarations(f: ReturnType<typeof fixture>): void {
 }
 
 it.each([false, true])("recognizes the packaged entry and detects a second Spider shim (duplicate: %s)", async duplicate => {
-  const f = fixture(true); readyIntercomDeclarations(f);
+  const f = fixture({ short: true }); readyIntercomDeclarations(f);
   copyFileSync(join(process.cwd(), "scripts", "package-extension.ts"), join(f.releaseRoot, "scripts", "package-extension.ts"));
   writeFileSync(join(f.releaseRoot, "package.json"), JSON.stringify({ name: "@guru-irl/spider", type: "module", pi: { extensions: ["./scripts/package-extension.ts"] } }), { mode: 0o600 });
   if (!duplicate) unlinkSync(join(f.agentDir, "extensions", "spider.ts"));
@@ -1600,15 +1604,18 @@ it.each([false, true])("recognizes the packaged entry and detects a second Spide
   });
 }, 5000);
 
-it.each([
-  ["settings-unique", "intercomUnique"], ["legacy broker drained", "legacyDrained"], ["federation-v1", "federation"],
-] as const)("proves %s through real remote verification", async (_label, key) => {
-  const f = fixture(true); readyIntercomDeclarations(f);
-  await withReadinessBroker(f, ["intercom-exchange-v1", "federation-v1"], async () => {
-    const result = await create!(f.options).verifyPeer();
+describe("real remote readiness verification", () => {
+  let result: Awaited<ReturnType<ReturnType<Factory>["verifyPeer"]>>;
+  beforeAll(async () => {
+    const f = fixture({ short: true }); readyIntercomDeclarations(f);
+    result = await withReadinessBroker(f, ["intercom-exchange-v1", "federation-v1"], () => create!(f.options).verifyPeer());
+  }, 5000);
+  it.each([
+    ["settings-unique", "intercomUnique"], ["legacy broker drained", "legacyDrained"], ["federation-v1", "federation"],
+  ] as const)("proves %s through real remote verification", (_label, key) => {
     expect(result[key]).toBe(true);
-  });
-}, 5000);
+  }, 5000);
+});
 
 it.each([
   ["legacy declaration", "intercomUnique", "settings", "legacy-extension-declared"],
@@ -1617,7 +1624,7 @@ it.each([
   ["unsafe broker socket", "legacyDrained", "legacy", "intercom-socket-unsafe"],
   ["missing federation flag", "federation", "federation", "federation-feature-missing"],
 ] as const)("keeps %s unready with its named reason", async (scenario, key, evidence, reason) => {
-  const f = fixture(true); readyIntercomDeclarations(f);
+  const f = fixture({ short: true }); readyIntercomDeclarations(f);
   if (scenario === "legacy declaration") writeFileSync(join(f.agentDir, "settings.json"), '{"packages":["npm:pi-intercom"]}', { mode: 0o600 });
   if (scenario === "pending legacy ask") {
     mkdirSync(join(f.agentDir, "intercom"), { mode: 0o700 });
@@ -1634,7 +1641,7 @@ it.each([
 }, 5000);
 
 it("starts the real Spider broker on a fresh box and then proves broker health", async () => {
-  const f = fixture(true); readyIntercomDeclarations(f);
+  const f = fixture({ short: true }); readyIntercomDeclarations(f);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: f.home };
   installBoxEnrollment(f.globalRoot, f.peer.machineId, "00000000-0000-4000-8000-000000000001", "herdr-core.service", { corePin: {
     binary: f.peer.core, coreId: "fixture-core", socket: selectedSocket(env), sessionNamespace: env.HC_SESSION || "default",
@@ -1662,7 +1669,7 @@ it("starts the real Spider broker on a fresh box and then proves broker health",
 }, 5000);
 
 it("proves all three intercom checks against the real compiled Spider broker", async () => {
-  const f = fixture(true); readyIntercomDeclarations(f);
+  const f = fixture({ short: true }); readyIntercomDeclarations(f);
   const child = startTestBroker(process.execPath, [join(process.cwd(), "dist", "intercom", "broker.mjs")],
     { env: { ...process.env, HOME: f.home, PI_CODING_AGENT_DIR: f.agentDir }, stdio: ["ignore", "pipe", "pipe"] });
   try {
@@ -1677,7 +1684,7 @@ it("proves all three intercom checks against the real compiled Spider broker", a
 }, 5000);
 
 it("rejects two enabled Spider extension declarations", async () => {
-  const f = fixture(true); readyIntercomDeclarations(f);
+  const f = fixture({ short: true }); readyIntercomDeclarations(f);
   writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ packages: [f.releaseRoot] }), { mode: 0o600 });
   await withReadinessBroker(f, ["federation-v1"], async () => {
     expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: false, intercomEvidence: { settings: "settings-spider-duplicate" } });
@@ -1685,7 +1692,7 @@ it("rejects two enabled Spider extension declarations", async () => {
 }, 5000);
 
 it("detects a legacy package by its installed manifest even under a different directory name", async () => {
-  const f = fixture(true); readyIntercomDeclarations(f);
+  const f = fixture({ short: true }); readyIntercomDeclarations(f);
   const legacy = join(f.agentDir, "other-name"); mkdirSync(legacy, { mode: 0o700 });
   writeFileSync(join(legacy, "package.json"), JSON.stringify({ name: "pi-intercom", pi: { extensions: ["./index.js"] } }), { mode: 0o600 });
   writeFileSync(join(legacy, "index.js"), "export default () => {};", { mode: 0o600 });
@@ -1696,7 +1703,7 @@ it("detects a legacy package by its installed manifest even under a different di
 }, 5000);
 
 it("blocks a declared scoped pi-intercom package even when it is not installed", async () => {
-  const f = fixture(true); readyIntercomDeclarations(f);
+  const f = fixture({ short: true }); readyIntercomDeclarations(f);
   writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ packages: ["npm:@someone/pi-intercom@1.2.3"] }), { mode: 0o600 });
   await withReadinessBroker(f, ["federation-v1"], async () => {
     expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: false, intercomEvidence: { settings: "legacy-extension-declared" } });
@@ -1704,7 +1711,7 @@ it("blocks a declared scoped pi-intercom package even when it is not installed",
 }, 5000);
 
 it("allows an unrelated extension but lists it as unclassified", async () => {
-  const f = fixture(true); readyIntercomDeclarations(f);
+  const f = fixture({ short: true }); readyIntercomDeclarations(f);
   const other = join(f.agentDir, "ordinary-extension"); mkdirSync(other, { mode: 0o700 });
   writeFileSync(join(other, "package.json"), JSON.stringify({ name: "ordinary-extension", pi: { extensions: ["./index.js"] } }), { mode: 0o600 });
   writeFileSync(join(other, "index.js"), "export default () => {};", { mode: 0o600 });
@@ -1716,7 +1723,7 @@ it("allows an unrelated extension but lists it as unclassified", async () => {
 }, 5000);
 
 it("does not trust federation claims from a non-Spider health response", async () => {
-  const f = fixture(true); readyIntercomDeclarations(f);
+  const f = fixture({ short: true }); readyIntercomDeclarations(f);
   await withReadinessBroker(f, ["federation-v1"], async () => {
     expect(await create!(f.options).verifyPeer()).toMatchObject({ legacyDrained: false, federation: false,
       intercomEvidence: { legacy: "intercom-broker-not-spider", federation: "intercom-broker-not-spider" } });
@@ -1754,13 +1761,6 @@ it.each(["missing", "broken"] as const)("marks the extension unready when its pa
 }, 5000);
 
 describe("real pi loader", () => {
-  let buildRoot: string;
-  beforeAll(async () => {
-    const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
-    buildRoot = mkdtempSync(join(scratch, "real-pi-bundle-"));
-    await build({ root: process.cwd(), configFile: join(process.cwd(), "vite.config.mjs"), logLevel: "silent", build: { outDir: buildRoot } });
-  }, 5000);
-  afterAll(() => { if (buildRoot) rmSync(buildRoot, { recursive: true, force: true }); });
   it("loads the bundled extension and exact fixture session with the real pi loader", async () => {
     expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
     const f = fixture(); readyExecutables(f);
@@ -1768,7 +1768,8 @@ describe("real pi loader", () => {
     const sdk = join(f.npmPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
     unlinkSync(f.peer.pi); unlinkSync(sdk); symlinkSync(process.execPath, f.peer.node);
     symlinkSync(join(moduleRoot, "bundle", "cli.js"), f.peer.pi); symlinkSync(join(moduleRoot, "index.js"), sdk);
-    copyFileSync(join(buildRoot, "extension.js"), join(f.releaseRoot, "dist", "extension.js"));
+    // Use the production bundle built by prepare, just like the compiled broker test.
+    copyFileSync(join(process.cwd(), "dist", "extension.js"), join(f.releaseRoot, "dist", "extension.js"));
     mkdirSync(join(f.releaseRoot, "scripts"), { recursive: true });
     copyFileSync(join(process.cwd(), "scripts", "package-extension.ts"), join(f.releaseRoot, "scripts", "package-extension.ts"));
     const verified = await create!(f.options).verifyPeer();

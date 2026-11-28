@@ -7,6 +7,7 @@ import { replaySpacesBRecipe } from './spaces-b-fixture.js';
 import { createUiModules } from './strict-mod-api.mjs';
 import { identityPill } from '../../assets/shared/look.js';
 import { middlePath } from '../../assets/shared/feed.js';
+import { ACTIVITY_FRAMES } from '../../../ui/src/icons.js';
 
 const ui = createUiModules();
 const flat = (root: any): any[] => root && typeof root === 'object' ? [root, ...(root.items ?? []).flatMap(flat)] : [];
@@ -121,7 +122,7 @@ test.each(['working', 'blocked', 'error', 'done'])('remote proxy header uses tar
     expect(visible).not.toContain('Node attach'); expect(visible).not.toContain('/mac/wrong');
     if (status === 'blocked') expect(visible).toContain('Needs you');
     if (status === 'error') expect(visible).toContain('Error');
-    if (status === 'working') expect(flat(root).some(node => node.styles.spin?.[0] === 900)).toBe(true);
+    if (status === 'working') expect(flat(root).some(node => JSON.stringify(node.styles.frames) === JSON.stringify([ACTIVITY_FRAMES.nerd.working, 1000 / 14]))).toBe(true);
     if (status === 'done') expect(flat(root).some(node => node.styles.bg?.[0] === colors.done)).toBe(true);
     expect(byId(root, 'ph-x-pane-1')).toBeDefined();
   }

@@ -1,7 +1,7 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { icon } from "../icons.js";
 import type { Component } from "../component";
-import { buildFooterModel } from "./footer-model";
+import { buildFooterModel, orderFooterAgents } from "./footer-model";
 import { diffLines, hasChanges } from "./diff";
 import { agentGlyph, renderAgentStatus, renderRoleAccent } from "./types";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
@@ -42,29 +42,57 @@ export class AgentFooter implements Component {
   private now: () => number;
   private cachedWidth?: number;
   private cachedLines: string[] = [];
+  private offset = 0;
+  private lastSelectedRunId?: string;
 
   constructor(private store: AgentStore, theme: ThemeAdapter,
     opts: { maxVisible?: number; now?: () => number } = {}) {
     this.theme = theme;
-    this.maxVisible = opts.maxVisible ?? 4;
+    this.maxVisible = Math.max(2, Math.min(3, opts.maxVisible ?? 3));
     this.now = opts.now ?? Date.now;
   }
 
-  private agentLine(a: AgentSnapshot, width: number): string {
-    const selecting = this.store.isSelecting();
-    const cursor = selecting ? (a.runId === this.store.selectedRunId() ? this.theme.fg("accent", `${icon(this.theme.iconStyle, "select")} `) : "  ") : "";
+  private agentLine(a: AgentSnapshot, width: number, selecting: boolean, selected?: string): string {
+    const cursor = selecting ? (a.runId === selected ? this.theme.fg("accent", `${icon(this.theme.iconStyle, "select")} `) : "  ") : "";
     const cw = visibleWidth(cursor);
     const pin = this.store.isPinned(a.runId) ? ` ${icon(this.theme.iconStyle, "pin")}` : "";
     const line = formatAgentLine(this.theme, a, Math.max(4, width - visibleWidth(pin) - cw), this.now());
     return cursor + (pin ? line + this.theme.fg("warning", pin) : line);
   }
 
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type !== "wheel" || !event.wheelDelta || event.x < 0 || event.y < 0 ||
+        event.x >= event.width || event.y >= event.height) return undefined;
+    const count = this.store.snapshot().length;
+    if (count <= this.maxVisible) return undefined;
+    const limit = count - (this.maxVisible - 1);
+    const previous = this.offset;
+    this.offset = Math.max(0, Math.min(limit, this.offset + event.wheelDelta));
+    return { handled: true, render: this.offset !== previous };
+  }
+
   private build(width: number): string[] {
     const agents = this.store.snapshot();
-    if (agents.length === 0) return [];
-    const model = buildFooterModel(agents, this.maxVisible);
-    const lines = model.visible.map((a) => this.agentLine(a, width));
-    if (model.overflow) {
+    if (agents.length === 0) { this.offset = 0; this.lastSelectedRunId = undefined; return []; }
+    const visibleCount = agents.length > this.maxVisible ? this.maxVisible - 1 : this.maxVisible;
+    this.offset = Math.max(0, Math.min(this.offset, Math.max(0, agents.length - visibleCount)));
+    const selected = this.store.selectedRunId();
+    if (selected !== this.lastSelectedRunId && selected) {
+      const index = orderFooterAgents(agents).findIndex(a => a.runId === selected);
+      if (index >= 0 && index < this.offset) this.offset = index;
+      else if (index >= this.offset + visibleCount) this.offset = index - visibleCount + 1;
+    }
+    this.lastSelectedRunId = selected;
+    const model = buildFooterModel(agents, visibleCount, this.offset);
+    const selecting = this.store.isSelecting();
+    const lines = model.visible.map((a) => this.agentLine(a, width, selecting, selected));
+    if (model.overflow && selecting) {
+      const direction = this.offset + visibleCount < agents.length ? "arrowDown" : "arrowUp";
+      const left = `${icon(this.theme.iconStyle, direction)} view more`;
+      const right = `${agents.length} subagents`;
+      const padding = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
+      lines.push(truncateToWidth(this.theme.fg("muted", left + padding + right), width, "…"));
+    } else if (model.overflow) {
       const o = model.overflow;
       const seg: string[] = [];
       if (o.running) seg.push(`${o.running} running`);

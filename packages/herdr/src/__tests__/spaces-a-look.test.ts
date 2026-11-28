@@ -164,7 +164,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) describe(`Spaces A recipe $
     const files = loadSpacesAFiles(version);
     const final = replaySpacesARecipe(version, files);
     expect(replaySpacesARecipe(version, final)).toEqual(final);
-    expect(Object.values(spacesARecipes[version].mods).flat()).toHaveLength(100);
+    expect(Object.values(spacesARecipes[version].mods).flat()).toHaveLength(103);
     expect(final.toast).toEqual(files.toast);
     for (const [mod, entries] of Object.entries(final)) {
       const checked = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: entries['main.js'], encoding: 'utf8' });

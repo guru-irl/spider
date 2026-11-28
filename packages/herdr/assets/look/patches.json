@@ -369,6 +369,11 @@
         "id": "render-tab-snapshot",
         "anchor": "const tabs = spaces().flatMap(s => s.tabs);",
         "replacement": "const tabs = snapshot.spaces.flatMap(s => s.tabs);"
+      },
+      {
+        "id": "moon-working",
+        "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).mx(1).flex_none().text_color(t.working).spin(900)",
+        "replacement": "div().size(12).mx(1).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)"
       }
     ],
     "spaces": [
@@ -553,6 +558,11 @@
         "id": "pi-session-title",
         "anchor": "function folder(cwd) {",
         "replacement": "function piSessionName(title) {\n  return /^\\u03c0 - (.+) - [^/]*$/.exec(title ?? \"\")?.[1] ?? null;\n}\n\nfunction folder(cwd) {"
+      },
+      {
+        "id": "moon-working",
+        "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
+        "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)"
       }
     ],
     "tabs": [
@@ -630,6 +640,11 @@
         "id": "tab-autohide-popup",
         "anchor": "() => run(\"window.close\"))));\n  }",
         "replacement": "() => run(\"window.close\"))));\n    return this.tabAuto ? renderTabAutoHide(this, row, cx) : row;\n  }"
+      },
+      {
+        "id": "moon-working",
+        "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
+        "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)"
       }
     ],
     "workspace-chrome": [
@@ -1149,6 +1164,12 @@
             "replacement": "snapshot.spaces.flatMap(s => s.tabs)"
           },
           {
+            "id": "moon-working",
+            "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).mx(1).flex_none().text_color(t.working).spin(900)",
+            "replacement": "div().size(12).mx(1).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
+            "file": "main.js"
+          },
+          {
             "id": "a-agents-imports",
             "anchor": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
             "replacement": "import { indexAgentChildren, projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows, agentModelInputKey, agentModelRowKey, agentModelOutputKey, agentModelChildStats, agentModelTreeStates } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar, TextView } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";\nimport * as herdr from \"herdr\";\nimport { hc, nextCommand } from \"herdr\";\nimport { groupAgentsByMachine, machineGroupCounts } from \"./grouping.js\";\nimport { createMachineConnections, machineConnection, machineRebuilt } from \"./connections.js\";\nimport { projectConsoleGroups, toggleConsoleGroup } from \"./console-groups.js\";\nimport { projectNavigation } from \"./shared/navigation.js\";\nimport { describeOpenFailure } from \"./shared/open-failure.js\";",
@@ -1597,6 +1618,12 @@
             "file": "main.js"
           },
           {
+            "id": "moon-working",
+            "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
+            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
+            "file": "main.js"
+          },
+          {
             "id": "a-pane-imports",
             "anchor": "import { openOverlay } from \"herdr\";\nimport { View, div, svg, image } from \"gpui-kit\";\nimport { h_flex } from \"gpui-base\";\n/* spider-look:style-4 */import { panes, props, run, theme, home, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";\nimport { identityPill } from \"./shared/look.js\";",
             "replacement": "import { openOverlay } from \"herdr\";\nimport * as herdrApi from \"herdr\";\nimport { parkFocusedTerminal } from \"./park.js\";\nimport { View, div, svg, image } from \"gpui-kit\";\nimport { h_flex } from \"gpui-base\";\n/* spider-look:style-4 */import { panes, props, run, theme, home, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";\nimport { identityPill } from \"./shared/look.js\";",
@@ -1699,6 +1726,12 @@
             "anchor": "() => run(\"window.close\"))));\n  }",
             "replacement": "() => run(\"window.close\"))));\n    return this.tabAuto ? renderTabAutoHide(this, row, cx) : row;\n  }",
             "file": "main.js"
+          },
+          {
+            "id": "moon-working",
+            "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
+            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
+            "file": "main.js"
           }
         ],
         "workspace-chrome": [
@@ -1790,14 +1823,14 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "e2d5e5dc842b2669a9a3cf7fd4f0ef8435e9cd448677963fa06beac44d44f30d",
+        "agents/main.js": "580fa28b3c10891b74109b249361b34e84da24b48a5bec8d511c8d03ca5626f6",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "f9c0799068984fe289df2b8aa50231435977c7269ee15cea4544d52f31d3bd25",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "new-menu/main.js": "394ec4218f24263735083b90dc7a7c5f607ab58f9a7a74b823707509e806cb1a",
         "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
-        "pane/main.js": "4c0f1162fafa86e28b9bafbd44f6239c93ebf70d94a6699b961ceb5214bea1cc",
+        "pane/main.js": "3e82fe68d773e2c4e018c67f02fc6d9c1b272bcaafd157e148027b9b91c810a4",
         "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
         "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
         "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
@@ -1807,7 +1840,7 @@
         "picker/mod.json": "ca186ee1f13241f1f9b8facf092138214ca840a6a4d2865618a21934ffcda34d",
         "spaces/main.js": "9b98593e5bce40df013bef3c05bb2b567f1d5f80b55a7dffe0890943e73f24e9",
         "spaces/mod.json": "8357ce89d375376872b6db414b9555b26936b2e9d61e44275dc2e2bfe2a5783e",
-        "tabs/main.js": "fcb8007d5dec1876f9cf4ea9abc1835cb6f05f6a0fe04b719ad31c8ea3ae07c9",
+        "tabs/main.js": "3d4c39cd0b76d0bc989e2df1ed2c2e3deb031cfed3e7de7e73a95d89ee71b141",
         "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
         "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
         "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
@@ -1888,6 +1921,7 @@
           "child-chip",
           "deferred-chips",
           "a-agents-unreachable-icon",
+          "moon-working",
           "style-2",
           "a-agents-model-status",
           "style-4",
@@ -1973,6 +2007,7 @@
           "move-pane-hook",
           "spider-header-name",
           "style-2",
+          "moon-working",
           "style-3",
           "style-6"
         ],
@@ -2016,6 +2051,7 @@
           "tab-autohide-release",
           "tab-autohide-context",
           "pi-tab-icon",
+          "moon-working",
           "tab-autohide-pill-popup",
           "spider-enabled",
           "tab-autohide-row",
@@ -2607,6 +2643,12 @@
             "replacement": "snapshot.spaces.flatMap(s => s.tabs)"
           },
           {
+            "id": "moon-working",
+            "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).mx(1).flex_none().text_color(t.working).spin(900)",
+            "replacement": "div().size(12).mx(1).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
+            "file": "main.js"
+          },
+          {
             "id": "a-agents-imports",
             "anchor": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
             "replacement": "import { indexAgentChildren, projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows, agentModelInputKey, agentModelRowKey, agentModelOutputKey, agentModelChildStats, agentModelTreeStates } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar, TextView } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";\nimport * as herdr from \"herdr\";\nimport { hc, nextCommand } from \"herdr\";\nimport { groupAgentsByMachine, machineGroupCounts } from \"./grouping.js\";\nimport { createMachineConnections, machineConnection, machineRebuilt } from \"./connections.js\";\nimport { projectConsoleGroups, toggleConsoleGroup } from \"./console-groups.js\";\nimport { projectNavigation } from \"./shared/navigation.js\";\nimport { describeOpenFailure } from \"./shared/open-failure.js\";",
@@ -3067,6 +3109,12 @@
             "file": "main.js"
           },
           {
+            "id": "moon-working",
+            "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
+            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
+            "file": "main.js"
+          },
+          {
             "id": "a-pane-imports",
             "anchor": "import { openOverlay } from \"herdr\";\nimport { View, div, svg, image } from \"gpui-kit\";\nimport { h_flex } from \"gpui-base\";\n/* spider-look:style-4 */import { panes, props, run, theme, home, layout, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";\nimport { identityPill } from \"./shared/look.js\";",
             "replacement": "import { openOverlay } from \"herdr\";\nimport * as herdrApi from \"herdr\";\nimport { parkFocusedTerminal } from \"./park.js\";\nimport { View, div, svg, image } from \"gpui-kit\";\nimport { h_flex } from \"gpui-base\";\n/* spider-look:style-4 */import { panes, props, run, theme, home, layout, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";\nimport { identityPill } from \"./shared/look.js\";",
@@ -3168,6 +3216,12 @@
             "id": "tab-autohide-popup",
             "anchor": "() => run(\"window.close\"))));\n  }",
             "replacement": "() => run(\"window.close\"))));\n    return this.tabAuto ? renderTabAutoHide(this, row, cx) : row;\n  }",
+            "file": "main.js"
+          },
+          {
+            "id": "moon-working",
+            "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
+            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
             "file": "main.js"
           }
         ],
@@ -3278,14 +3332,14 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "340b1a2680a5065be440b7d1ebd45411ccccd3178824c84dae43b3aa07f5d066",
+        "agents/main.js": "55e1db25d8942e177d218d7bb34bd49961aca518088548de5046cce3a2cf6e58",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "1c27a92ca6378feb166a34adef317aaa2a4f4ee0e969d2fd3737cc3850ac84eb",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "new-menu/main.js": "2fcc80ed1486c35816f662db2a619cdee1ec1d82997991ca4feb64c1212d2688",
         "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
-        "pane/main.js": "91aaa15d8be870b39ac6daa43c8de94eb7586660dc21c6d3c43030d1b5dfd970",
+        "pane/main.js": "f7fe044cc4da0d0338e1c1e0867c6b3a2d12b276343b1c4dbbb39c715aa8ff60",
         "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
         "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
         "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
@@ -3295,7 +3349,7 @@
         "picker/mod.json": "ca186ee1f13241f1f9b8facf092138214ca840a6a4d2865618a21934ffcda34d",
         "spaces/main.js": "32bc0ab27d6006eb2c2a9aef9a04ba5a619475cbeaf5e22961a5777f37c0c470",
         "spaces/mod.json": "8357ce89d375376872b6db414b9555b26936b2e9d61e44275dc2e2bfe2a5783e",
-        "tabs/main.js": "9977fd738ec697951273e6729cb9185d2d79cd933f851957448cf6c3d3a683f8",
+        "tabs/main.js": "18dc46fdd7e4d28032d1c3fee6bfb170b9f04ceba3e3064152ce6f8ae88f455a",
         "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
         "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
         "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
@@ -3379,6 +3433,7 @@
           "child-chip",
           "deferred-chips",
           "a-agents-unreachable-icon",
+          "moon-working",
           "style-2",
           "a-agents-model-status",
           "style-4",
@@ -3465,6 +3520,7 @@
           "move-pane-hook",
           "spider-header-name",
           "style-2",
+          "moon-working",
           "style-3",
           "style-6"
         ],
@@ -3508,6 +3564,7 @@
           "tab-autohide-release",
           "tab-autohide-context",
           "pi-tab-icon",
+          "moon-working",
           "tab-autohide-pill-popup",
           "spider-enabled",
           "tab-autohide-row",

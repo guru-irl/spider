@@ -3,6 +3,7 @@ import { createEditToolDefinition, createWriteToolDefinition } from "@earendil-w
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { recordResult } from "./tracking";
+import { editPresentation } from "./edit-presentation.js";
 import type { Db } from "@spider/db-core";
 import { ensureNonEmptyToolContent, rethrowWithMessage } from "../result";
 
@@ -43,7 +44,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
   pi.registerTool({
     name: "edit",
     label: "Edit",
-    renderShell: "self",
+    ...editPresentation,
     description: "Edit a file by replacing text. Requires a one-line `description` of the change.",
     parameters: Type.Object({
       path: Type.String({ description: "File to edit." }),

@@ -89,13 +89,13 @@ async function stopAndStart(suite: Suite): Promise<void> {
         'spawn-child': parentTurns(runChild('r20-child', 'stop-child', 'held-child')),
         'held-child': [held('r20-child-ready', 'held child')],
         'launch-job': [tool('r20-job', { action: 'exec', language: 'javascript', background: true, timeout: 1_000,
-          code: `const fs = await import('node:fs');
+          code: `const fs = require('node:fs');
 fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid), { mode: 0o600 });
 const expires = Date.now() + 90_000;
-while (!fs.existsSync(${JSON.stringify(release)}) && Date.now() < expires) {
-  await new Promise(resolve => setTimeout(resolve, 50));
-}
-if (!fs.existsSync(${JSON.stringify(release)})) process.exitCode = 1;` }), text('job detached')],
+const poll = setInterval(() => {
+  if (fs.existsSync(${JSON.stringify(release)})) clearInterval(poll);
+  else if (Date.now() >= expires) { clearInterval(poll); process.exitCode = 1; }
+}, 50);` }), text('job detached')],
       });
       await fixture.prompt('spawn-child', 'r20-child');
       const child = await gates.ready('r20-child-ready', deadline(30_000));

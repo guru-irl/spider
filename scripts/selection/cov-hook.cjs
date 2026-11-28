@@ -50,8 +50,11 @@ if (dir) {
     catch { /* The recorder must not change a child exit code or its streams. */ }
   }
 
-  function withEnv(args, hasArgv, childLaunchId) {
-    const index = hasArgv && (Array.isArray(args[1]) || (args[1] == null && args.length > 2)) ? 2 : 1;
+  function optionsIndex(args, hasArgv) {
+    return hasArgv && (Array.isArray(args[1]) || (args[1] == null && args.length > 2)) ? 2 : 1;
+  }
+
+  function withEnv(args, index, childLaunchId) {
     const options = args[index];
     if (options != null && typeof options !== 'function' && (typeof options !== 'object' || Array.isArray(options))) return args;
     const env = { ...(options?.env ?? process.env) };
@@ -82,21 +85,47 @@ if (dir) {
     catch (error) { note('launch', error); }
   }
 
+  const recorderNode = process.execPath;
+  const nodeLocation = relative(root, recorderNode);
+  const trustedNodeVersion = process.versions.node === '26.4.0' &&
+    isAbsolute(recorderNode) && (nodeLocation.startsWith(`..${sep}`) || isAbsolute(nodeLocation));
+
+  function isVersionProbe(name, [file, argv], options) {
+    // Node 26.4 handles this exact command before preloads. Do not trust a
+    // PATH lookup, fixture executable, shell, or custom startup environment.
+    return trustedNodeVersion && name !== 'fork' && file === recorderNode &&
+      Array.isArray(argv) && argv.length === 1 && argv[0] === '--version' && options?.argv0 === undefined &&
+      (options?.shell === undefined || options.shell === false) && options?.env?.NODE_OPTIONS === preload &&
+      !Object.keys(options.env).some(key => /^(?:LD_|DYLD_|__XPC_DYLD_|NODE_|OPENSSL_|ICU_)/i.test(key) &&
+        key !== 'NODE_ENV' && key !== 'NODE_OPTIONS');
+  }
+
   function wrap(fn, hasArgv, name) {
     return function (...args) {
-      // Only direct Node executables can be identified without guessing what a shell runs.
       const direct = test && (name === 'fork' || (hasArgv && typeof args[0] === 'string'
         && /^(node|nodejs)(\.exe)?$/i.test(basename(args[0]))));
-      const childLaunchId = direct ? randomUUID() : null;
+      const launchId = direct ? randomUUID() : null;
+      const index = optionsIndex(args, hasArgv);
       try {
-        const result = Reflect.apply(fn, this, withEnv(args, hasArgv, childLaunchId));
+        const launchArgs = withEnv(args, index, launchId);
+        const versionProbe = direct && isVersionProbe(name, launchArgs, launchArgs[index]);
+        if (direct) recordLaunch({ kind: 'process-intent', launchId, argvClass: versionProbe ? 'node-version' : 'node' });
+        const result = Reflect.apply(fn, this, launchArgs);
         const child = result?.child ?? result;
         if (direct && (child?.pid > 0 || name === 'execFileSync')) {
-          recordLaunch({ kind: 'process', launchId: childLaunchId });
+          recordLaunch({ kind: 'process', launchId, pid: child?.pid ?? null });
+          if (versionProbe) {
+            const exited = (code, signal) => {
+              if (code === 0 && signal === null) recordLaunch({ kind: 'probe-exit', launchId });
+            };
+            if (name === 'execFileSync') exited(0, null);
+            else if (name === 'spawnSync') exited(child.status, child.signal);
+            else child.once('exit', exited);
+          }
         }
         return result;
       } catch (error) {
-        if (direct && error?.pid > 0) recordLaunch({ kind: 'process', launchId: childLaunchId });
+        if (direct && error?.pid > 0) recordLaunch({ kind: 'process', launchId, pid: error.pid });
         throw error;
       }
     };

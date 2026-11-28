@@ -41,7 +41,8 @@ function cells(line: string): Array<{ text: string; bg: string | undefined }> {
 function checkCard(rows: string[], width: number, background = BG) {
   for (const row of rows) {
     expect(visibleWidth(row)).toBe(width);
-    expect(cells(row).map((cell) => cell.bg)).toEqual(Array(width).fill(background));
+    const halfEdge = /^[▄▀]+$/u.test(stripTerminalSequences(row));
+    expect(cells(row).map((cell) => cell.bg)).toEqual(Array(width).fill(halfEdge ? undefined : background));
   }
 }
 
@@ -154,7 +155,7 @@ describe("card background through the right edge", () => {
     for (const component of renderers) {
       const rows = component.render(60);
       checkCard(rows, 60);
-      const firstText = rows.map(stripTerminalSequences).find(line => line.trim())!;
+      const firstText = rows.slice(1, -1).map(stripTerminalSequences).find(line => line.trim())!;
       expect(firstText.match(/^ */)?.[0].length).toBe(outputPad + 1);
     }
   });

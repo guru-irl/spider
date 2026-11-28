@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { createHalfBox } from "./input-band/box.js";
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import type { Message, SessionInfo } from "@spider/intercom/types";
@@ -111,11 +112,11 @@ class IncomingIntercomCard implements Component {
   render(width: number): string[] {
     const { from, message, replyCommand, bodyText } = this.details;
     const logo = icon(this.style, "spider");
-    const prefix = cardDetailIndent(this.style);
+    const prefix = cardDetailIndent(this.style).slice(1);
     const bodyWidth = Math.max(1, width - prefix.length);
     const sender = from.name || from.id.slice(0, 8);
     const machine = from.remote ? from.machineAlias : this.localMachineName;
-    const title = ` ${this.theme.fg("toolTitle", logo)} ${this.theme.fg("toolTitle", this.theme.bold("intercom"))} · ${this.theme.fg("muted", `from ${sender} · ${machine}`)}`;
+    const title = `${this.theme.fg("toolTitle", logo)} ${this.theme.fg("toolTitle", this.theme.bold("intercom"))} · ${this.theme.fg("muted", `from ${sender} · ${machine}`)}`;
     const lines = [truncateToWidth(title, width, "")];
     if (this.collapsed) {
       this.collapsedPreview ??= (bodyText || message.content.text).replace(/\s+/g, " ").trim();
@@ -171,7 +172,10 @@ export function withIntercomCards(pi: ExtensionAPI, iconStyle: () => IconStyle, 
       if (name !== "intercom_message") return target.registerMessageRenderer(name, renderer);
       return target.registerMessageRenderer(name, (message, options, theme) => {
         const details = message.details as IncomingDetails | undefined;
-        return details ? new IncomingIntercomCard(details, theme, !options.expanded, iconStyle(), localMachineName) : undefined;
+        if (!details) return undefined;
+        const box = createHalfBox(options.outputPad ?? 1, text => theme.bg("customMessageBg", text));
+        box.addChild(new IncomingIntercomCard(details, theme, !options.expanded, iconStyle(), localMachineName));
+        return box;
       });
     };
     const value = Reflect.get(target, key, target);

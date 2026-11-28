@@ -935,6 +935,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
   if (ports.inputBand) registerInputBand(pi as unknown as ExtensionAPI, ports.inputBand, cwd => ({
     "ui.inputBand": controlConfig("get", cwd, "ui.inputBand"),
+    "ui.icons": controlConfig("get", cwd, "ui.icons"),
   }));
   if (ports.copyButtons) registerCopyButtons(pi as unknown as ExtensionAPI, ports.copyButtons.host,
     cwd => {

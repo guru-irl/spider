@@ -3,8 +3,7 @@ import { expect, vi } from 'vitest';
 import { resolve, join } from 'node:path';
 import { configFixtureCwd } from './herdr-config-fixture.js';
 import { writeWiringArtifacts } from './herdr-wiring-artifact.testutil.js';
-
-const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+import { shellQuote, writeRecordedHc } from './herdr-recorded-hc.testutil.js';
 
 function waitForGateFile(path: string): string {
   // Keep the real shell payload and gate, but don't fork sleep at every poll.
@@ -155,27 +154,9 @@ export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode =
   const { admitted, allowMissingFeed, fastInactive: _fastInactive, beforeStart, ...configOptions } = options;
   const config = { ...configOptions, enabled: requested, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: ['managed.example.invalid'], runtime: { cwd: null, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
 
-  const callLog = join(h.root, 'host-hc-calls.jsonl'); await writeFile(callLog, '');
-    const { chmod } = await import('node:fs/promises');
-    const logger = join(h.root, 'argv.mjs');
-    const record = `import { appendFileSync } from 'node:fs';\nconst argv = process.argv.slice(2);\nappendFileSync(${JSON.stringify(callLog)}, JSON.stringify({ argv }) + '\\n');\n`;
-    const recorded = join(h.root, 'recorded-hc');
-    if (mode === 'fake') {
-      const fake = new URL('../../../herdr/src/__tests__/fake-hc.mjs', import.meta.url);
-      await writeFile(logger, record + `
-if (!${coreAvailable} && argv[0] === 'server' && argv[1] === 'status') {
-  console.error(JSON.stringify({ error: { kind: 'unavailable', message: 'Fixture core is offline' } }));
-  process.exit(2);
-}
-await import(${JSON.stringify(fake.href)});
-`);
-      await writeFile(recorded, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(logger)} "$@"\n`);
-    } else {
-      await writeFile(logger, record);
-      const offline = 'if [ "$1" = server ] && [ "$2" = status ]; then printf \'%s\\n\' \'{"error":{"kind":"unavailable","message":"Fixture core is offline"}}\' >&2; exit 2; fi\n';
-      await writeFile(recorded, `#!/bin/sh\n${shellQuote(process.execPath)} ${shellQuote(logger)} "$@"\n${coreAvailable ? '' : offline}exec ${shellQuote(h.hcBinary)} "$@"\n`);
-    }
-    await chmod(recorded, 0o700); config.core.binary = recorded;
+  const { chmod } = await import('node:fs/promises');
+  const { binary, calls } = await writeRecordedHc(h, 'recorded-hc', coreAvailable);
+  config.core.binary = binary;
   if (launches || mode === 'hc') {
     const appScript = join(h.root, 'app-port.mjs'), parked = join(h.root, 'parked.json'); await writeFile(parked, '[]');
     await writeFile(appScript, `import { execFileSync } from 'node:child_process'; import { readFileSync, writeFileSync } from 'node:fs';
@@ -217,7 +198,7 @@ for (const signal of ['SIGINT','SIGTERM','SIGHUP']) process.once(signal, () => c
   })) : null;
   const ipc = feed ? createSessionIpcClient({ version: 1, sessionId: feed.sessionId, generation: feed.generation, ...feed.ipc }) : null;
   return { h, pi, hooks, mount, store, db, globalDb, owner, ctx, errors, opened, notices, shimDirectory, captured, terminal, config, feed, ipc, emit, feedPath, registrations, statusMessages, statusValues,
-    calls: async () => (await readFile(callLog, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as { argv: string[] }),
+    calls,
     presence: createProcessPresence(join(config.globalRoot, 'herdr')),
     async close() {
       ipc?.dispose(); await emit('session_shutdown', { reason: 'quit' }); await mount.dispose(); db.close(); globalDb.close();

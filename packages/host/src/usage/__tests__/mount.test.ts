@@ -19,6 +19,7 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
   let entries: unknown[] = [assistant("a", 100)]; let file = "fixture-a.jsonl";
   const events = new Map<string, Set<(event: unknown, ctx: ExtensionContext) => void>>();
   let footer: Footer | undefined;
+  const setWorkingVisible = vi.fn();
   const unsubBranch = vi.fn(); const requestRender = vi.fn();
   const theme = { fg: (_name: string, text: string) => text } as Theme;
   const data: ReadonlyFooterDataProvider = { getGitBranch: () => "fixture", getExtensionStatuses: () => new Map([["fixture", "status"]]), getAvailableProviderCount: () => 1, onBranchChange: () => unsubBranch };
@@ -27,14 +28,14 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
   });
   const getEntries = vi.fn(() => [...entries]); const getBranch = vi.fn(() => entries.slice(0, 1));
   const registry = { getProvider: vi.fn(() => ({ auth: { oauth: { isSubscription: true } } })), isUsingOAuth: vi.fn(() => true) };
-  const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", cwd: "/fixture/project", sessionManager: { getEntries, getBranch, getSessionFile: () => file, getSessionId: () => file }, ui: { setFooter, setWidget: vi.fn(), notify: vi.fn() }, model: { id: "gpt-6.1-sol", provider: "github-copilot", contextWindow: 100000, reasoning: true }, modelRegistry: registry, getContextUsage: vi.fn(() => ({ percent: 25, tokens: 25000, contextWindow: 100000 })), thinkingLevel: "high" } as unknown as ExtensionContext;
+  const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", cwd: "/fixture/project", sessionManager: { getEntries, getBranch, getSessionFile: () => file, getSessionId: () => file }, ui: { setFooter, setWorkingVisible, setWidget: vi.fn(), notify: vi.fn() }, model: { id: "gpt-6.1-sol", provider: "github-copilot", contextWindow: 100000, reasoning: true }, modelRegistry: registry, getContextUsage: vi.fn(() => ({ percent: 25, tokens: 25000, contextWindow: 100000 })), thinkingLevel: "high" } as unknown as ExtensionContext;
   const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => {
     if (!events.has(name)) events.set(name, new Set()); events.get(name)!.add(handler);
     return () => events.get(name)?.delete(handler);
   }, getSessionName: () => "fixture name", getThinkingLevel: () => "high" } as unknown as ExtensionAPI;
   let snapshot: UsageRuntimeSnapshot = { health: null, counter: null, reconciliation: null, backfill: "pending", errorCode: null };
   const runtime = { snapshot: () => snapshot, configure: vi.fn(), refresh: vi.fn() } as unknown as UsageRuntime;
-  return { pi, ctx, runtime, setFooter, getEntries, getBranch, registry, unsubBranch, requestRender,
+  return { pi, ctx, runtime, setFooter, setWorkingVisible, getEntries, getBranch, registry, unsubBranch, requestRender,
     append: (entry: unknown) => entries.push(entry), replace: (next: unknown[], nextFile = file) => { entries = next; file = nextFile; },
     counter: (creditsUsed: number, ts = Date.now()) => { snapshot = { ...snapshot, counter: { availability: "available", role: "owner", lastAttemptAt: ts, lastSuccessAt: ts, nextPollAt: ts + 600000, snapshotAgeMs: 0, errorCode: null, notice: null, latest: { creditsUsed, entitlement: 100, ts, resetDate: new Date(Date.UTC(new Date().getUTCFullYear(),new Date().getUTCMonth()+1,1)).toISOString().slice(0,10), raw: {} } } }; },
     month: (used:number|null, ago=0) => { const d=new Date(Date.now()); snapshot={...snapshot,monthUsed:used,monthPeriod:{start:Date.UTC(d.getUTCFullYear(),d.getUTCMonth()-ago,1),end:Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1-ago,1)}}; },
@@ -52,6 +53,48 @@ describe("public usage footer mount", () => {
     const f = fixture(); mount(f);
     expect(f.render().join("\n")).toMatch(/credits/g); expect(f.render().join("\n")).not.toMatch(/\$/);
     expect(f.render(40)[0]).toMatch(/gpt-6.1-sol.*high/);
+  });
+  it("takes over Pi's working row once and renders only at activity-frame boundaries", () => {
+    vi.stubEnv("HC_TERMINAL_ID", "");
+    const f = fixture(); mount(f);
+    expect(f.setWorkingVisible.mock.calls).toEqual([[false]]);
+    expect(f.render()[1]).toMatch(/^○  25.0%/);
+    f.requestRender.mockClear();
+    f.emit("agent_start");
+    expect(f.render()[1]).toMatch(/^◐  25.0%/);
+    expect(f.requestRender).toHaveBeenCalledTimes(1);
+    f.getEntries.mockClear();
+    vi.advanceTimersByTime(249); expect(f.requestRender).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1); expect(f.requestRender).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(500); expect(f.requestRender).toHaveBeenCalledTimes(4);
+    expect(f.render()[1]).toMatch(/^◒  25.0%/);
+    expect(f.getEntries).not.toHaveBeenCalled();
+    f.emit("agent_end");
+    expect(f.render()[1]).toMatch(/^○  25.0%/);
+    f.requestRender.mockClear();
+    vi.advanceTimersByTime(1000); expect(f.requestRender).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1); // Usage snapshots still refresh once a second.
+  });
+  it("leaves Pi's row alone until mounted and stops the active timer on disable, reload and shutdown", () => {
+    const f = fixture();
+    mounted = mountUsage(f.pi, f.ctx, f.runtime, { ...config, footer: false });
+    f.emit("agent_start");
+    expect(f.setWorkingVisible).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    mounted.configure(config);
+    expect(vi.getTimerCount()).toBe(2);
+    mounted.configure({ ...config, footer: false });
+    expect(f.setWorkingVisible.mock.calls).toEqual([[false], [true]]);
+    expect(vi.getTimerCount()).toBe(0);
+    mounted.configure(config);
+    f.emit("session_start", { reason: "reload" });
+    expect(f.setWorkingVisible.mock.calls).toEqual([[false], [true], [false], [true], [false]]);
+    expect(vi.getTimerCount()).toBe(1);
+    f.emit("agent_start");
+    expect(vi.getTimerCount()).toBe(2);
+    f.emit("session_shutdown", { reason: "reload" });
+    expect(f.setWorkingVisible).toHaveBeenLastCalledWith(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
   it("footer false restores pi with setFooter(undefined) and leaves the agents widget alone", () => {
     const f = fixture(); mount(f); mounted!.configure({ ...config, footer: false });

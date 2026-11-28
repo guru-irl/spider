@@ -265,9 +265,47 @@ describe("public usage footer component", () => {
       getExtensionStatuses: () => variant.statuses, getAvailableProviderCount: () => 1,
       onBranchChange: () => () => {} };
     const theme = { fg: (key: string, text: string) =>
-      `${key === "warning" ? "\x1b[33m" : key === "error" ? "\x1b[31m" : "\x1b[2m"}${text}\x1b[0m` } as Theme;
+      `${key === "warning" ? "\x1b[33m" : key === "error" ? "\x1b[31m" : key === "accent" ? "\x1b[34m" : "\x1b[2m"}${text}\x1b[0m` } as Theme;
     return createUsageFooter(() => variant, theme, provider, () => {});
   }
+
+  it("draws the 28-phase moon in the same column at rest and over a full second", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const component = themed(input({ iconStyle: "nerd" }));
+    const row = () => component.render(120)[1];
+    try {
+      expect(row()).toMatch(/^\x1b\[2m\uE3E3\x1b\[0m {2}/u);
+      component.setWorking(Date.now());
+      const frames = Array.from({ length: 28 }, (_, phase) => {
+        vi.advanceTimersByTime(Math.ceil(phase * 1000 / 28) - Date.now());
+        expect(row()).toMatch(/^\x1b\[34m/u);
+        expect(stripTerminalSequences(row()).slice(1)).toMatch(/^ {2}14.6%\/1.0M/u);
+        return stripTerminalSequences(row())[0];
+      });
+      expect(frames).toEqual(["\uE3E3", ...Array.from({ length: 27 }, (_, i) => String.fromCodePoint(0xE3C8 + i))]);
+      expect([frames[7], frames[14]]).toEqual(["\uE3CE", "\uE3D5"]);
+      vi.advanceTimersByTime(1000 - Date.now());
+      expect(stripTerminalSequences(row())[0]).toBe("\uE3E3");
+      component.setWorking();
+      expect(row()).toMatch(/^\x1b\[2m\uE3E3/u);
+    } finally { component.dispose(); vi.useRealTimers(); }
+  });
+
+  it("uses text moon phases and keeps the idle moon even in a one-column pane", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const component = themed(input({ inPane: true, iconStyle: "text" }));
+    try {
+      expect(stripTerminalSequences(component.render(1)[0])).toBe("○");
+      component.setWorking(0);
+      for (const phase of ["◐", "◓", "◑", "◒", "◐"]) {
+        const line = stripTerminalSequences(component.render(60)[0]);
+        expect(line).toMatch(new RegExp(`^${phase} {2}14.6%/1.0M`));
+        vi.advanceTimersByTime(250);
+      }
+    } finally { component.dispose(); vi.useRealTimers(); }
+  });
 
   it("keeps model and thinking dim after name or model truncation", () => {
     const component = themed(input({ cwd: "~/src/some/deep/project", sessionName: "my long session name here" }));

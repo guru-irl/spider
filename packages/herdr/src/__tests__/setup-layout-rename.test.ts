@@ -104,9 +104,10 @@ test('upgrades the old selected layout once, keeps shared mod data, and does not
 
 test('an unrelated shared-state write during setup does not block the migration', async () => {
   const f = await fixture(); await f.upgrade('spider-glass');
-  f.parts.runtimeRootsHealthy = async () => {
+  const ensureRuntime = f.parts.ensureRuntime;
+  f.parts.ensureRuntime = async (...args) => {
     await writeFile(f.shared, '{"layout":"spider-glass","user.mod":"changed during setup"}');
-    return true;
+    return ensureRuntime(...args);
   };
   await setupHerdr(f.request, f.parts);
   expect(JSON.parse(await readFile(f.shared, 'utf8'))).toEqual({ layout: 'Spider', 'user.mod': 'changed during setup' });

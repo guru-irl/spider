@@ -57,6 +57,19 @@ it("parses a literal dash-prefixed memory-tag alias without permitting extra arg
   expect(parsePublicControl(["roam", "memory", "tag", "global", "memory-a", "--", "bad\nname"])).toBeNull();
 });
 
+it("rounds finite non-negative receipt durations and refuses invalid durations", () => {
+  const receipt = { batchId: "batch-a", stream: "stream-a", through: 7, sha256: "a".repeat(64), applyMs: 1.6 };
+  const row = { code: 0, reason: "pushed", operationId: "", home: null, epoch: null, repairCommand: null };
+  const sanitize = (applyMs: unknown) => safeControlOutcome({ code: 0, reason: "Synchronization complete", operationId: "",
+    home: null, epoch: null, repairCommand: null, value: { outcomes: [{ ...row, value: { ...receipt, applyMs } }] } }).value;
+  for (const [input, output] of [[1.6, 2], [1.4, 1], [0, 0], [null, null], [Number.MAX_SAFE_INTEGER + 2, Number.MAX_SAFE_INTEGER + 2]] as const) {
+    expect(sanitize(input)).toMatchObject({ outcomes: [{ value: { ...receipt, applyMs: output } }] });
+  }
+  for (const input of [-1, -0.1, Infinity, -Infinity, NaN, "1"]) {
+    expect(sanitize(input)).toMatchObject({ outcomes: [{ value: null }] });
+  }
+});
+
 it("retains typed authority and drops arbitrary participant data", () => {
   const home = { sessionId: "session-a", machineId: BOX, epoch: 2, moveId: "move-a", updatedAt: 1 };
   const safe = safeControlOutcome({ code: 3, reason: "destination-unknown", operationId: "move-a", home, epoch: 2,

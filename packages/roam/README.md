@@ -110,12 +110,14 @@ For a separately approved A-to-B route, add B's provisioned peer to A's
 `acceptFrom`. B does not need an outbound A entry. This directed route does not
 use the Mac as a relay. Do not configure the Mac in a box's `sendTo`.
 
-A bare remote name checks configured peers with running homes. A single
-verified match is enough even if another peer is unavailable. If more than
-one session matches, use a machine-qualified name or a full persistent session
-ID. With no verified match and an unavailable peer, lookup returns
-`incomplete`. A live local alias takes precedence over a remote name, while
-a full persistent ID takes precedence over an alias.
+With a version 1 file, a bare remote name checks configured peers with running
+homes. A single verified match is enough even if another peer is unavailable.
+With no verified match and an unavailable peer, lookup returns `incomplete`.
+With a version 2 file, a bare remote name needs a complete direct lookup before
+it can select a match. If more than one session matches, use a
+machine-qualified name or a full persistent session ID. A live local alias
+takes precedence over a remote name, while a full persistent ID takes
+precedence over an alias.
 
 ## Run an intercom relay
 
@@ -131,6 +133,7 @@ The relay advertises its own ID and the `sendTo` entries with connected routes.
 The recipient must list the relay in `relays` and the sender in `acceptFrom`.
 The linked machine does not need a reverse Herdr route. A machine without an
 inbound route can receive through a relay only if it runs that relay itself.
+Restart the relay after you change `intercom-v0.json`.
 
 A live local or direct route takes precedence. If neither exists, a send can
 use a relay for a full session ID or a machine-qualified name such as

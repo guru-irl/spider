@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: MIT
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { buildSelectionMap } from './map.mjs';
+import { reduce } from './reduce.mjs';
 
 const builders = new Map([
   ['vite', new Set(['build', 'createBuilder'])],
@@ -54,6 +59,75 @@ const { rolldown } = require('rolldown');`;
     'fixture.ts:1 (vite)', 'fixture.ts:4 (rolldown)', 'fixture.ts:5 (esbuild)',
     'fixture.ts:6 (vite)', 'fixture.ts:7 (rolldown)',
   ]);
+});
+
+test('publishes pre-tree-shake inputs, direct reads, and renamed executable bytes from real recording', t => {
+  const root = mkdtempSync(join(tmpdir(), 'selection-bundle-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const raw = join(root, 'raw'), maps = join(root, 'maps');
+  const bundleTools = name => fileURLToPath(new URL(name, import.meta.url));
+  const run = (script, env = {}) => execFileSync(process.execPath, ['--input-type=module', '-e', script],
+    { cwd: root, env: { ...process.env, NODE_OPTIONS: '', ...env }, encoding: 'utf8' });
+  const entry = 'packages/one/src/main.mjs', testFile = 'packages/one/src/build.test.ts';
+  const aliasTest = 'packages/one/src/alias.test.ts';
+  const removed = 'packages/one/src/shaken.js';
+  for (const [file, text] of Object.entries({
+    [entry]: 'import { unused } from "./shaken.js"; export const marker = "main";',
+    [removed]: 'export const unused = "unreachable text";',
+    'packages/one/src/other.mjs': 'export const marker = "other";',
+    'vite.config.mjs': 'import "./build-options.mjs"; export default {};',
+    'build-options.mjs': 'export const onlyConfig = 1;',
+  })) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), text);
+  }
+  run(`
+    const { build } = await import(${JSON.stringify(import.meta.resolve('vite'))});
+    const { archiveMaps, sourcemap } = await import(${JSON.stringify(new URL('./build-maps.mjs', import.meta.url).href)});
+    for (const name of ['main', 'other']) {
+      await build({ logLevel: 'silent', plugins: archiveMaps(), build: {
+        emptyOutDir: false, ssr: 'packages/one/src/' + name + '.mjs', sourcemap,
+        rollupOptions: { output: { entryFileNames: name + '.mjs', codeSplitting: false } },
+      } });
+    }`, { SPIDER_BUILD_SOURCEMAP: '1', SPIDER_SELECTION_MAPS: maps, SPIDER_SELECTION_DIR: '' });
+  assert.ok(!readFileSync(join(root, 'dist/main.mjs'), 'utf8').includes('unreachable text'));
+  assert.ok(existsSync(join(maps, 'main.mjs.artifact.json')), 'the build must archive artifact identity and inputs');
+  mkdirSync(raw);
+  const keys = execFileSync(process.execPath, [bundleTools('./bundle-keys.mjs')], { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } }).trim();
+  const recorded = {
+    NODE_OPTIONS: `--require=${JSON.stringify(bundleTools('./cov-hook.cjs'))}`,
+    SPIDER_SELECTION_DIR: raw, SPIDER_SELECTION_ROOT: root, SPIDER_SELECTION_BUNDLE_KEYS: keys,
+    SPIDER_SELECTION_TEST: '',
+  };
+  run(`
+    globalThis[Symbol.for('spider.selection.tag')](${JSON.stringify(testFile)});
+    const fs = await import('node:fs');
+    fs.readFileSync('dist/main.mjs');
+    fs.mkdirSync('.spider/scratch', { recursive: true });
+    fs.copyFileSync('dist/other.mjs', '.spider/scratch/renamed.mjs');`, recorded);
+  run(`
+    globalThis[Symbol.for('spider.selection.tag')](${JSON.stringify(aliasTest)});
+    await import('./.spider/scratch/renamed.mjs');`, recorded);
+  const reportFile = join(root, 'report.json'), output = join(root, 'shard.json');
+  writeFileSync(reportFile, JSON.stringify({ testResults: [testFile, aliasTest].map(file => (
+    { name: resolve(root, file), status: 'passed', startTime: 0, endTime: 1 })) }));
+  writeFileSync(output, JSON.stringify(reduce({ root, rawDir: raw, mapsDir: maps, reportFile })));
+  execFileSync(process.execPath, [bundleTools('./bundle-observations.mjs'), raw, maps, output],
+    { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+  const { map, problems } = buildSelectionMap({ shards: [JSON.parse(readFileSync(output, 'utf8'))],
+    expectedFiles: [testFile, aliasTest], commit: 'a'.repeat(40), runId: '4', createdAt: new Date().toISOString() });
+  assert.deepEqual(problems, []);
+  const artifacts = map.bundleRouting.artifacts;
+  const main = artifacts.find(artifact => artifact.path === 'dist/main.mjs');
+  assert.equal(main.entry, entry);
+  assert.ok(main.inputs.includes(removed));
+  assert.ok(main.inputs.includes('build-options.mjs'));
+  const { ambiguous, hashes } = map.bundleRouting.tests[testFile];
+  assert.equal(ambiguous, false);
+  assert.deepEqual(hashes, artifacts.map(artifact => artifact.sha256).sort());
+  assert.deepEqual(map.bundleRouting.tests[aliasTest], {
+    ambiguous: false, hashes: [artifacts.find(artifact => artifact.path === 'dist/other.mjs').sha256],
+  });
 });
 
 test('all test code and fixtures use recorder-aware bundle helpers', () => {

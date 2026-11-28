@@ -17,14 +17,17 @@ export function formatDuration(ms: number): string {
 }
 
 /** Short model label (drop provider prefix + redundant 'claude-'). */
-export function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
+export function shortModel(m?: string | null, modelName?: ThemeAdapter["modelName"]): string {
+  if (!m) return "—";
+  return modelName?.(m)?.trim() || (m.split("/").pop() ?? m).replace(/^claude-/, "");
+}
 
 /** Shared one-line summary with a single leading activity or status mark. */
 export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number, now: number): string {
   const ital = (s: string) => (t.italic ? t.italic(s) : s);
   const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt;
   const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
-  const model = shortModel(a.model);
+  const model = shortModel(a.model, t.modelName);
   const sep = t.fg("dim", "·");
   const parts = [
     ital(renderRoleAccent(t, a.role ?? a.agent, a.role ?? a.agent)),

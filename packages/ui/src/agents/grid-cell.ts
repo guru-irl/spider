@@ -42,7 +42,9 @@ export function renderGridCell(
   // line 1 — type · model · turns · elapsed (status is conveyed by the glyph colour).
   const role = a.role ?? a.agent;
   const roleLabel = renderRoleAccent(theme, role, theme.italic?.(role) ?? role);
-  const meta = fit("  " + roleLabel + theme.fg("dim", ` · ${shortModel(a.model)} · ${turns} · ${formatDuration(elapsedMs)}`), width);
+  const model = shortModel(a.model, theme.modelName);
+  const thinking = a.thinking ? ` · ${a.thinking}` : "";
+  const meta = fit("  " + roleLabel + theme.fg("dim", ` · ${model}${thinking} · ${turns} · ${formatDuration(elapsedMs)}`), width);
 
   const bodyRows = Math.max(0, height - 2); // header, meta
   const body: string[] = [];

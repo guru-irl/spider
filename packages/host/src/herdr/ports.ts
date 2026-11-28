@@ -569,7 +569,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     } catch { throw new HerdrError('upstream-version-unavailable', 'Cannot determine the installed Herdr app version'); }
     if (stagedVersion && appVersion !== stagedVersion) throw new HerdrError('upstream-version-mismatch', 'The Herdr version changed during setup; rerun setup');
     const selected = selectLookPatches(JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'), 'utf8')) as LookPatchSet, appVersion);
-    if (!selected.recipe) return selected;
+    if (!isSpacesALookVersion(appVersion)) return selected;
     let records: unknown;
     try { records = JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/look/cross-machine-patches.json'), 'utf8')); }
     catch { throw new HerdrError('cross-machine-recipe-missing', 'The packaged cross-machine records are missing or unreadable'); }

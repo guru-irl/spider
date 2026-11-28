@@ -114,7 +114,7 @@ describe("AgentFooter selection cursor", () => {
     const store = new AgentStore(src); store.start(); store.beginSelect();
     const footer = new AgentFooter(store, id, { now: () => 5000 });
     expect(footer.render(40)[2]).toMatch(/^↓ view more/);
-    footer.handleMouse({ type: "wheel", wheelDelta: 2, x: 0, y: 2, width: 40, height: 3,
+    footer.handleMouse({ type: "wheel", button: "none", wheelDelta: 2, x: 0, y: 2, width: 40, height: 3,
       screenX: 0, screenY: 2, shift: false, alt: false, ctrl: false });
     expect(footer.render(40)[2]).toMatch(/^↑ view more +4 subagents$/);
   });

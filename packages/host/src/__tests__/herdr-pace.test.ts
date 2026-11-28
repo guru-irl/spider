@@ -52,10 +52,10 @@ describe.skipIf(!mods)('production pace feed', () => {
     await writeFile(join(h.directories.app, 'settings.json'), '{"theme":"stock"}');
     await writeFile(join(h.directories.agent, 'settings.json'), '{"theme":"stock"}');
     const script = join(h.root, 'app-selection.mjs');
-    await writeFile(script, `import { readFileSync, writeFileSync } from 'node:fs';
-const args = process.argv.slice(2), path = process.env.HERDR_APP_HOME + '/settings.json';
+    await writeFile(script, `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const args = process.argv.slice(2), home = process.env.HERDR_APP_HOME;
 if (args[0] === '--version') console.log('herdr-app 0.1.12');
-else if (args[0] === 'do') { const s = JSON.parse(readFileSync(path, 'utf8')); if (args[1] === 'layout.switch') s.layout = args[args.indexOf('--name') + 1]; if (args[1] === 'app.theme') s.theme = args[args.indexOf('--name') + 1]; writeFileSync(path, JSON.stringify(s)); console.log('{}'); }
+else if (args[0] === 'do') { const layout = args[1] === 'layout.switch', path = home + (layout ? '/shared.json' : '/settings.json'); if (layout || args[1] === 'app.theme') { const s = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {}; s[layout ? 'layout' : 'theme'] = args[args.indexOf('--name') + 1]; writeFileSync(path, JSON.stringify(s)); } console.log('{}'); }
 else console.log('{"spaces":[]}');\n`);
     const app = join(h.root, 'app-selection'); await writeFile(app, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`); await chmod(app, 0o700);
     const configPath = join(h.root, 'config.json');

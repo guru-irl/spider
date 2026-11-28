@@ -101,8 +101,13 @@ export async function readInstalled(suite: Suite, selectedConfig?: string): Prom
   const files: InstalledFile[] = [];
   const mods: Record<string, OwnedPath> = {};
   const templates: OwnedPath[] = [];
-  for (const entry of journal.entries) {
-    const path = pathValue(suite, object(entry).path);
+  for (const value of journal.entries) {
+    const entry = object(value), path = pathValue(suite, entry.path);
+    if (entry.after === null) {
+      const removed = await stat(path).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+      if (removed) throw new HarnessError('unexpected-installed-file', path);
+      continue;
+    }
     const info = await stat(path); if (!info.isFile()) throw new HarnessError('missing-installed-file', path);
     const bytes = await readFile(path);
     files.push({ path, bytes, sha256: createHash('sha256').update(bytes).digest('hex'), mtimeMs: info.mtimeMs });
@@ -116,7 +121,7 @@ export async function readInstalled(suite: Suite, selectedConfig?: string): Prom
     return { machine: runtime.machine, path: destinationPath(suite, runtime.path) };
   });
   await assertDestinationPaths(suite, runtimes.map(runtime => runtime.path));
-  const layoutPath = suite.ownPath(join(appHome, 'layouts/spider-glass.json'));
+  const layoutPath = suite.ownPath(join(appHome, 'layouts/Spider.json'));
   if (!files.some(file => file.path === layoutPath)) throw new HarnessError('missing-installed-layout', 'layout is absent from the setup journal');
   return { configPath, config, appHome, journalPath, journal, files, mods, templates, runtimes, layout: { path: layoutPath, value: JSON.parse(await readFile(layoutPath, 'utf8')) } };
 }

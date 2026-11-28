@@ -148,7 +148,7 @@ describe('setup helper boundary', () => {
     await runSetup(suite, config);
     const dir = join(config.globalRoot, 'herdr/setup'); await mkdir(dir, { recursive: true });
     const mod = join(config.app.home, 'mods/spider/main.js'); await mkdir(join(config.app.home, 'mods/spider'), { recursive: true }); await writeFile(mod, 'installed');
-    const layout = join(config.app.home, 'layouts/spider-glass.json'); await mkdir(join(config.app.home, 'layouts'), { recursive: true }); await writeFile(layout, JSON.stringify({ props: { cliPath: suite.packed.cli } }));
+    const layout = join(config.app.home, 'layouts/Spider.json'); await mkdir(join(config.app.home, 'layouts'), { recursive: true }); await writeFile(layout, JSON.stringify({ props: { cliPath: suite.packed.cli } }));
     const runtime = join(root, 'runtime.mjs'); await writeFile(runtime, 'runtime');
     await writeFile(join(dir, 'journal.json'), JSON.stringify({ version: 1, entries: [{ path: mod }, { path: layout }], runtimes: [{ machine: 'dest.invalid', path: runtime }] }));
     const installed = await readInstalled(suite);

@@ -19,7 +19,7 @@ const fullFixture = (requireAppBackup = false) => focusedSetupFixture({ coreTran
 test('production carries saved mod state when layout props change', async () => {
   const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts);
   const { modStoreFileName } = await import('../../../herdr/src/setup/mod-storage.js');
-  const layoutPath = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const layoutPath = join(f.h.directories.app, 'layouts/Spider.json');
   const layout = JSON.parse(await readFile(layoutPath, 'utf8'));
   const props: unknown[] = [];
   const visit = (value: any) => { if (!value || typeof value !== 'object') return; if (value.mod === 'spider-agents') props.push(value.props); for (const [key, child] of Object.entries(value)) if (key !== 'props') { if (Array.isArray(child)) child.forEach(visit); else visit(child); } };
@@ -67,6 +67,6 @@ test('production keeps unrelated edits in all shared settings files', async () =
     'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } },
     'cmd-shift-w': 'pane.close', 'ctrl-q': 'user.action',
   });
-  expect(keys['layout:spider-glass']).toEqual({ 'cmd-shift-e': 'spider-pane.park' });
+  expect(keys['layout:Spider']).toEqual({ 'cmd-shift-e': 'spider-pane.park' });
   expect(f.bootstraps).toHaveLength(1);
 });

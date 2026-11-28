@@ -74,7 +74,7 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', makeHarness: typeof 
     }), configPath: join(h.root, 'user.json'), packageRoot: h.root, journalRoot: join(h.directories.global, 'setup') };
   const paths = {
     feed: join(h.root, 'source-feed.js'), projection: join(h.root, 'source-children.js'),
-    font: join(h.directories.app, 'fonts/body.ttf'), layout: join(h.directories.app, 'layouts/spider-glass.json'),
+    font: join(h.directories.app, 'fonts/body.ttf'), layout: join(h.directories.app, 'layouts/Spider.json'),
     spider: join(h.directories.app, 'mods/spider/shared/feed.js'), agents: join(h.directories.app, 'mods/agents/shared/feed.js'),
     children: join(h.directories.app, 'mods/agents/spider-children.js'), machines: join(h.directories.app, 'mods/machines/shared/feed.js'),
     props: join(h.directories.app, 'props.json'), template: join(dirname(notes), 'templates/worker.md')
@@ -143,7 +143,7 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', makeHarness: typeof 
   };
   const parts: SetupParts = {
     preflight: async () => ({ fingerprint: 'assets-1', coreIdentity: h.owner!.terminal, mods: ['spider', 'machines', 'agents', 'spaces', 'pane'].map(name => ({ directory: join(request.config.app.home, 'mods', name) })), targets: [target], retiredTerminals: [h.owner!.terminal.address], layoutExport: true }),
-    stageLook: async (_, c, mode) => { modes.push(mode); return [await fresh(paths.font, 'font-data', c), await fresh(paths.layout, '{"name":"spider-glass"}', c, 'clone')]; },
+    stageLook: async (_, c, mode) => { modes.push(mode); return [await fresh(paths.font, 'font-data', c), await fresh(paths.layout, '{"name":"Spider"}', c, 'clone')]; },
     installFiles: async (_, c) => {
       const files = await Promise.all([paths.spider, paths.agents, paths.machines].map(async (path) => fresh(path, await readFile(paths.feed), c)));
       files.push(await fresh(paths.children, await readFile(paths.projection), c), await fresh(paths.props, JSON.stringify({ feedRoot: request.config.globalRoot, cli: join(request.packageRoot, 'dist/herdr/cli.mjs'), nodePath: h.nodeBinary, config: request.configPath, labelContract: c.labelContract, mods: c.modProps }), c));
@@ -168,7 +168,7 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', makeHarness: typeof 
       }
       cutovers++;
       if (mode === 'fake') {
-        await h.app.command('layout.switch', { name: 'spider-glass' });
+        await h.app.command('layout.switch', { name: 'Spider' });
         await h.app.command('app.theme', { name: 'spider-glass' });
       }
       const terminal = await h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: h.root, labels: {}, background: true, outliveParent: true, noNotify: true });

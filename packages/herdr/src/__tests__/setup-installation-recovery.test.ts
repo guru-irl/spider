@@ -3,7 +3,7 @@
 import { readPlacementRepairs, writePlacementRepair } from '../jobs/placement-repairs.js';
 import * as fs from 'node:fs/promises';
 import { mkdir, readFile, writeFile, symlink } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { expect, test, vi } from 'vitest';
 import { type MachineName, panelIpcArgv, type IpcDescriptor, type SessionIpcRequest } from '../contracts.js';
 import { setupHerdr, rollbackHerdr } from '../setup/installer.js';
@@ -62,10 +62,10 @@ test('a symlink destination or parent refuses before any target replacement', as
 
 test('an unowned clone and unavailable role refuse before writes without replacing usable artifacts', async () => {
   const f = await fixture();
-  await mkdir(join(f.request.config.app.home, 'layouts'));
-  await writeFile(f.paths.layout, 'local-clone');
+  await mkdir(dirname(f.paths.spider), { recursive: true });
+  await writeFile(f.paths.spider, 'local-clone');
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'unowned-clone-collision' });
-  expect(await readFile(f.paths.layout, 'utf8')).toBe('local-clone');
+  expect(await readFile(f.paths.spider, 'utf8')).toBe('local-clone');
   const g = await fixture();
   g.parts.generateTemplates = async () => { throw Object.assign(new Error('Configured role unavailable'), { code: 'role-unresolved' }); };
   await expect(setupHerdr(g.request, g.parts)).rejects.toMatchObject({ code: 'role-unresolved' });
@@ -434,7 +434,7 @@ test('doctor does not inspect app or core placement when no repair record exists
 
 const sectionKeys = {
   global: { 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } }, 'cmd-t': 'mod.open:spider-machine-picker', 'cmd-d': 'mod.open:spider-machine-picker-right', 'cmd-shift-d': 'mod.open:spider-machine-picker-down' },
-  'layout:spider-glass': { 'cmd-shift-e': 'spider-pane.park', 'cmd-shift-w': 'spider-pane.close' },
+  'layout:Spider': { 'cmd-shift-e': 'spider-pane.park', 'cmd-shift-w': 'spider-pane.close' },
 } as const;
 const legacyTerminalKeys = { 'cmd-shift-a': 'send:\u001b[97;6u' };
 
@@ -461,9 +461,9 @@ test('setup composes legacy and section keys in one write and records ownership'
   expect(first.writes.filter(p => p === path)).toEqual([path]);
   const keys = JSON.parse(await readFile(path, 'utf8'));
   expect(keys.global).toEqual({ ...sectionKeys.global, 'cmd-shift-w': 'pane.close' });
-  expect(keys['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close');
+  expect(keys['layout:Spider']['cmd-shift-w']).toBe('spider-pane.close');
   expect(keys.terminal).toEqual({ 'ctrl-v': 'terminal.paste_image', 'cmd-shift-a': legacyTerminalKeys['cmd-shift-a'] });
-  expect(keys['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
+  expect(keys['layout:Spider']['cmd-shift-e']).toBe('spider-pane.park');
   const saved = await readJournal(f.request.journalRoot);
   expect(saved.entries.find(entry => entry.path === path)).toMatchObject({ keys: { ...sectionKeys, terminal: legacyTerminalKeys }, managed: { kind: 'keys' } });
   expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);

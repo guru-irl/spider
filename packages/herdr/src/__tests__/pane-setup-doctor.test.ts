@@ -11,15 +11,15 @@ import type { InstallFile } from '../setup/installer.js';
 vi.mock('node:child_process', async original => { const actual = await original<typeof import('node:child_process')>(); return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) }; });
 const b = {
   global: { 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } }, 'cmd-t': 'mod.open:spider-machine-picker', 'cmd-d': 'mod.open:spider-machine-picker-right', 'cmd-shift-d': 'mod.open:spider-machine-picker-down' },
-  'layout:spider-glass': { 'cmd-shift-e': 'spider-pane.park', 'cmd-shift-w': 'spider-pane.close' },
+  'layout:Spider': { 'cmd-shift-e': 'spider-pane.park', 'cmd-shift-w': 'spider-pane.close' },
 } as const satisfies KeySections;
 const stock = () => ({ global: { 'cmd-p': 'mod.open:picker', 'cmd-n': 'space.new', 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down', 'cmd-shift-w': 'pane.close', 'cmd-f': 'terminal.search' }, terminal: { 'ctrl-v': 'terminal.paste_image' } });
 test('B extends A managed key ownership without changing native close behaviour', async () => {
   const shipped = JSON.parse(await readFile(new URL('../../assets/keys.json', import.meta.url), 'utf8'));
-  expect(shipped.global).toMatchObject(b.global); expect(shipped['layout:spider-glass']).toEqual(b['layout:spider-glass']);
+  expect(shipped.global).toMatchObject(b.global); expect(shipped['layout:Spider']).toEqual(b['layout:Spider']);
   const keys = JSON.parse(mergeKeys(Buffer.from(JSON.stringify(stock())), b, {}, false).toString());
   for (const layout of ['main', 'terminals', 'win98']) expect(keys[`layout:${layout}`]?.['cmd-shift-w'] ?? keys.global['cmd-shift-w']).toBe('pane.close');
-  expect(keys['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close'); expect(keys.global['cmd-n']).toEqual(b.global['cmd-n']);
+  expect(keys['layout:Spider']['cmd-shift-w']).toBe('spider-pane.close'); expect(keys.global['cmd-n']).toEqual(b.global['cmd-n']);
   expect(keys.global['cmd-f']).toBe('terminal.search'); expect(keys.terminal['ctrl-v']).toBe('terminal.paste_image');
   expect(checkManagedKeyBindings(Buffer.from(JSON.stringify(keys)), b).failures).toEqual([]);
 });
@@ -30,7 +30,7 @@ test('stock creation and close bindings migrate but user keys refuse', () => {
     const keys = stock(); keys.global[key as 'cmd-t'] = 'foreign.action'; const original = Buffer.from(JSON.stringify(keys));
     expect(() => mergeKeys(original, b, {}, overwrite)).toThrowError(expect.objectContaining({ code: 'key-binding-conflict' })); expect(JSON.parse(original.toString())).toEqual(keys);
   }
-  expect(() => mergeKeys(Buffer.from(JSON.stringify({ 'layout:spider-glass': { 'cmd-shift-w': 'foreign.action' } })), b, {}, true)).toThrow();
+  expect(() => mergeKeys(Buffer.from(JSON.stringify({ 'layout:Spider': { 'cmd-shift-w': 'foreign.action' } })), b, {}, true)).toThrow();
 });
 test('B key ownership rolls back only unchanged fields', async () => {
   const f = await createClientFixture();
@@ -40,7 +40,7 @@ test('B key ownership rolls back only unchanged fields', async () => {
     await validateFiles([file], journal); await prepareBackups(root, [file], journal); await applyFiles(root, [file], journal);
     const edited = JSON.parse(await readFile(path, 'utf8')); edited.global['cmd-d'] = 'my.split'; await writeFile(path, JSON.stringify(edited));
     await rollbackFiles(root, await readJournal(root), { warn: () => {} }); const result = JSON.parse(await readFile(path, 'utf8'));
-    expect(result.global).toEqual({ ...stock().global, 'cmd-d': 'my.split' }); expect(result['layout:spider-glass']).toBeUndefined(); expect(result.terminal).toEqual(stock().terminal);
+    expect(result.global).toEqual({ ...stock().global, 'cmd-d': 'my.split' }); expect(result['layout:Spider']).toBeUndefined(); expect(result.terminal).toEqual(stock().terminal);
   } finally { await f.close(); }
 });
 afterEach(() => vi.restoreAllMocks());

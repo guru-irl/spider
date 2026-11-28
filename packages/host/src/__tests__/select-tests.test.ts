@@ -37,6 +37,19 @@ async function api() {
   return import(/* @vite-ignore */ file);
 }
 
+// Slow-test deferral reads the timing table beside the selector. Cases that
+// depend on which files are slow install a private selector, runner and
+// table in the fixture, so refreshing scripts/test-durations.json can't
+// change what they select. The returned base commit contains those files.
+async function selectorWith(f: ReturnType<typeof fixture>, durations: Record<string, number>) {
+  for (const file of ['scripts/select-tests.mjs', 'scripts/run-selected-tests.mjs', 'scripts/test-resources.json']) f.put(file, readFileSync(file, 'utf8'));
+  f.put('scripts/test-durations.json', JSON.stringify(durations));
+  const base = f.commit();
+  const selector = await import(/* @vite-ignore */ join(f.root, 'scripts/select-tests.mjs'));
+  const runner = await import(/* @vite-ignore */ join(f.root, 'scripts/run-selected-tests.mjs'));
+  return { selectTests: selector.selectTests, executionPlan: runner.executionPlan, base };
+}
+
 describe('change-scoped test manifests', () => {
   it('ranks changed tests and direct static imports before neighbors and transitive importers', async () => {
     const { testPriorities } = await api(); const f = fixture();
@@ -149,16 +162,99 @@ describe('change-scoped test manifests', () => {
     expect(readFileSync(actions, 'utf8')).toContain('acceptance=true\n');
   });
 
+  it('diffs a PR merge commit from the live base branch, not the base it opened on', async () => {
+    // CI passes origin/<base ref>. The selector's merge base with the tested
+    // merge commit is that commit's first parent, even after the base moves on.
+    const { selectTests } = await api(); const f = fixture(); const opened = f.base;
+    f.git('checkout', '-q', '-b', 'pr'); f.put('packages/roam/src/store.ts', 'export const value = 2;'); f.commit();
+    f.git('checkout', '-q', '-b', 'live', opened); f.put('docs/guide/example.md', 'main moved'); const live = f.commit();
+    f.git('checkout', '-q', '-b', 'merge', live); f.git('merge', '-q', '--no-ff', '--no-edit', 'pr'); const merged = f.git('rev-parse', 'HEAD');
+    f.git('checkout', '-q', 'live'); f.put('docs/guide/later.md', 'after the merge ref'); f.commit(); f.git('checkout', '-q', 'merge');
+    const manifest = await selectTests({ ...f, base: 'live', head: merged, resolveRelated: async () => [a] });
+    expect(manifest.baseSha).toBe(f.git('rev-parse', 'HEAD^1'));
+    expect(manifest.baseSha).toBe(live);
+    expect(manifest.changedPaths).toEqual(['packages/roam/src/store.ts']);
+    const stale = await selectTests({ ...f, base: opened, head: merged, resolveRelated: async () => [a] });
+    expect(stale.changedPaths).toEqual(['docs/guide/example.md', 'packages/roam/src/store.ts']);
+  });
+
+  it('keeps the slow compiler sentinel while deferring the slow source-text guard', async () => {
+    const f = fixture();
+    const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
+    f.put(compiler, 'export {};');
+    const { selectTests, base } = await selectorWith(f, { [compiler]: 10_816, [guard]: 30_437 });
+    f.put('packages/roam/src/store.ts', 'export const value = 2;');
+    const head = f.commit();
+    const manifest = await selectTests({ ...f, base, head, resolveRelated: async () => [a] });
+    expect(manifest.mode).toBe('scoped');
+    expect(manifest.files).toEqual([a, compiler].sort());
+    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([guard]);
+    expect(manifest.reasons[compiler].some((reason: string) => reason.startsWith('runtime-compiler-smoke:'))).toBe(true);
+    const budgeted = await selectTests({ ...f, base, head, budgetMs: 1_000, resolveRelated: async () => [a] });
+    expect(budgeted.files).toEqual([compiler]);
+    expect(budgeted.deferred.map((entry: { file: string }) => entry.file)).toEqual([a, guard].sort());
+    expect(budgeted.budget).toMatchObject({ predictedMaxMs: 11_516, requiredOverBudget: true });
+  });
+
+  it('keeps required files after an earlier path triggers full fallback', async () => {
+    const f = fixture();
+    const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
+    f.put(compiler, 'export {};');
+    const { selectTests, base } = await selectorWith(f, { [compiler]: 10_816, [guard]: 100 });
+    f.put('.github/workflows/ci.yml', 'changed');
+    f.put('packages/roam/src/store.ts', 'export const value = 2;');
+    const manifest = await selectTests({ ...f, base, head: f.commit(), budgetMs: 1_000 });
+    expect(manifest.budget.candidateMode).toBe('full');
+    expect(manifest.files).toEqual([compiler]);
+    expect(manifest.budget.requiredOverBudget).toBe(true);
+    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([a, b, c, guard].sort());
+  });
+
+  it.each([
+    ['packages/intercom/src/protocol.ts', ['packages/intercom/src/__tests__/upstream-parity.test.ts', 'packages/host/src/__tests__/intercom-upstream-inventory.test.ts']],
+    ['scripts/check-intercom-parity.mjs', ['packages/intercom/src/__tests__/upstream-parity.test.ts']],
+  ])('keeps required parity tests for %s', async (changed, required) => {
+    const f = fixture();
+    for (const file of required) f.put(file, 'export {};');
+    const { selectTests, base } = await selectorWith(f, Object.fromEntries(required.map(file => [file, 10_816])));
+    f.put(changed, 'export const value = 2;');
+    const head = f.commit();
+    for (const budgetMs of [undefined, 1_000]) {
+      const manifest = await selectTests({ ...f, base, head, budgetMs, resolveRelated: async () => [] });
+      for (const file of required) {
+        expect(manifest.files).toContain(file);
+        expect(manifest.deferred.map((entry: { file: string }) => entry.file)).not.toContain(file);
+      }
+    }
+  });
+
+  it.each(['yes', 1, null])('rejects a non-boolean required policy value %s', async required => {
+    const f = fixture();
+    f.put('scripts/select-tests.mjs', readFileSync('scripts/select-tests.mjs', 'utf8'));
+    const policy = JSON.parse(readFileSync('scripts/test-resources.json', 'utf8'));
+    policy.rules.find((rule: { id: string }) => rule.id === 'runtime-compiler-smoke').required = required;
+    f.put('scripts/test-resources.json', JSON.stringify(policy));
+    f.put('scripts/test-durations.json', '{}');
+    const base = f.commit();
+    f.put('packages/roam/src/store.ts', 'changed');
+    const head = f.commit();
+    const { selectTests } = await import(/* @vite-ignore */ join(f.root, 'scripts/select-tests.mjs'));
+    const result = await selectTests({ ...f, base, head, resolveRelated: async () => [a] });
+    expect(result.mode).toBe('full');
+    expect(result.fallback).toMatch(/policy/);
+    expect(result.files).toEqual([a, b, c, guard].sort());
+  });
+
   it('unions the Vite graph with source-text guards and records stable provenance', async () => {
-    const { selectTests } = await api();
-    const f = fixture(); f.put('packages/roam/src/store.ts', 'export const value = 2;'); const head = f.commit();
-    const manifest = await selectTests({ ...f, head, resolveRelated: async () => [a] });
+    await api(); const f = fixture(); const { selectTests, base } = await selectorWith(f, { [guard]: 30_437 });
+    f.put('packages/roam/src/store.ts', 'export const value = 2;'); const head = f.commit();
+    const manifest = await selectTests({ ...f, base, head, resolveRelated: async () => [a] });
     expect(manifest.mode).toBe('scoped');
     expect(manifest.files).toEqual([a]);
     expect(manifest.reasons[a]).toContain('import graph');
     expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([guard]);
     expect(manifest.deferred[0].reasons.some((s: string) => s.includes('source-text'))).toBe(true);
-    expect(manifest.baseSha).toBe(f.base);
+    expect(manifest.baseSha).toBe(base);
     expect(manifest.testedSha).toBe(head);
     expect(manifest.timingHash).toMatch(/^[a-f0-9]{64}$/);
     expect(manifest.selectionHash).toMatch(/^[a-f0-9]{64}$/);
@@ -205,7 +301,7 @@ describe('change-scoped test manifests', () => {
   });
 
   it('keeps the runtime compiler smoke on production source changes outside its import graph', async () => {
-    const { selectTests } = await api(); const f = fixture();
+    await api(); const f = fixture(); const { selectTests } = await selectorWith(f, {});
     const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
     f.put(compiler, 'export {};'); const base = f.commit();
     f.put('packages/roam/src/value.ts', 'export const value = 2;');
@@ -251,12 +347,12 @@ describe('change-scoped test manifests', () => {
   });
 
   it('prepares exact manifest files before two-way sharding and never reapplies changed filtering', async () => {
-    const { selectTests } = await api(); const f = fixture(); f.put('docs/guide/example.md', 'changed'); const head = f.commit();
-    const manifest = await selectTests({ ...f, head, resolveRelated: async () => [] });
-    const file = resolve('scripts/run-selected-tests.mjs');
+    await api(); const file = resolve('scripts/run-selected-tests.mjs');
     const { existsSync } = await import('node:fs');
     expect(existsSync(file), 'the manifest runner must exist').toBe(true);
-    const { executionPlan } = await import(/* @vite-ignore */ file);
+    const f = fixture(); const { selectTests, executionPlan, base } = await selectorWith(f, { [guard]: 30_437 });
+    f.put('docs/guide/example.md', 'changed'); const head = f.commit();
+    const manifest = await selectTests({ ...f, base, head, resolveRelated: async () => [] });
     const plan = executionPlan(manifest, { root: f.root, shard: '1/2' });
     expect(plan.files).toEqual([c]); expect(plan.maxWorkers).toBe(3);
     expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([guard]);

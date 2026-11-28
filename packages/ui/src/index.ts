@@ -1,12 +1,12 @@
-// spider-ui skeleton. All spider visual output flows through this kit.
-// Honors pi active theme tokens; signature glyph is 🕸 (never color-only).
+// Shared Spider UI. Glyphs come from the selected icon style; colours use pi theme tokens.
 
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "./component";
 import { fitResultLines } from "./renderers/types";
 import { icon, type IconStyle } from "./icons.js";
 export type { Component } from "./component";
 export { cachedLines } from "./component";
-export { ICON_STYLES, icon, isIconStyle, type IconStyle, type IconRole } from "./icons.js";
+export { ICON_STYLES, ACTIVITY_FRAMES, BAND_GLYPHS, REPLY_FRAME, icon, isIconStyle, type IconStyle, type IconRole } from "./icons.js";
 export { formatRunUsage, formatCompactionCount } from "./agents/usage";
 
 // Phase 0 kept a static ANSI token table; that is gone. Colour is NEVER hardcoded here —
@@ -24,7 +24,7 @@ export const theme: { glyph: string; token(name: string): string } = {
 };
 
 function clamp(s: string, width: number): string {
-  return s.length <= width ? s : s.slice(0, Math.max(0, width - 1)) + "…";
+  return truncateToWidth(s, width, "…");
 }
 
 export function SectionRule(title?: string, iconStyle?: IconStyle): Component {
@@ -33,7 +33,7 @@ export function SectionRule(title?: string, iconStyle?: IconStyle): Component {
       const glyph = icon(iconStyle, "spider");
       const label = title ? ` ${glyph} ${title} ` : ` ${glyph} `;
       const fill = theme.token("rule");
-      const remaining = Math.max(0, width - label.length);
+      const remaining = Math.max(0, width - visibleWidth(label));
       return [clamp(label + fill.repeat(remaining), width)];
     },
   };
@@ -56,7 +56,7 @@ export function StatusLine(opts: { left?: string; right?: string }): Component {
     render(width: number): string[] {
       const left = opts.left ?? "";
       const right = opts.right ?? "";
-      const gap = Math.max(1, width - left.length - right.length);
+      const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
       return [clamp(left + " ".repeat(gap) + right, width)];
     },
   };
@@ -94,7 +94,7 @@ export { AgentList } from "./agents/agent-list";
 export { renderGridCell } from "./agents/grid-cell";
 export { AgentDetail } from "./agents/agent-detail";
 export type { DetailRead, DetailBackTarget, DetailOptions } from "./agents/agent-detail";
-export { Spinner, BRAILLE_FRAMES } from "./components/spinner";
+export { MOON_CYCLE_MS, moonFrame } from "./components/spinner";
 export { renderProgressBar } from "./components/progress-bar";
 export { renderDiffView } from "./components/diff-view";
 export { renderTable } from "./components/table";
@@ -104,7 +104,7 @@ export type {
   RenderCtx, ExecKind, ExecDetails, IndexDetails, MemoryRecordView, MemoryCardDetails,
   TodoItemView, TodoChecklistDetails, RunView, RunResultDetails, MessageDetails,
 } from "./renderers/types";
-export { card, kv, statusIcon, sectionRule, fitResultLines } from "./renderers/types";
+export { card, kv, statusIcon, sectionRule, fitResultLines, cardDetailIndent, flushLeft } from "./renderers/types";
 export { renderErrorResult } from "./renderers/error";
 export { renderExecCall, renderExecResult } from "./renderers/exec";
 export { renderIndexResult } from "./renderers/index-fetch";
@@ -125,7 +125,7 @@ export type { StatsInput, StatsSummary, ModelStatRow } from "./screens/stats-col
 export { renderStats, StatsView } from "./screens/stats-view";
 export { renderInsights, InsightsView } from "./screens/insights-view";
 export type { InsightGraphView } from "./screens/insights-view";
-export { catalogRows, resolveDefault, MODEL_ROLES } from "./screens/models-model";
+export { catalogRows, resolveDefault, MODEL_ROLES, isAgentModelRole } from "./screens/models-model";
 export type { CatalogRow, TierGroup, ModelThinkingDisplay } from "./screens/models-model";
 export { renderModels, ModelsView } from "./screens/models-view";
 export { isAbsolutePathList } from "./screens/absolute-paths";

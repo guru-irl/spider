@@ -67,6 +67,7 @@ let templateSnapshot: WorkspaceSnapshot, templatePrevious: WorkspaceSnapshot, te
 let templateSparse: WorkspaceSnapshot, templateSparseArtifact: string;
 let templateSparseFull: WorkspaceSnapshot, templateSparseFullArtifact: string;
 let templatePreparedDigest: string, templateSparsePreparedDigest: string;
+let sparseInstalled: Awaited<ReturnType<typeof interruptedInstalledFixture>>;
 beforeAll(async () => {
   templateRoot = mkdtempSync(join(dirname(scratchDbPath("workspace-template")), "workspace-template-"));
   const source = join(templateRoot, "source"), origin = join(templateRoot, "origin.git");
@@ -117,7 +118,10 @@ beforeAll(async () => {
   await buildPreparedTemplate();
   await buildSparsePreparedTemplate();
 }, 60000);
-afterAll(() => { if (templateRoot) rmSync(templateRoot, { recursive: true, force: true }); });
+afterAll(() => {
+  if (sparseInstalled) rmSync(sparseInstalled.f.root, { recursive: true, force: true });
+  if (templateRoot) rmSync(templateRoot, { recursive: true, force: true });
+});
 
 function buildLfsTemplate(location: LfsLocation): void {
   const source = join(templateRoot, `lfs-source-${location}`);
@@ -214,18 +218,19 @@ async function buildPreparedTemplate(): Promise<void> {
 }
 
 async function buildSparsePreparedTemplate(): Promise<void> {
-  const f = fixture(), snapshot = sparseSnapshot(f);
-  const { prepareWorkspace } = await import("../workspace-import");
-  await prepareWorkspace(snapshot, f.destination, f.ports);
-  const row = f.ports.journal.read(snapshot.moveId).find(entry => entry.action === "workspace-prepared");
-  if (!row || typeof row.result.digest !== "string") throw new Error("missing sparse prepared fixture journal");
+  // Git has installed and verified the checkout before the final journal receipt.
+  // Copy that tree for prepared fixtures and keep its journal for the recovery test.
+  const installed = await interruptedInstalledFixture();
+  const { f, snapshot } = installed;
+  const row = f.ports.journal.read(snapshot.moveId).find(entry => entry.action === "workspace-config-installed");
+  if (!row || typeof row.result.digest !== "string") throw new Error("missing sparse installation fixture journal");
   templateSparsePreparedDigest = row.result.digest;
   const destination = join(templateRoot, "sparse-prepared-destination");
   cpSync(f.destination, destination, { recursive: true });
   const config = join(destination, ".git", "config");
   writeFileSync(config, readFileSync(config, "utf8").replaceAll(join(f.root, "origin.git"), join(templateRoot, "origin.git")));
-  rmSync(f.root, { recursive: true, force: true });
   roots.splice(roots.indexOf(f.root), 1);
+  sparseInstalled = installed;
 }
 
 interface Fixture {
@@ -848,15 +853,7 @@ it("refuses an old partial settings journal without transition evidence", async 
 }, 5000);
 
 it("retries a journaled configuration already installed before interruption", async () => {
-  const f = fixture(), snapshot = sparseSnapshot(f);
-  const { prepareWorkspace } = await import("../workspace-import");
-  const record = f.ports.journal.record.bind(f.ports.journal);
-  f.ports.journal.record = (id, action, result) => {
-    record(id, action, result);
-    if (action === "workspace-config-installed") throw new Error("simulated preparation interruption");
-  };
-  await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow("simulated preparation interruption");
-  f.ports.journal.record = record;
+  const { f, snapshot, prepareWorkspace } = sparseInstalled;
   f.ports.journal.record(snapshot.moveId, "move-transfer-diagnostic", { phase: "participant-import" });
   f.ports.journal.record(snapshot.moveId, "move-import-intent", { root: f.destination });
   const run = f.ports.run;

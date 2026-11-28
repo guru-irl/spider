@@ -4,24 +4,25 @@ import { icon } from "../icons.js";
 import { buildConfigModel } from "./config-model.js";
 import { sectionRule, statusIcon, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
-/** Pure, BODY-ONLY config render (no 🕸, no card()). For each schema group: a glyph-free
- *  `sectionRule`, then one row per field — ○ default / ● overridden status glyph, the field
- *  label, its current value, and a warning ` ⚠restart` marker. Every line is width-guarded.
+/** Body-only config view. Each group has a section rule and a row per field, with its
+ *  status, value, and restart warning. Every line is width-guarded.
  *  See docs/output-ui-guidelines.md. */
-export function renderConfig(cfg: unknown, theme: ThemeAdapter, width: number, expanded = false, schema: ConfigGroup[] = CONFIG_SCHEMA): string[] {
+export function renderConfig(cfg: unknown, theme: ThemeAdapter, width: number, expanded = false, schema: ConfigGroup[] = CONFIG_SCHEMA, transcript = false): string[] {
 	const trim = resultTrimmer(expanded);
 	const body: string[] = [];
-	for (const group of buildConfigModel(cfg, schema)) {
-		body.push(sectionRule(theme, group.label, width));
+	const groups = buildConfigModel(cfg, schema);
+	const indent = transcript ? " " : "";
+	for (const group of groups) {
+		if (!transcript || groups.length > 1) body.push(indent + sectionRule(theme, group.label, width - indent.length));
 		for (const r of group.rows) {
 			const glyph = statusIcon(theme, r.isDefault ? "off" : "on");
 			const restart = r.field.restart ? theme.fg("warning", ` ${icon(theme.iconStyle, "warning")}restart`) : "";
 			const scope = r.field.scope === "global" ? theme.fg("muted", " (global-only; scope:global)") : "";
 			const line = `${glyph} ${theme.fg("text", r.field.label)} ${theme.fg("muted", r.field.optional && r.value === undefined ? "unset" : typeof r.value === "object" && r.value !== null ? JSON.stringify(r.value) : String(r.value))}${scope}${restart}`;
-			body.push(trim(line, width, ""));
+			body.push(trim(indent + line, width, ""));
 		}
 	}
-	return fitResultLines(body, width, expanded);
+	return fitResultLines(body, width, expanded, transcript ? 3 : undefined);
 }
 
 /** Component wrapper (cached by width) for mounting via ctx.ui.custom. */

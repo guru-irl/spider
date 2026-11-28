@@ -1,9 +1,9 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { icon as uiIcon } from "../icons.js";
-import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
+import { cardDetailIndent, fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { ExecDetails, RenderCtx } from "./types.js";
 
-const CALL_CAP = 10;
+const CALL_CAP = 2;
 
 function formatSize(bytes: number): string {
   return bytes < 1024 ? `${bytes}B` : bytes < 1024 * 1024
@@ -12,14 +12,15 @@ function formatSize(bytes: number): string {
 
 function outputRows(details: ExecDetails, ctx: RenderCtx, collapsed: string[]): string[] {
   const { theme, width } = ctx;
+  const indent = cardDetailIndent(theme.iconStyle);
   const full = ctx.expanded ? details.expandedOutput : undefined;
-  if (!full) return collapsed.map((p) => truncateToWidth(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", p)}`, width, ""));
+  if (!full) return collapsed.map((p) => truncateToWidth(`${indent}${theme.fg("toolOutput", p)}`, width, ""));
   const rows: string[] = [];
-  if (full.hidden) rows.push(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${full.hidden} earlier output line${full.hidden === 1 ? "" : "s"} hidden`)}`);
+  if (full.hidden) rows.push(`${indent}${theme.fg("muted", `… ${full.hidden} earlier output line${full.hidden === 1 ? "" : "s"} hidden`)}`);
   let stream: "stdout" | "stderr" | undefined;
   for (const entry of full.rows) {
-    if (entry.stream === "stderr" && stream !== "stderr") rows.push(` ${theme.fg("muted", "── stderr ──")}`);
-    rows.push(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", entry.text)}`);
+    if (entry.stream === "stderr" && stream !== "stderr") rows.push(indent + theme.fg("muted", "stderr:"));
+    rows.push(indent + theme.fg("toolOutput", entry.text));
     stream = entry.stream;
   }
   if (full.partial) {
@@ -29,55 +30,41 @@ function outputRows(details: ExecDetails, ctx: RenderCtx, collapsed: string[]): 
   return rows;
 }
 
-/** CALL-header variant (glyph + label). The spider host renders its own call title via
- *  renderSpiderCall, so this is used only where a standalone header is wanted. */
+/** Render the command preview below the call title. The host can supply a styled title with a destination. */
 export function renderExecCall(
   details: Pick<ExecDetails, "kind" | "commands">,
-  ctx: RenderCtx,
+  { theme, width, expanded = false }: RenderCtx,
+  title?: string,
 ): string[] {
-  const { theme, width } = ctx;
-  const head = truncateToWidth(
-    theme.fg("accent", `${uiIcon(theme.iconStyle, "spider")} `) + theme.fg("toolTitle", theme.bold("spider ")) + theme.fg("muted", details.kind),
-    width, "",
-  );
-  const cmds = details.commands ?? [];
-  const shown = cmds.slice(0, CALL_CAP);
-  const body = shown.map((c) =>
-    truncateToWidth(theme.fg("dim", "│ ") + theme.fg("toolOutput", c), width, ""),
-  );
-  const extra = cmds.length - shown.length;
-  if (extra > 0) body.push(truncateToWidth(theme.fg("dim", `│ … +${extra} more`), width, ""));
-  return [head, ...body];
+  const verb = theme.fg("toolTitle", theme.bold(details.kind));
+  const head = title ?? ` ${theme.fg("toolTitle", uiIcon(theme.iconStyle, "spider"))} ${verb}`;
+  const all = (details.commands ?? []).flatMap(command => command.split(/\r?\n/u));
+  const preview = all.filter(command => command.trim());
+  const shown = expanded && preview.length ? all : preview.slice(0, CALL_CAP);
+  const indent = cardDetailIndent(theme.iconStyle);
+  const body = shown.map(command => indent + theme.fg("toolOutput", command));
+  const extra = preview.length - shown.length;
+  if (extra > 0) body.push(indent + theme.fg("dim", `… +${extra} more line${extra === 1 ? "" : "s"}`));
+  return [truncateToWidth(head, width, "…"), ...fitResultLines(body, width, expanded, 3)];
 }
 
-/** RESULT body (no header — the spider call line already shows `🕸 spider · <kind>` AND the
- *  command). The result carries the OUTPUT. The command is repeated here only when expanded
- *  (ctrl+o), where the full script is worth seeing; showing it collapsed would duplicate the
- *  call header line for line. Then a status line and the output, `renderRun`-style (leading
- *  blank, 1-space indent, `⎿` gutter). */
+/** Render the exit status and output. The call owns the command in both modes. */
 export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
   const expanded = ctx.expanded === true;
   const trim = resultTrimmer(expanded);
-  const out: string[] = [""];
+  const out: string[] = [];
   const timeoutLabel = (label: string) => details.timedOut ? `timed out · ${label}` : label;
-
-  // Command block — EXPANDED ONLY. The call header already shows the first lines while the
-  // command runs; on ctrl+o we show the whole script, which the header deliberately clips.
-  if (expanded) {
-    const cmdLines = (details.commands ?? []).flatMap((c) => String(c).split("\n"));
-    for (const c of cmdLines) out.push(trim(` ${theme.fg("text", c)}`, width, "…"));
-  }
 
   // While running we do not know the exit code, so claiming "✓ exit 0" would be a lie that
   // looks like success. Show a running marker and every line streamed so far — the whole
   // point of streaming is watching it arrive, so the collapsed 1-line preview is wrong here.
   if (details.running) {
-    out.push(trim(` ${theme.fg("muted", "● running…")}`, width, ""));
+    out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "running")} running…`)}`, width, ""));
     for (const p of details.preview ?? []) {
-      out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", p)}`, width, ""));
+      out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("toolOutput", p)}`, width, ""));
     }
-    return fitResultLines(out, width, expanded);
+    return fitResultLines(out, width, expanded, 3);
   }
 
   // C-H2: a batch with MORE THAN ONE distinct failure kind has no single exitCode/
@@ -97,8 +84,8 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     const shown = expanded ? preview : preview.slice(0, 1);
     out.push(...outputRows(details, ctx, shown));
     const rest = preview.length - shown.length;
-    if (rest > 0) out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${rest} more`)}`, width, ""));
-    return fitResultLines(out, width, expanded);
+    if (rest > 0) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `… ${rest} more`)}`, width, ""));
+    return fitResultLines(out, width, expanded, 3);
   }
 
   // The command was detached at a timeout handoff and is still running somewhere: the
@@ -116,7 +103,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
         ? ` ${statusIcon(theme, "on")} ${theme.fg("muted", `${timeoutLabel("outcome unknown")} · ${details.outLines} lines`)}`
         : ` ${statusIcon(theme, "on")} ${theme.fg("muted", `detached · pid ${d.pid ?? "?"} · exit unknown · ${details.outLines} lines so far`)}`,
       width, ""));
-    if (d.jobDir) out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `logs: ${d.jobDir}`)}`, width, ""));
+    if (d.jobDir) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `logs: ${d.jobDir}`)}`, width, ""));
     // m-1: both sinks now word this row's receipt disclosure identically —
     // the model-facing text (actions/exec.ts's `shape()`) already says
     // "receipt: <path>  (recorded outcome when available)" for BOTH the
@@ -124,12 +111,12 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     // different ("status: <path> (appears when it exits)") for `timeout`
     // only, even though the underlying uncertainty is the same shape.
     if (d.receipt) out.push(trim(
-      ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `receipt: ${d.receipt}  (recorded outcome when available)`)}`,
+      `${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `receipt: ${d.receipt}  (recorded outcome when available)`)}`,
       width, ""));
     const preview = details.preview ?? [];
     const shown = expanded ? preview : preview.slice(-1);
     out.push(...outputRows(details, ctx, shown));
-    return fitResultLines(out, width, expanded);
+    return fitResultLines(out, width, expanded, 3);
   }
 
   // C-1/I-3: a KNOWN terminal outcome (exited/signal/spawn-error/aborted) whose
@@ -150,19 +137,19 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     meta.push("logs retained");
     out.push(trim(` ${icon} ${theme.fg("muted", meta.join(" · "))}`, width, ""));
     out.push(trim(
-      ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `job dir: ${details.retained.jobDir}${details.retained.reason ? ` — ${details.retained.reason}` : ""}`)}`,
+      `${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `job dir: ${details.retained.jobDir}${details.retained.reason ? ` — ${details.retained.reason}` : ""}`)}`,
       width, ""));
     if (details.retained.receipt) {
       out.push(trim(
-        ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `receipt: ${details.retained.receipt}  (recorded outcome when available)`)}`,
+        `${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `receipt: ${details.retained.receipt}  (recorded outcome when available)`)}`,
         width, ""));
     }
     const preview = details.preview ?? [];
     const shown = expanded ? preview : preview.slice(0, 1);
     out.push(...outputRows(details, ctx, shown));
     const rest = preview.length - shown.length;
-    if (rest > 0) out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${rest} more`)}`, width, ""));
-    return fitResultLines(out, width, expanded);
+    if (rest > 0) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `… ${rest} more`)}`, width, ""));
+    return fitResultLines(out, width, expanded, 3);
   }
 
   // M-c: a genuinely unknown exit code that ISN'T the detached-at-handoff shape
@@ -196,7 +183,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     const preview = details.preview ?? [];
     const shown = expanded ? preview : preview.slice(0, 1);
     out.push(...outputRows(details, ctx, shown));
-    return fitResultLines(out, width, expanded);
+    return fitResultLines(out, width, expanded, 3);
   }
 
   const icon = statusIcon(theme, details.ok ? "ok" : "fail");
@@ -211,11 +198,11 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
   const shown = expanded ? preview : preview.slice(0, 1);
   out.push(...outputRows(details, ctx, shown));
   const rest = preview.length - shown.length;
-  if (rest > 0) out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${rest} more`)}`, width, ""));
+  if (rest > 0) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `… ${rest} more`)}`, width, ""));
   if (details.indexed) {
     out.push(trim(
-      ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `indexed → ${details.indexed.source} (${details.indexed.chunks} chunks)`)}`,
+      `${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `indexed ${uiIcon(theme.iconStyle, "arrowRight")} ${details.indexed.source} (${details.indexed.chunks} chunks)`)}`,
       width, ""));
   }
-  return fitResultLines(out, width, expanded);
+  return fitResultLines(out, width, expanded, 3);
 }

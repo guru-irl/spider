@@ -106,7 +106,7 @@ for(const key of ['openSync','readFileSync']){const original=fs[key];fs[key]=fun
         if (request.action === "roaming-enabled") return { enabled: request.enabled };
         if (request.action === "permission-summary") return { changed: 0 };
         if (request.action === "switchover") return { status: "applied" };
-        if (["enrollment", "clear-secrets", "unit-write", "systemctl"].includes(String(request.action))) return true;
+        if (["enrollment", "clear-secrets"].includes(String(request.action))) return true;
         if (request.action !== "verify") throw new Error(`unexpected-effect:${request.action}`);
         const mapped = Object.fromEntries(Object.entries(request).map(([key, value]) => [key, typeof value === "string" && value.startsWith("/home/fixture") ? home + value.slice("/home/fixture".length) : value]));
         const child = spawnSync(process.execPath, ["--import", hook, "--input-type=module", "-e", getProvisionRemoteScript()], {
@@ -130,7 +130,7 @@ it.each(["hc-serve-0a1b2c3d.service", undefined])("provisions with the peer unit
   config.coreUnit = "hub-core.service";
   if (coreUnit) config.peers[0].coreUnit = coreUnit;
   writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
-  const probes: unknown[] = [], enrollments: unknown[] = [], units: unknown[] = [];
+  const probes: unknown[] = [], enrollments: unknown[] = [], serviceRequests: unknown[] = [];
   vi.mocked(transportModule.createProvisionTransport).mockImplementation(({ enrolled }) => {
     const peer = enrolled[0], inventory = healthyInventory(); inventory.core.unit = unit; inventory.pi = peer.pi;
     return { transport: { resolve: async () => peer, bootstrapProbe: async (_peer: unknown, _kind: unknown, options: unknown) => {
@@ -141,7 +141,7 @@ it.each(["hc-serve-0a1b2c3d.service", undefined])("provisions with the peer unit
       claimIdentity: async () => ({ machineId: peer.machineId, coreId: "remote-core" }),
       async executeProvision(_peer: unknown, request: Record<string, unknown>) {
         if (request.action === "enrollment") enrollments.push(request.coreUnit);
-        if (request.action === "unit-write") units.push(request.contents);
+        if (["unit-write", "systemctl"].includes(String(request.action))) serviceRequests.push(request.action);
         if (request.action === "release-observe") return { state: "finished", value: { pi: request.pi, cli: request.cli, supervisor: request.supervisor } };
         if (request.action === "roaming-enabled") return { enabled: request.enabled };
         if (request.action === "permission-summary") return { changed: 0 };
@@ -155,8 +155,7 @@ it.each(["hc-serve-0a1b2c3d.service", undefined])("provisions with the peer unit
   expect(probes.length).toBeGreaterThan(0);
   for (const probe of probes) expect((probe as { coreUnit?: string }).coreUnit).toBe(coreUnit);
   expect(enrollments).toEqual([unit]);
-  expect(units).toHaveLength(1);
-  expect(units[0]).not.toMatch(/^(After|Requires|PartOf)=/m);
+  expect(serviceRequests).toEqual([]);
 }, 5000);
 
 it("requires an explicit agent directory for a nonstandard prefix", async () => {

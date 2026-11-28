@@ -8,6 +8,6 @@ export function renderErrorResult(message: string, ctx: RenderCtx): string[] {
   const shown = expanded ? lines : lines.slice(0, 1);
   const rows = fitResultLines(shown.map((line, i) => i === 0
     ? ` ${statusIcon(theme, "fail")} ${theme.fg("error", line)}`
-    : `   ${theme.fg("toolOutput", line)}`), width, true);
-  return ["", ...(expanded ? rows : rows.slice(0, 4))];
+    : `   ${theme.fg("toolOutput", line)}`), width, true, 3);
+  return expanded ? rows : rows.slice(0, 4);
 }

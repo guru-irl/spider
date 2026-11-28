@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput } from "../render-result";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage } from "../render-result";
 import type { StageResult } from "@spider/memory";
 
 // Minimal fakes for pi's renderResult call shape. We only exercise the fields the
@@ -126,7 +127,7 @@ describe("renderSpiderResult dispatcher", () => {
     expect(c.render(140).join("\n")).toMatch(/next session/i);
   });
 
-  it("control doctor → status line + guttered checks (no raw JSON, heading stripped)", () => {
+  it("control doctor → status line + aligned checks (no raw JSON, heading stripped)", () => {
     const details = {
       ok: true,
       lines: [
@@ -146,11 +147,11 @@ describe("renderSpiderResult dispatcher", () => {
     expect(text).toContain("loaded");
   });
 
-  it("control doctor → ❌ status when ok is false", () => {
+  it("control doctor → × status when ok is false", () => {
     const details = { ok: false, lines: ["- sqlite-vec: NOT loaded"] };
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "doctor" }));
     assertComponent(c);
-    expect(c.render(80).join("\n")).toContain("❌");
+    expect(c.render(80).join("\n")).toContain("×");
   });
 
   it("control doctor does not invent success when ok evidence is absent (C-LOW)", () => {
@@ -179,8 +180,7 @@ describe("renderSpiderResult dispatcher", () => {
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "todo", op: "add" }));
     assertComponent(c);
     const out = c.render(80).join("\n");
-    expect(out).toContain("new task");
-    expect(out).toMatch(/0\/1/);
+    expect(out).toBe(" ○ #3 new task");
   });
 
   it("control stats → token-savings + rows + model table card (no raw JSON)", () => {
@@ -238,7 +238,8 @@ describe("renderSpiderResult dispatcher", () => {
     const out = c.render(80).join("\n");
     expect(out).toMatch(/2 nodes/);
     expect(out).toContain("TDD");
-    expect(out).toMatch(/mem:u1|skill:tdd/);
+    expect(out).toContain("prefers tabs → TDD");
+    expect(out).not.toMatch(/mem:u1|skill:tdd/);
     expect(out).not.toMatch(/\{|"linkedPct"/); // NOT raw JSON
   });
 
@@ -252,7 +253,7 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).not.toMatch(/\{\s*"moved"/);
   });
 
-  it("control memory status → active-memory list with identifiers (no raw JSON)", () => {
+  it("control memory status → active-memory list without internal identifiers or raw JSON", () => {
     const details = { entries: [{ uuid: "memory-to-review", category: "preference", content: "tabs over spaces" }], usage: 1234 };
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "memory", sub: "status" }));
     assertComponent(c);
@@ -260,7 +261,7 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).toMatch(/1 active · 1234/);
     expect(out).toContain("preference");
     expect(out).toContain("tabs over spaces");
-    expect(out).toContain("memory-to-review");
+    expect(out).not.toContain("memory-to-review");
     expect(out).not.toMatch(/"entries"/);
   });
 
@@ -305,19 +306,86 @@ describe("renderSpiderResult dispatcher", () => {
 
 const marker = { fg: (t: string, s: string) => `⟨${t}|${s}⟩`, bold: (s: string) => s, italic: (s: string) => s };
 
+describe("todo receipts", () => {
+  const item = { seq: 935, text: "Check the manifest", session: "session-id", name: "Release" };
+  const render = (op: string, details: object, args: object = {}) =>
+    renderSpiderResult({ details }, {}, theme, mkCtx({ action: "todo", op, ...args })).render(80);
+
+  it("prints only the changed item for add and toggle", () => {
+    expect(render("add", { ...item, done: false })).toEqual([" ○ #935 Check the manifest"]);
+    expect(render("toggle", { ...item, done: true, current: true })).toEqual([" ✓ #935 Check the manifest"]);
+    expect(render("toggle", { ...item, done: false, current: true })).toEqual([" ○ #935 Check the manifest"]);
+  });
+
+  it("omits the current session label even with an explicit selector", () => {
+    expect(render("remove", { ...item, current: true }, { session: "Release" })).toEqual([" Removed #935 Check the manifest"]);
+    expect(render("remove", { ...item, current: false }, { session: "session-id" })).toEqual([" Removed #935 Check the manifest from Release"]);
+  });
+
+  it("names only another session in a single-session view, without a section rule", () => {
+    const group = { name: "docs", current: false, todos: [{ seq: 1, text: "Review docs", done: false }] };
+    expect(render("view", [group], { session: "docs" })).toEqual([" ○ #1 Review docs", " 0/1 completed · docs"]);
+    expect(render("view", [{ ...group, current: true }], { session: "docs" })).toEqual([" ○ #1 Review docs", " 0/1 completed"]);
+  });
+
+  it.each(["toggle", "remove"])("keeps a missing %s target an error rather than showing an empty list", op => {
+    const rows = render(op, { error: 'todo: id "935" not found in session "beb58fc6-193f-4247-bb38-c59612f6985d"' });
+    expect(rows.join("\n")).toContain('id "935" not found');
+    expect(rows.join("\n")).not.toContain("beb58fc6");
+    expect(rows.join("\n")).not.toContain("completed");
+  });
+});
+
 describe("run block colors (#36)", () => {
-  it("does not status-color the glyph, type, or status word", () => {
-    const details = { runs: [{ name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status: "running", task: "" }] };
+  it.each(["running", "done", "failed", "cancelled"])("does not status-color the glyph, type, or %s status", status => {
+    const details = { runs: [{ name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status, task: "" }] };
     const out = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(120).join("\n");
     expect(out).not.toMatch(/⟨(success|error|warning|accent)\|/);
     expect(out).toContain("⟨toolTitle|");
   });
+});
 
-  it("run result body starts with a blank gap line and is indented one space further", () => {
-    const details = { runs: [{ name: "a", agent: "worker", model: "x", status: "running", task: "" }] };
-    const lines = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(120);
-    expect(lines[0]).toBe("");                    // gap line under the title
-    expect(lines[1].startsWith("   ")).toBe(true); // 3-space indent (runBlock's 2 + the global 1)
+describe("run status rows", () => {
+  it("marks running work with a neutral glyph in column 1", () => {
+    const details = { run: { name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status: "running" } };
+    const lines = renderSpiderResult({ details }, { expanded: false }, marker, mkCtx({ action: "run" })).render(120);
+    expect(lines[0]).toMatch(/^ ⟨toolTitle\|●⟩ running /u);
+  });
+
+  it("does not repeat the agent when the run has no name", () => {
+    const details = { run: { agent: "worker", status: "running" } };
+    expect(renderSpiderResult({ details }, {}, theme, mkCtx({ action: "run" })).render(120)[0]).toBe(" ● running · worker · —");
+    const msg = { details: { agent: "worker", status: "done", severity: "warning", summary: "Check the logs" } };
+    expect(renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("run · worker\n");
+    expect(renderEscalationMessage(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("escalation · worker\n");
+  });
+
+  it("does not render a task or expansion hint for ANSI-only task text", () => {
+    const details = { run: { agent: "worker", status: "running", task: "\x1b[31m  \x1b[0m" } };
+    const text = renderSpiderResult({ details }, {}, theme, mkCtx({ action: "run" })).render(120).join("\n");
+    expect(text).not.toContain("undefined");
+    expect(text).not.toContain("ctrl+o");
+    expect(text).not.toContain("→");
+  });
+
+  it("marks the first output line separately from an expanded task continuation", () => {
+    const details = { run: { name: "audit", agent: "worker", status: "done", task: "Check manifest\nRead logs", result: "Build failed\nManifest missing" } };
+    const rows = renderSpiderResult({ details }, { expanded: true }, theme, mkCtx({ action: "run" })).render(120);
+    expect(rows.slice(1)).toEqual(["   → Check manifest", "   Read logs", "   ↑ Build failed", "   Manifest missing"]);
+  });
+
+  it("shows one named status row per run, with a blank line between runs", () => {
+    const details = { runs: [
+      { name: "tia-2", agent: "worker", model: "github-copilot/gpt-6.2-sol", status: "failed", thinking: "high", token_count: 13616326, costText: "0.0 credits", task: "Check the manifest\nRead the build logs" },
+      { name: "audit", agent: "reviewer", model: "github-copilot/claude-opus-5.5", status: "running" },
+    ] };
+    const args = { action: "run", tasks: [{ agent: "worker" }, { agent: "reviewer" }] };
+    const lines = renderSpiderResult({ details }, { expanded: true }, theme, mkCtx(args)).render(120);
+    expect(lines).toEqual([
+      " × failed · tia-2 · worker · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
+      "   → Check the manifest", "   Read the build logs", "",
+      " ● running · audit · reviewer · opus-5.5",
+    ]);
   });
 });
 
@@ -329,7 +397,7 @@ describe("run block colors (#36)", () => {
 
 describe("exec: command shown on the call, output on the result", () => {
   const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s };
-  const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");
+  const call = (args: any, expanded = false) => renderSpiderCall(args, ith, { expanded }).render(200).join("\n");
   const body = (args: any, details: any, expanded: boolean) =>
     renderSpiderResult(mkResult(details), { expanded } as any, theme, mkCtx(args)).render(200).join("\n");
 
@@ -351,15 +419,15 @@ describe("exec: command shown on the call, output on the result", () => {
   });
 
   it("ctrl+o expands the full command (all lines)", () => {
-    const out = body({ action: "exec", code: "cd /x\nnpm test\necho done" }, { stdout: "ok\n", exitCode: 0 }, true);
+    const out = call({ action: "exec", code: "cd /x\nnpm test\necho done" }, true);
     expect(out).toContain("cd /x");
     expect(out).toContain("npm test");
     expect(out).toContain("echo done");
   });
 
   it("exec_file path and batch labels appear when expanded", () => {
-    expect(body({ action: "exec_file", path: "packages/x/y.ts", code: "x" }, { stdout: "", exitCode: 0 }, true)).toContain("packages/x/y.ts");
-    const b = body({ action: "batch", commands: [{ label: "one", code: "echo one" }, { label: "two", code: "echo two" }] }, [{ stdout: "", exitCode: 0 }], true);
+    expect(call({ action: "exec_file", path: "packages/x/y.ts", code: "x" }, true)).toContain("packages/x/y.ts");
+    const b = call({ action: "batch", commands: [{ label: "one", code: "echo one" }, { label: "two", code: "echo two" }] }, true);
     expect(b).toContain("one");
     expect(b).toContain("two");
   });
@@ -453,7 +521,7 @@ describe("exec: command shown on the call, output on the result", () => {
       [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "signal", signal: "SIGTERM" }],
       false,
     );
-    expect(out).toContain("❌");
+    expect(out).toContain("×");
     expect(out).toMatch(/signal/i);
     expect(out).not.toMatch(/exit unknown/i);
   });
@@ -464,7 +532,7 @@ describe("exec: command shown on the call, output on the result", () => {
       [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "spawn-error" }],
       false,
     );
-    expect(out).toContain("❌");
+    expect(out).toContain("×");
     expect(out).toMatch(/spawn error/i);
     expect(out).not.toMatch(/exit unknown/i);
   });
@@ -475,7 +543,7 @@ describe("exec: command shown on the call, output on the result", () => {
       [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "unknown" }],
       false,
     );
-    expect(out).not.toContain("❌");
+    expect(out).not.toContain("×");
     expect(out).toMatch(/unknown/i);
   });
 
@@ -489,7 +557,7 @@ describe("exec: command shown on the call, output on the result", () => {
       ],
       false,
     );
-    expect(out).toContain("❌");
+    expect(out).toContain("×");
     expect(out).toMatch(/signal/i);
     expect(out).toMatch(/unknown/i);
   });
@@ -500,7 +568,7 @@ describe("exec: command shown on the call, output on the result", () => {
       { stdout: "", stderr: "", exitCode: null, outcome: "signal", signal: "SIGTERM" },
       false,
     );
-    expect(out).toContain("❌");
+    expect(out).toContain("×");
     expect(out).toMatch(/signal/i);
   });
 
@@ -561,16 +629,36 @@ describe("exec: command shown on the call, output on the result", () => {
   });
 });
 
-describe("renderSpiderCall verb italics (UI standard)", () => {
-  const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»` };
+describe("renderSpiderCall bold commands (UI standard)", () => {
+  const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => `«${s}»`, italic: (s: string) => `italic(${s})` };
   const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");
-  it("italicises the action verb for every command", () => {
+  it("identifies the memory subject and operation in control titles", () => {
+    expect(call({ action: "control", command: "memory", sub: "status" })).toContain("«control» · memory · status");
+    expect(call({ action: "control", command: "memory", sub: "pending" })).toContain("«control» · memory · pending");
+    expect(call({ action: "control", command: "doctor" })).toContain("«control» · doctor");
+  });
+
+  it("bolds the action verb for every command", () => {
     expect(call({ action: "remember" })).toContain("«remember»");
     expect(call({ action: "recall" })).toContain("«recall»");
     expect(call({ action: "search" })).toContain("«search»");
     expect(call({ action: "run" })).toContain("«run»");           // single
-    expect(call({ action: "run", tasks: [{}, {}], async: true })).toContain("«parallel»");
+    expect(call({ action: "run", tasks: [{}, {}], async: true })).toContain("«run» · parallel · 2 started");
     expect(call({ action: "control", command: "memory" })).toContain("«control»");
+  });
+});
+
+describe("plain-text card alignment", () => {
+  it("starts styled fallback text in column 1 while retaining its style", () => {
+    const component = renderSpiderResult(mkResult({}, "\x1b[31m  red\x1b[0m\n  second"), { expanded: true }, theme, mkCtx({ action: "loop" }));
+    const rows = component.render(80);
+    expect(rows.map(stripTerminalSequences)).toEqual([" red", "   second"]);
+    expect(rows[0]).toContain("\x1b[31m");
+  });
+
+  it.each(["loop", "schedule", "other"])("starts the first %s row in column 1", action => {
+    const component = renderSpiderResult(mkResult({}, "\n  first line\n  second line"), opts, theme, mkCtx({ action }));
+    expect(component.render(80)).toEqual([" first line", "   second line"]);
   });
 });
 
@@ -591,21 +679,20 @@ describe("run block output truncation (ctrl+o)", () => {
 describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
   const th = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»`, bg: (tok: string, s: string) => `[${tok}]${s}` };
   const msg = { customType: "spider.subagent_done", details: { name: "bravo-worker", agent: "worker", model: "github-copilot/claude-opus-4.8", status: "done", output: "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8" } };
-  it("uses the run-result-style layout (spider header + ⤴ tool output), tool shell, collapsed + ctrl+o", () => {
-    const out = renderSubagentDone(msg, { expanded: false }, th).render(200).join("\n");
-    expect(out).toContain("spider");
-    expect(out).toContain("bravo-worker");       // run name
-    expect(out).toContain("«worker»");             // agent italicised (footer style)
-    expect(out).toContain("opus-4.8");            // shortModel
-    expect(out).toContain("[toolSuccessBg]");     // green tool shell painted
-    expect(out).toContain("⤴");                    // output marker like a real run result
-    expect(out).toContain("l1");
-    expect(out).not.toContain("l8");              // collapsed (CAP=6)
-    expect(out).toContain("ctrl+o to expand output");
+  it("shows a completion title, status, and two hanging output lines", () => {
+    const msg = { details: { name: "tia-2", agent: "worker", model: "github-copilot/gpt-6.2-sol", thinking: "high", status: "failed", tokenCount: 13616326, costText: "0.0 credits", output: "line one\nline two\nline three" } };
+    const rows = renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd());
+    expect(rows).toEqual([
+      "", " ◆ run · tia-2 · worker",
+      " × failed · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
+      "   ↑ line one", "   line two", "   … 1 more line", " ctrl+o to expand output", "",
+    ]);
+    const expanded = renderSubagentDone(msg, { expanded: true }, theme).render(120).map(line => line.trimEnd());
+    expect(expanded.slice(3, -1)).toEqual(["   ↑ line one", "   line two", "   line three"]);
   });
-  it("paints the error shell on failure", () => {
-    const out = renderSubagentDone({ ...msg, details: { ...msg.details, status: "failed" } }, { expanded: false }, th).render(200).join("\n");
-    expect(out).toContain("[toolErrorBg]");
+  it.each([["done", "toolSuccessBg"], ["failed", "toolErrorBg"], ["cancelled", "toolPendingBg"]])("paints the %s shell", (status, background) => {
+    const out = renderSubagentDone({ ...msg, details: { ...msg.details, status } }, {}, th).render(200).join("\n");
+    expect(out).toContain(`[${background}]`);
   });
   it("does not invent done/success when status evidence is absent (C-LOW)", () => {
     const { status: _status, ...withoutStatus } = msg.details;
@@ -622,7 +709,7 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
   it.each([
     [{ outcome: "complete", step: 3, total: 3, notStarted: [] }, "chain complete"],
     [{ outcome: "stopped", step: 2, total: 3, notStarted: ["check"], cause: "provider failed" }, "chain stopped at step 2 of 3: provider failed"],
-  ])("renders the chain outcome in the header without expanding the step output", (chain, headline) => {
+  ])("renders the chain outcome without expanding the step output", (chain, headline) => {
     const out = renderSubagentDone({ ...msg, details: { ...msg.details, chain } }, { expanded: false }, th).render(200).join("\n");
     expect(out).toContain(headline);
     expect(out).toContain("bravo-worker");
@@ -633,10 +720,35 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
 
 describe("renderCommandOutput (slash-command transcript message)", () => {
   const th = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»`, bg: (tok: string, s: string) => `[${tok}]${s}` };
+  it.each([
+    ["string", "First line\nSecond line"],
+    ["text blocks", [{ type: "text", text: "First line" }, { type: "text", text: "Second line" }]],
+  ])("renders %s content without details instead of an empty object", (_kind, content) => {
+    const output = renderCommandOutput({ customType: "spider.command", content }, { expanded: true }, {}).render(80).join("\n");
+    expect(output).toContain("◆ command");
+    expect(output).toContain("First line");
+    expect(output).toContain("Second line");
+    expect(output).not.toContain("{}");
+  });
+
+  it.each([
+    ["content-only", { content: "First line\nA long line of words that must wrap across the available width\nThird line\nFourth line\nFifth line\nSixth line\nFinal line" }, "command"],
+    ["named command", { content: "First line\nA long line of words that must wrap across the available width\nThird line\nFourth line\nFifth line\nSixth line\nFinal line", details: { args: { command: "herdr-setup" }, result: { text: "First line\nA long line of words that must wrap across the available width\nThird line\nFourth line\nFifth line\nSixth line\nFinal line" } } }, "herdr-setup"],
+  ])("collapses and expands %s output with hanging wrapped rows", (_kind, message, title) => {
+    const collapsed = renderCommandOutput(message, { expanded: false }, {}).render(30).map(line => line.trimEnd());
+    const expanded = renderCommandOutput(message, { expanded: true }, {}).render(30).map(line => line.trimEnd());
+    expect(expanded.join("\n")).toContain(`◆ ${title}`);
+    expect(collapsed.join("\n")).toContain("more");
+    expect(collapsed.join("\n")).not.toContain("Final line");
+    expect(expanded.join("\n")).toContain("Final line");
+    expect(expanded.some(line => /^ {3}\S/.test(line))).toBe(true); // continuation at column 3
+    expect(expanded.every(line => line.length <= 30)).toBe(true);
+  });
+
   it("renders themed through the tool renderers (doctor): spider header + tool shell + checks, no raw JSON", () => {
     const msg = { customType: "spider.command", content: "spider doctor", details: { args: { action: "control", command: "doctor" }, result: { ok: true, lines: ["## spider doctor", "- better-sqlite3: loaded (wal)"] } } };
     const out = (renderCommandOutput(msg, { expanded: false }, th).render(120) as string[]).join("\n");
-    expect(out).toContain("spider");            // renderSpiderCall header
+    expect(out).toContain("◆");                 // renderSpiderCall logo
     expect(out).toContain("doctor");            // command in the header
     expect(out).toContain("better-sqlite3: loaded"); // themed doctor body (via renderSpiderResult)
     expect(out).toContain("[toolSuccessBg]");   // painted in the tool-success shell
@@ -658,19 +770,19 @@ describe("renderSpiderCall shows the command while it runs", () => {
   it.each(["exec", "exec_file", "batch"])("%s names the destination in the styled call title", (action) => {
     const args = { action, on: "Alpha.Build.invalid", code: "echo hello", path: "input.txt", commands: [{ code: "echo hello" }] };
     const title = renderSpiderCall(args, titleTheme, {}).render(200)[0];
-    expect(title).toContain(`«⟨toolTitle|${action}⟩» ⟨toolTitle|on Alpha.Build.invalid⟩`);
+    expect(title).toContain(`⟨toolTitle|**${action}**⟩ ⟨toolTitle|· on Alpha.Build.invalid⟩`);
   });
 
   it.each(["exec", "exec_file", "batch"])("local %s keeps its existing title", (action) => {
     const title = renderSpiderCall({ action }, titleTheme, {}).render(200)[0];
-    expect(title).toBe(`⟨toolTitle|\u{1F578}\uFE0F⟩ ⟨toolTitle|**spider**⟩ ⟨toolTitle|·⟩ «⟨toolTitle|${action}⟩»`);
+    expect(title).toBe(` ⟨toolTitle|◆⟩ ⟨toolTitle|**${action}**⟩`);
   });
 
   it("keeps local title behavior for shared arguments while naming a remote destination", () => {
     const local = renderSpiderCall({ action: "exec", command: "doctor" }, titleTheme, {}).render(200)[0];
     const remote = renderSpiderCall({ action: "exec", command: "doctor", on: "Alpha.Build.invalid" }, titleTheme, {}).render(200)[0];
-    expect(local).toContain("«⟨toolTitle|exec⟩» ⟨toolTitle|· doctor⟩");
-    expect(remote).toContain("«⟨toolTitle|exec⟩» ⟨toolTitle|on Alpha.Build.invalid⟩");
+    expect(local).toContain("⟨toolTitle|**exec**⟩ ⟨toolTitle|· doctor⟩");
+    expect(remote).toContain("⟨toolTitle|**exec**⟩ ⟨toolTitle|· on Alpha.Build.invalid⟩");
   });
 
   it("does not add the destination to unrelated actions", () => {
@@ -682,7 +794,7 @@ describe("renderSpiderCall shows the command while it runs", () => {
     const args = { action: "exec", on: "Alpha.Build.invalid", code: "echo hello" };
     const msg = { details: { args, result: { details: { stdout: "hello", stderr: "", exitCode: 0 } } } };
     const output = renderCommandOutput(msg, { expanded: false }, {}).render(120).join("\n");
-    expect(output).toContain("spider · exec on Alpha.Build.invalid");
+    expect(output).toContain("◆ exec · on Alpha.Build.invalid");
     expect(output.match(/Alpha\.Build\.invalid/g)).toHaveLength(1);
     expect(output).toContain("hello");
   });
@@ -731,17 +843,15 @@ describe("todo mutation results", () => {
     const c = renderSpiderResult(mkResult({ seq: 2, text: "obsolete", done: false, session: "previous-session", name: "Cleanup" }), opts, theme, mkCtx({ action: "todo", op: "remove", session: "previous" }));
     const text = c.render(100).join("\n");
     expect(text).toMatch(/removed.*#2.*obsolete/i);
-    expect(text).toContain("previous-session");
-    expect(text).toContain("Cleanup");
+    expect(text).toContain("from Cleanup");
+    expect(text).not.toContain("previous-session");
     expect(text).not.toContain("completed");
   });
 
-  it("todo toggle shows the resolved session id and name", () => {
+  it("todo toggle shows the completed item without exposing its session id", () => {
     const c = renderSpiderResult(mkResult({ seq: 2, text: "leftover", done: true, session: "previous-session", name: "Cleanup" }), opts, theme, mkCtx({ action: "todo", op: "toggle", session: "previous" }));
     const text = c.render(100).join("\n");
-    expect(text).toContain("#2");
-    expect(text).toContain("previous-session");
-    expect(text).toContain("Cleanup");
+    expect(text).toBe(" ✓ #2 leftover");
   });
 
   it.each([{ removed: 1, kept: 2 }, { removed: 3, kept: 0 }])("todo clear displays counts %j", (details) => {

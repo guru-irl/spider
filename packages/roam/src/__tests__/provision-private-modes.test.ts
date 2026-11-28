@@ -13,8 +13,8 @@ const roots: string[] = [];
 function fixture() {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "p-")); roots.push(root);
-  const home = join(root, "home"), agentDir = join(home, "agent"), globalRoot = join(home, "global"), npmPrefix = join(home, "prefix"), unitDir = join(home, "units");
-  for (const path of [home, agentDir, globalRoot, npmPrefix, unitDir, join(globalRoot, "roam")]) mkdirSync(path, { mode: 0o700 });
+  const home = join(root, "home"), agentDir = join(home, "agent"), globalRoot = join(home, "global"), npmPrefix = join(home, "prefix");
+  for (const path of [home, agentDir, globalRoot, npmPrefix, join(globalRoot, "roam")]) mkdirSync(path, { mode: 0o700 });
   const peer: Peer = { alias: "box-1.invalid", machineId: "11111111-1111-4111-8111-111111111111", globalRoot, node: process.execPath,
     pi: join(npmPrefix, "bin/pi"), cli: join(npmPrefix, "dist/cli.mjs"), core: join(home, "core"), agentDir };
   writeFileSync(join(globalRoot, "roam/machine.json"), JSON.stringify({ version: 1, machineId: peer.machineId, label: "box-1.invalid" }), { mode: 0o600 });
@@ -27,7 +27,7 @@ function fixture() {
     return JSON.parse(child.stdout);
   }
   const destination = { home, agentDir, npmPrefix, supervisor: join(npmPrefix, "dist/supervisor.mjs") };
-  const adapter = createHcProvisionAdapter({ peer, operationId: "op-1", destination, unitDir, limits: DEFAULT_LIMITS, piProviders: [], transport: {
+  const adapter = createHcProvisionAdapter({ peer, operationId: "op-1", destination, limits: DEFAULT_LIMITS, piProviders: [], transport: {
     transport: { async resolve(p: Peer) { return p; } } as never,
     async executeProvision(_peer: Peer, request: Record<string, unknown>) {
       const reply = run(getProvisionRemoteScript(), request);

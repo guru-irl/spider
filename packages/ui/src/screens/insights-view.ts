@@ -13,39 +13,44 @@ export interface InsightGraphView {
 const NODE_CAP = 8;
 const EDGE_CAP = 6;
 
-/** Pure: render the learning graph as a body-only insights view (NO 🕸 header — the spider tool
- *  shell already shows `🕸 spider · control`; see docs/output-ui-guidelines.md): a stats line, a
- *  nodes list (skill/memory badge + label), and an edges list (`a → b`). Collapsed caps the lists. */
-export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: number, expanded = false): string[] {
+/** Render the learning graph as a body-only view: a stats line, nodes, and edges.
+ *  The call line supplies the title. Collapsed mode caps the lists. */
+export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: number, expanded = false, transcript = false): string[] {
   const trim = resultTrimmer(expanded);
   const body: string[] = [];
-  const pct = Math.round(g.stats?.linkedPct ?? 0);
-  body.push(trim(theme.fg("muted", `${g.stats?.nodes ?? 0} nodes · ${g.stats?.edges ?? 0} edge${(g.stats?.edges ?? 0) === 1 ? "" : "s"} · ${pct}% linked`), width, ""));
-
+  const indent = transcript ? " " : "";
+  const detailIndent = `${indent}  `; // One badge cell and one space before the label.
   const nodes = g.nodes ?? [];
-  body.push(sectionRule(theme, `nodes (${nodes.length})`, width));
+  const edges = g.edges ?? [];
+  const manyGroups = nodes.length > 0 && edges.length > 0;
+  const pct = Math.round(g.stats?.linkedPct ?? 0);
+  body.push(trim(theme.fg("muted", `${indent}${g.stats?.nodes ?? 0} nodes · ${g.stats?.edges ?? 0} edge${(g.stats?.edges ?? 0) === 1 ? "" : "s"} · ${pct}% linked`), width, ""));
+
+  if (!transcript || manyGroups) body.push(indent + sectionRule(theme, `nodes (${nodes.length})`, width - indent.length));
   const shownNodes = expanded ? nodes : nodes.slice(0, NODE_CAP);
   for (const n of shownNodes) {
-    const badge = n.kind === "skill" ? theme.fg("success", "◆") : theme.fg("dim", "•");
+    const badge = theme.fg(n.kind === "skill" ? "success" : "dim", uiIcon(theme.iconStyle, n.kind === "skill" ? "active" : "bullet"));
     const cat = n.category ? theme.fg("muted", ` (${n.category})`) : "";
-    body.push(trim(`${badge} ${theme.fg("text", n.label)}${cat}`, width, ""));
+    body.push(trim(`${indent}${badge} ${theme.fg("text", n.label)}${cat}`, width, ""));
   }
   if (!expanded && nodes.length > shownNodes.length) {
-    body.push(trim(theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${nodes.length - shownNodes.length} more`), width, ""));
+    body.push(trim(theme.fg("muted", `${detailIndent}… ${nodes.length - shownNodes.length} more`), width, ""));
   }
 
-  const edges = g.edges ?? [];
   if (edges.length) {
-    body.push(sectionRule(theme, `edges (${edges.length})`, width));
+    if (!transcript || manyGroups) body.push(indent + sectionRule(theme, `edges (${edges.length})`, width - indent.length));
+    const labels = new Map(nodes.map(node => [node.id, node.label]));
+    const names = new Set(labels.values());
+    const label = (id: string) => !transcript || names.has(id) ? id : labels.get(id) ?? "(unknown item)";
     const shownEdges = expanded ? edges : edges.slice(0, EDGE_CAP);
     for (const e of shownEdges) {
-      body.push(trim(`${theme.fg("text", e.source)} ${theme.fg("dim", "→")} ${theme.fg("text", e.target)}`, width, ""));
+      body.push(trim(`${indent}${theme.fg("text", label(e.source))} ${theme.fg("dim", uiIcon(theme.iconStyle, "arrowRight"))} ${theme.fg("text", label(e.target))}`, width, ""));
     }
     if (!expanded && edges.length > shownEdges.length) {
-      body.push(trim(theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${edges.length - shownEdges.length} more`), width, ""));
+      body.push(trim(theme.fg("muted", `${detailIndent}… ${edges.length - shownEdges.length} more`), width, ""));
     }
   }
-  return fitResultLines(body, width, expanded);
+  return fitResultLines(body, width, expanded, transcript ? 3 : undefined);
 }
 
 /** Component wrapper (cached by width) for mounting via ctx.ui.custom. */

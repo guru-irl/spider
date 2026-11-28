@@ -67,10 +67,11 @@ describe("usage footer layout", () => {
     const items = ["14.6%/1.0M", "3.3k credits", "CH99.3%", "month 3%", "↑3.7M ↓4.0M", "R763M W65M"];
     for (let retained = items.length; retained > 0; retained--) {
       const expected = items.slice(0, retained).join(" · ");
-      expect(renderUsageFooter(variant, visibleWidth(expected))[1]).toBe(expected);
-      expect(renderUsageFooter(variant, visibleWidth(expected) - 1)[1]).toBe(items.slice(0, retained - 1).join(" · "));
+      expect(renderUsageFooter(variant, visibleWidth(expected) + 3)[1]).toBe(`○  ${expected}`);
+      const previous = items.slice(0, retained - 1).join(" · ");
+      expect(renderUsageFooter(variant, visibleWidth(expected) + 2)[1]).toBe(previous ? `○  ${previous}` : "○");
     }
-    expect(renderUsageFooter(variant, 1)[1]).toBe("");
+    expect(renderUsageFooter(variant, 1)[1]).toBe("○");
   });
 
   it("unknown auto state is not claimed", () => {
@@ -260,14 +261,56 @@ describe("usage footer layout", () => {
 });
 
 describe("public usage footer component", () => {
-  function themed(variant: FooterInput) {
+  function themed(variant: FooterInput, requestRender: () => void = () => {}) {
     const provider: ReadonlyFooterDataProvider = { getGitBranch: () => variant.branch,
       getExtensionStatuses: () => variant.statuses, getAvailableProviderCount: () => 1,
       onBranchChange: () => () => {} };
     const theme = { fg: (key: string, text: string) =>
-      `${key === "warning" ? "\x1b[33m" : key === "error" ? "\x1b[31m" : "\x1b[2m"}${text}\x1b[0m` } as Theme;
-    return createUsageFooter(() => variant, theme, provider, () => {});
+      `${key === "warning" ? "\x1b[33m" : key === "error" ? "\x1b[31m" : key === "accent" ? "\x1b[34m" : "\x1b[2m"}${text}\x1b[0m` } as Theme;
+    return createUsageFooter(() => variant, theme, provider, requestRender);
   }
+
+  it("draws the 14-frame moon in the same column at rest and over a full second", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const renders = vi.fn();
+    const component = themed(input({ iconStyle: "nerd" }), renders);
+    const row = () => component.render(120)[1];
+    try {
+      expect(row()).toMatch(/^\x1b\[2m\uE3E3\x1b\[0m {2}/u);
+      component.setWorking(Date.now());
+      renders.mockClear();
+      const frames = Array.from({ length: 14 }, (_, phase) => {
+        vi.advanceTimersByTime(Math.ceil(phase * 1000 / 14) - Date.now());
+        expect(row()).toMatch(/^\x1b\[34m/u);
+        expect(stripTerminalSequences(row()).slice(1)).toMatch(/^ {2}14.6%\/1.0M/u);
+        return stripTerminalSequences(row())[0];
+      });
+      // Every other of the 28 Weather Icons phases: 14 redraws a second instead of 28 (user, 2026-11-28).
+      expect(frames).toEqual(["\uE3E3", ...Array.from({ length: 13 }, (_, i) => String.fromCodePoint(0xE3C9 + 2 * i))]);
+      expect(frames[7]).toBe("\uE3D5");
+      vi.advanceTimersByTime(1000 - Date.now());
+      expect(renders).toHaveBeenCalledTimes(14); // One redraw per frame; Pi rescans the transcript on each.
+      expect(stripTerminalSequences(row())[0]).toBe("\uE3E3");
+      component.setWorking();
+      expect(row()).toMatch(/^\x1b\[2m\uE3E3/u);
+    } finally { component.dispose(); vi.useRealTimers(); }
+  });
+
+  it("uses text moon phases and keeps the idle moon even in a one-column pane", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const component = themed(input({ inPane: true, iconStyle: "text" }));
+    try {
+      expect(stripTerminalSequences(component.render(1)[0])).toBe("○");
+      component.setWorking(0);
+      for (const phase of ["◐", "◓", "◑", "◒", "◐"]) {
+        const line = stripTerminalSequences(component.render(60)[0]);
+        expect(line).toMatch(new RegExp(`^${phase} {2}14.6%/1.0M`));
+        vi.advanceTimersByTime(250);
+      }
+    } finally { component.dispose(); vi.useRealTimers(); }
+  });
 
   it("keeps model and thinking dim after name or model truncation", () => {
     const component = themed(input({ cwd: "~/src/some/deep/project", sessionName: "my long session name here" }));
@@ -349,7 +392,7 @@ it.each([["calibrated",0.56,"1.8k"],["uncalibrated",null,"3.3k"],["implausible",
 
 it("context comes first and credit copy is plain with budget before allowance",()=>{
  const variant=input({context:{percent:45.2,contextWindow:200000},monthlyBudget:200,monthUsed:48});variant.totals.aic=1200;
- const line=renderUsageFooter(variant,200)[1]!;expect(line).toMatch(/^45.2%\/200k · 1.2k credits · CH99.3% · month 24% · ↑/);
+ const line=renderUsageFooter(variant,200)[1]!;expect(line).toMatch(/^○  45.2%\/200k · 1.2k credits · CH99.3% · month 24% · ↑/);
  expect(line.split(" · ")[1]).not.toMatch(/AIC|cal|est|[~+?]/);
  expect(renderUsageFooter({...variant,monthUsed:49},200)[1]).toContain("month 25%");
  expect(renderUsageFooter({...variant,monthlyBudget:undefined,counter:{availability:"available",snapshot:{creditsUsed:48,entitlement:400,ts:1}}},200)[1]).toContain("month 12%");
@@ -365,7 +408,10 @@ it.each([[999.96,"1.0k"],[9999.6,"10k"],[999500,"1.0M"],[999999,"1.0M"]])("credi
 describe("usage footer in a Herdr pane", () => {
   const items = ["14.6%/1.0M", "3.3k credits", "CH99.3%", "month 3%", "↑3.7M ↓4.0M", "R763M W65M"];
   const model = "model-alpha · high";
-  const line = (left: string, width: number) => left + " ".repeat(width - visibleWidth(left) - visibleWidth(model)) + model;
+  const line = (items: string, width: number) => {
+    const left = items ? `○  ${items}` : "○";
+    return left + " ".repeat(width - visibleWidth(left) - visibleWidth(model)) + model;
+  };
 
   it("puts the stats and the model on one line, without folder, branch or session name", () => {
     const lines = renderUsageFooter(input({ inPane: true }), 120);
@@ -376,8 +422,8 @@ describe("usage footer in a Herdr pane", () => {
   it("drops the lowest-priority stats before the model", () => {
     for (let retained = items.length; retained > 0; retained--) {
       const expected = items.slice(0, retained).join(" · ");
-      const width = visibleWidth(expected) + 1 + visibleWidth(model);
-      expect(renderUsageFooter(input({ inPane: true }), width)).toEqual([`${expected} ${model}`]);
+      const width = visibleWidth(expected) + 4 + visibleWidth(model);
+      expect(renderUsageFooter(input({ inPane: true }), width)).toEqual([`○  ${expected} ${model}`]);
       expect(renderUsageFooter(input({ inPane: true }), width - 1)).toEqual([line(items.slice(0, retained - 1).join(" · "), width - 1)]);
     }
   });

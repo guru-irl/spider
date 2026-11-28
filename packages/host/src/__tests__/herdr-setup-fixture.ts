@@ -18,7 +18,7 @@ export interface SetupFixture {
   h: HerdrHarness; root: string; ports: ReturnType<typeof createProductionHerdrCliPorts>; request: SetupRequest;
   parts: SetupParts; context: SetupContext; bootstraps: string[];
 }
-export type FixtureOptions = { startCores?: true; coreTransport?: 'process' | 'socket' } | { startCores: false; coreTransport?: never };
+export type FixtureOptions = ({ startCores?: true; coreTransport?: 'process' | 'socket' } | { startCores: false; coreTransport?: never }) & { localOnly?: boolean };
 export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = false, options: FixtureOptions = {}): Promise<SetupFixture> {
   if (options.coreTransport === 'socket' && mode !== 'fake') throw new Error('Socket transport requires fake cores');
   const h = await createHerdrHarness(mode); let restoreTransport: (() => void) | undefined;
@@ -57,7 +57,7 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = f
   }));
   await writeFile(join(h.directories.agent, 'settings.json'), '{"theme":"stock","unrelated":true}\n');
   const configPath = join(h.root, 'config.json');
-  const config = { app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] };
+  const config = { app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: options.localOnly ? [] : [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] };
   // The real core is used without any app process. This CLI double only models selection persistence,
   // including a fresh app home where the first selection creates settings.json.
   const script = join(h.root, 'app-selection.mjs');

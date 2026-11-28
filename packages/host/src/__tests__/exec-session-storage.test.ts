@@ -63,7 +63,7 @@ describe("exec session storage", () => {
     expect(rewritten.length).toBe(compact.content[0].text.length);
     expect(rewritten).toContain(after);
     const changed = { ...compact, content: [{ type: "text", text: rewritten }] };
-    expect(render(changed, args, true)).toEqual(render(changed, { action: "unknown" }, true));
+    expect(render(changed, args, true)).toEqual(["", ...render(changed, { action: "unknown" }, true)]);
   });
 
   it("falls back when a referenced unpaired surrogate changes", () => {
@@ -72,6 +72,6 @@ describe("exec session storage", () => {
     const compact = finish(original);
     expect(compact.details.spiderOutputRefs).toBeDefined();
     const changed = { ...compact, content: [{ type: "text", text: output.replace("\ud800", "\ud801") }] };
-    expect(render(changed, { action: "exec", code: "sample" }, true)).toEqual(render(changed, { action: "unknown" }, true));
+    expect(render(changed, { action: "exec", code: "sample" }, true)).toEqual(["", ...render(changed, { action: "unknown" }, true)]);
   });
 });

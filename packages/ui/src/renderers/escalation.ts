@@ -1,49 +1,22 @@
-import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { statusIcon } from "./types.js";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { icon } from "../icons.js";
 import type { RenderCtx } from "./types.js";
 
 export interface EscalationDetails {
-  runId: string;
   severity: "blocked" | "question" | "warning";
   summary: string;
-  agent: string;
-  name: string;
-  payload?: unknown;
 }
 
-/** Map escalation severity to statusIcon type */
-function severityToStatus(severity: "blocked" | "question" | "warning"): "fail" | "warn" {
-  // blocked is the most severe, map to fail (red X)
-  // question and warning map to warn (yellow !)
-  return severity === "blocked" ? "fail" : "warn";
-}
-
-/** Render an escalation notification card. */
-export function renderEscalation(details: EscalationDetails, ctx: RenderCtx): string[] {
-  const { theme, width } = ctx;
-  const expanded = ctx.expanded === true;
-  const icon = statusIcon(theme, severityToStatus(details.severity));
-  
-  const lines: string[] = [];
-  
-  // Header: icon + severity + run name
-  const header = `${icon} ${theme.bold(details.severity)} • ${theme.fg("accent", details.name)} (${theme.fg("muted", details.agent)})`;
-  lines.push(truncateToWidth(header, width, ""));
-  
-  // Empty line for spacing
-  lines.push("");
-  
-  // Preserve all of the summary even when the card is collapsed.
-  for (const line of details.summary.split("\n")) {
-    lines.push(...wrapTextWithAnsi(theme.fg("text", line), Math.max(1, width)));
-  }
-  
-  // Empty line for spacing
-  lines.push("");
-  
-  // Footer: run ID
-  const footer = theme.fg("dim", `run ${expanded ? details.runId : details.runId.slice(0, 8)}`);
-  lines.push(truncateToWidth(footer, width, ""));
-  
-  return lines;
+/** The notification shell owns the title. Never collapse the escalation summary. */
+export function renderEscalation({ severity, summary }: EscalationDetails, { theme, width }: RenderCtx): string[] {
+  const marker = severity === "blocked" ? icon(theme.iconStyle, "failure")
+    : icon(theme.iconStyle, severity === "question" ? "question" : "warning");
+  const prefix = ` ${theme.fg(severity === "blocked" ? "error" : "warning", marker)} `;
+  const hang = " ".repeat(visibleWidth(prefix));
+  const [first, ...rest] = summary.split(/\r?\n/u);
+  const status = theme.bold(severity) + (summary ? ` ·${first ? ` ${theme.fg("text", first)}` : ""}` : "");
+  const [head, ...wrapped] = wrapTextWithAnsi(status, Math.max(1, width - visibleWidth(prefix)));
+  const continuation = rest.flatMap(line => wrapTextWithAnsi(theme.fg("text", line), Math.max(1, width - hang.length)));
+  return [prefix + head, ...[...wrapped, ...continuation].map(line => hang + line)]
+    .map(line => truncateToWidth(line, width, ""));
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { makeTodoDb } from "./helpers/tmpdb";
 import { makeTodosCommand } from "../command";
-import { addTodo } from "../store";
+import { addTodo, toggleTodo } from "../store";
 
 let ctx: ReturnType<typeof makeTodoDb>;
 afterEach(() => ctx?.cleanup());
@@ -64,6 +64,19 @@ describe("makeTodosCommand — interactive overlay", () => {
     expect(out).toMatch(/0\/2 completed/);  // summary
     expect(out).toContain("○");             // open-item glyph
     expect(out).toMatch(/Esc to close/);    // footer hint
+  });
+
+  it.each(["text", "nerd"] as const)("uses %s todo status icons in the overlay", async iconStyle => {
+    ctx = makeTodoDb();
+    const done = addTodo(ctx.db, "s1", "completed task");
+    addTodo(ctx.db, "s1", "open task");
+    toggleTodo(ctx.db, "s1", done.seq);
+    const fake = fakeCustomUi();
+    const cmd = makeTodosCommand({ getDb: () => ctx.db, getSessionId: () => "s1", iconStyle });
+    await cmd.handler("", { hasUI: true, ui: fake.ui });
+    const output = fake.component.render(80).join("\n");
+    expect(output).toContain(iconStyle === "text" ? "✓ #1 completed task" : "\u{F05E1}  #1 completed task");
+    expect(output).toContain(iconStyle === "text" ? "○ #2 open task" : "\u{F0766}  #2 open task");
   });
 
   it("'a' toggles to the all-sessions view and re-renders", async () => {

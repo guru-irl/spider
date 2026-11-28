@@ -3,7 +3,7 @@
 // @spider/memory's renderers.ts: they take a handler's structured `details` and return
 // an @spider/ui Component (Panel). The host renderResult dispatcher wraps them to add
 // pi's required invalidate(). REAL ANSI is emitted by @spider/ui.
-import { Panel, icon, type Component, type IconStyle } from "@spider/ui";
+import { Panel, cardDetailIndent, fitResultLines, icon, type Component, type IconStyle } from "@spider/ui";
 import type { SearchResultRow } from "./search";
 import type { ImportSummary } from "./import";
 
@@ -19,18 +19,18 @@ export function renderSearchResult(rows: SearchResultRow[], iconStyle?: IconStyl
   return Panel({ title: `${icon(iconStyle, "spider")} search (${list.length})`, body, iconStyle });
 }
 
-/** Panel summarizing an import/migrate run's imported/skipped/staged/committed counts. */
+/** Render the import counts and session outcomes under the tool title. */
 export function renderImportResult(s: ImportSummary, expanded = false, iconStyle?: IconStyle): Component {
-  const sum = s ?? ({} as ImportSummary);
-  const body = [
-    `imported: ${sum.imported ?? 0}`,
-    `skipped: ${sum.skipped ?? 0}`,
-    `staged: ${sum.staged ?? 0}`,
-    `committed: ${sum.committed ?? 0}`,
+  const summary = s ?? ({} as ImportSummary);
+  const rows = [
+    ` imported: ${summary.imported ?? 0}`,
+    ` skipped: ${summary.skipped ?? 0}`,
+    ` staged: ${summary.staged ?? 0}`,
+    ` committed: ${summary.committed ?? 0}`,
   ];
-  const sessions = Array.isArray(sum.perSession) ? sum.perSession : [];
-  for (const p of sessions) {
-    body.push(`  · ${p.sessionId}: ${p.status} (${p.candidates} cand, ${p.chunks} chunks)`);
+  for (const [i, session] of (summary.perSession ?? []).entries()) {
+    const name = "name" in session && typeof session.name === "string" && session.name ? session.name : `Session ${i + 1}`;
+    rows.push(`${cardDetailIndent(iconStyle)}${name}: ${session.status} (${session.candidates} candidates, ${session.chunks} chunks)`);
   }
-  return Panel({ title: `${icon(iconStyle, "spider")} import`, body, expanded, iconStyle });
+  return { render: width => fitResultLines(rows, width, expanded, 3) };
 }

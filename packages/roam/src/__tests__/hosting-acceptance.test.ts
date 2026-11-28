@@ -55,7 +55,7 @@ function provisionFixture() {
     core: `${npmPrefix}/bin/hc`, globalRoot: `${agentDir}/spider` };
   inventory.pi = peer.pi;
   const supervisor = `${npmPrefix}/lib/spider/dist/roam/supervisor.mjs`, stageFile = join(stage, "auth");
-  const ports: ProvisionPorts = {
+  const ports: ProvisionPorts & { systemd: { writeUnit(name: string, bytes: string): Promise<void>; systemctl(argv: readonly string[]): Promise<void> } } = {
     transport, journal, hubMachineId: HUB, limits: DEFAULT_LIMITS, coreUnit: "herdr-core.service",
     async withPeerLock(_machine, work) { return work(); },
     async assertCorePinReplaceIdle() { throw new Error("unexpected pin replacement"); },
@@ -64,7 +64,6 @@ function provisionFixture() {
     },
     async confirm() { actions.push("confirm"); return state.consent; },
     systemd: {
-      unitDir: `${home}/.config/systemd/user`,
       async writeUnit(name, bytes) { actions.push(`write:${name}`); writeFileSync(join(units, name), bytes, { mode: 0o600 }); },
       async systemctl(argv) {
         actions.push(`systemctl:${argv.join(" ")}`);
@@ -134,14 +133,14 @@ it("A10 provision never changes existing core", async () => {
   const actionsAfterInstall = [...f.actions];
   expect(await provision(f.request("provision-1", true), f.ports)).toMatchObject({ code: 0, value: { hostingReady: true } });
   expect(f.actions).toEqual(actionsAfterInstall);
-  expect(f.actions.filter(action => action === "systemctl:--user enable spider-roam-supervisor.service")).toHaveLength(1);
+  expect(f.actions.filter(action => action.startsWith("systemctl:") || action.startsWith("write:"))).toEqual([]);
   expect(f.actions.some(action => /(?:restart|stop).*herdr-core/.test(action))).toBe(false);
 }, 5000);
 
 it("missing sign-in blocks hosting not installation", async () => {
   const f = provisionFixture();
   expect(await provision(f.request("without-auth"), f.ports)).toMatchObject({ code: 0, reason: "installed-hosting-disabled", value: { hostingReady: false } });
-  expect(existsSync(join(f.units, "spider-roam-supervisor.service"))).toBe(true);
+  expect(existsSync(join(f.units, "spider-roam-supervisor.service"))).toBe(false);
   expect(f.actions).toContain("release");
   expect(f.actions).not.toContain("auth-stage");
   expect(f.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/sign-in/i) })]));
@@ -250,8 +249,8 @@ it("uses the fixture shell for a supervised exact launch", async () => {
   } finally { global.close(); }
 }, 5000);
 
-it("selects the three packaged hosting stories serially and never counts missing results as passed", () => {
-  const ids = ["R03", "R04", "R05"];
+it("selects the one packaged hosting story serially and never counts missing results as passed", () => {
+  const ids = ["R04"];
   expect(parseOptions(["--tier", "headless", "--story", ids.join(",")], {}).ids).toEqual(ids);
   for (const id of ids) {
     expect(profileIds.headless).toContain(id);
@@ -261,6 +260,6 @@ it("selects the three packaged hosting stories serially and never counts missing
   }
   expect(storyWorkers({ tier: "headless", ids })).toBe(1);
   const missing = buildMatrix("headless", ids, []);
-  expect(missing.filter((row: { id: string }) => ids.includes(row.id)).map((row: { result: string }) => row.result)).toEqual(["failed", "failed", "failed"]);
+  expect(missing.filter((row: { id: string }) => ids.includes(row.id)).map((row: { result: string }) => row.result)).toEqual(["failed"]);
   expect(complete(missing, ids)).toBe(false);
 }, 5000);

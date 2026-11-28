@@ -43,6 +43,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
   pi.registerTool({
     name: "edit",
     label: "Edit",
+    renderShell: "self",
     description: "Edit a file by replacing text. Requires a one-line `description` of the change.",
     parameters: Type.Object({
       path: Type.String({ description: "File to edit." }),

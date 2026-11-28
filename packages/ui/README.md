@@ -96,7 +96,7 @@ This package does not do the following, by design:
 
 | File | What it does |
 | --- | --- |
-| `spinner.ts` | `Spinner`/`BRAILLE_FRAMES` is a braille spinner driven by time. `frame(now)` picks the frame from the clock, not from a call counter. |
+| `spinner.ts` | Time-based frames for the footer moon and the running-agent robot. |
 | `progress-bar.ts` | `renderProgressBar` draws a bar of filled and empty characters sized to a value/max ratio. |
 | `diff-view.ts` | `renderDiffView` draws add, remove and context hunks, each with theme-token colors and a prefix character. |
 | `table.ts` | `renderTable` draws a table with aligned columns. To fit a width budget, it shrinks columns from right to left. |
@@ -110,8 +110,8 @@ The exports below come from `packages/ui/src/index.ts`.
 | Export | Purpose |
 | --- | --- |
 | `Component` (type) | The interface every widget below implements. |
-| `theme` | The original token lookup (`glyph: "🕸"`, `token("rule") === "─"`, and `""` for everything else). Only `SectionRule` uses it. |
-| `SectionRule(title?)` | A full-width rule Component with the glyph in its title: `🕸 title ──────`. For overlays only (see Notes). |
+| `theme` | The original token lookup (`glyph: "◆"`, `token("rule") === "─"`, and `""` for everything else). Only `SectionRule` uses it. |
+| `SectionRule(title?)` | A full-width rule Component with the selected logo in its title: `◆ title ──────` in text style. For overlays only (see Notes). |
 | `Panel(opts)` | An optional `SectionRule` header plus body lines clamped to the width. `@spider/todo`, `@spider/memory`, and `@spider/context` use it for their own result bodies. |
 | `StatusLine(opts)` | A line with a left part and a right part and a padded gap between them. |
 | `LiveWidget(source, render)` | Wraps a `render(width)` function so that it recomputes only when `source.subscribe` signals a change or the width changes. |
@@ -129,7 +129,7 @@ The exports below come from `packages/ui/src/index.ts`.
 | `AgentList` | The agent selector driven by the arrow keys. |
 | `renderGridCell` | One cell of the live grid of agents. |
 | `AgentDetail` | The detail overlay for one agent. |
-| `Spinner`, `BRAILLE_FRAMES` | The braille spinner that the footer, the list, and the grid show while an agent runs. |
+| `moonFrame`, `MOON_CYCLE_MS` | The activity frame and cycle for the usage footer. |
 | `renderProgressBar` | A progress bar of filled and empty characters. |
 | `renderDiffView` | Colored diff hunks. |
 | `renderTable` | A table with aligned columns that shrink to fit the width (`renderStats` uses it). |
@@ -211,7 +211,7 @@ footer and grid work differently. Events push updates, instead of each call pull
 - `card()` (with the glyph in its title) and `sectionRule()` (with no glyph) look alike, but
   they belong in different places. `card()` is for standalone overlays that have no outer tool
   frame (mounted through `ctx.ui.custom`). Inside a tool-result renderer it would repeat pi's
-  own `🕸 spider · <action>` title line. `docs/output-ui-guidelines.md` documents the full
+  own `◆ <action>` title line (in text style). `docs/output-ui-guidelines.md` documents the full
   contract that this README summarizes.
 - `renderers/types.ts` declares `MemoryRecordView`/`MemoryCardDetails` and
   `RunView`/`RunResultDetails`, but this package has no `renderers/memory.ts` or

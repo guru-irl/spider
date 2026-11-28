@@ -259,13 +259,13 @@ async function verifyLfsFile(file: string, object: LfsObject): Promise<void> {
   } finally { closeSync(fd); }
 }
 
-/** Inspect Git attributes in each recorded tree and verify LFS content in the destination's object store. */
-async function verifyLfs(snapshot: WorkspaceSnapshot, repository: string, common: string, ports: WorkspaceImportPorts): Promise<void> {
+/** Inspect Git attributes in each distinct tree and verify LFS content in the destination's object store. */
+async function verifyLfs(trees: readonly string[], repository: string, common: string, ports: WorkspaceImportPorts): Promise<void> {
   privateDirectory(ports.scratch);
   const directory = mkdtempSync(join(ports.scratch, ".workspace-lfs-"));
   const index = join(directory, "index"), objects = new Map<string, number>();
   try {
-    for (const tree of new Set([snapshot.head, snapshot.indexTree, snapshot.workingTree])) {
+    for (const tree of new Set(trees)) {
       await git(ports, repository, ["read-tree", tree], index);
       chmodSync(index, 0o600);
       const entries: { oid: string; size: number; path: Buffer }[] = [];
@@ -315,6 +315,7 @@ function displayedPath(path: Buffer): string {
 }
 
 async function guardAddedPaths(root: string, before: string, after: string, ports: WorkspaceImportPorts): Promise<void> {
+  if (before === after) return;
   const fields = nulFields(await git(ports, root, ["diff-tree", "--name-status", "--no-renames", "-r", "-z", "--diff-filter=AMT", before, after]));
   if (fields.length % 2 !== 0) throw new Error("workspace-snapshot-invalid");
   const conflicts = new Set<string>();
@@ -513,7 +514,7 @@ function parseAttributes(bytes: Buffer, paths: readonly Buffer[]): Map<string, P
   return result;
 }
 
-async function verifyNormalization(snapshot: WorkspaceSnapshot, base: WorkspaceSnapshot | null, repository: string, checkout: string, ports: WorkspaceImportPorts): Promise<void> {
+async function verifyNormalization(snapshot: WorkspaceSnapshot, headTree: string, base: WorkspaceSnapshot | null, repository: string, checkout: string, ports: WorkspaceImportPorts): Promise<void> {
   const missing = "__spider_roam_missing_normalization_value__";
   const readSetting = async (key: string): Promise<string | null> => {
     let value: string;
@@ -524,11 +525,11 @@ async function verifyNormalization(snapshot: WorkspaceSnapshot, base: WorkspaceS
   const destination = { autocrlf: await readSetting("core.autocrlf"), eol: await readSetting("core.eol") };
   const normalizationDiffers = destination.autocrlf !== snapshot.normalization.autocrlf || destination.eol !== snapshot.normalization.eol;
 
-  const headTree = text(await git(ports, repository, ["rev-parse", "--verify", `${snapshot.head}^{tree}`]));
   const pairs: [string, string][] = [[headTree, snapshot.indexTree], [headTree, snapshot.workingTree]];
   if (base) pairs.push([base.workingTree, snapshot.workingTree]);
   const changed = new Map<string, Buffer>(), checkoutPaths = new Set<string>();
   for (const [before, after] of pairs) {
+    if (before === after) continue;
     const fields = nulFields(await git(ports, repository, ["diff-tree", "--name-status", "--no-renames", "-r", "-z", "--diff-filter=AMTD", before, after]));
     if (fields.length % 2 !== 0) throw new Error("workspace-attributes-unavailable");
     for (let at = 0; at < fields.length; at += 2) {
@@ -1536,8 +1537,9 @@ export async function prepareWorkspace(snapshot: WorkspaceSnapshot, destination:
       if (base && settings) {
         assertMappedSettings(settings, expectedInstalled(started && resumeWorking && !recovered ? snapshot : base, destination, ports));
       }
-      await verifyNormalization(snapshot, base, repository, exists ? destination : repository, quarantine);
-      await verifyLfs(snapshot, repository, repositoryCommon, quarantine);
+      const headTree = text(await git(quarantine, repository, ["rev-parse", "--verify", `${snapshot.head}^{tree}`]));
+      await verifyNormalization(snapshot, headTree, base, repository, exists ? destination : repository, quarantine);
+      await verifyLfs([headTree, snapshot.indexTree, snapshot.workingTree], repository, repositoryCommon, quarantine);
     });
     if (base && !resumeWorking) assertTrees(await inspectTrees(destination, ports), base, divergence);
     if (base) await validateWorktreeConfig(base, ports);
@@ -1658,12 +1660,14 @@ export async function abortWorkspace(prepared: PreparedWorkspace, ports: Workspa
     }
     assertTrees(await inspectTrees(prepared.root, ports), recorded.snapshot, "workspace-abort-diverged");
     ports.journal.record(prepared.moveId, "workspace-abort-start", { root: prepared.root });
-    if (recorded.previous) {
+    const previous = recorded.previous;
+    if (previous) {
       const common = text(await git(ports, prepared.root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
-      await verifyLfs(recorded.previous, prepared.root, common, ports);
-      await applyTrees(prepared.root, recorded.snapshot, recorded.previous, ports, transition);
-      await restoreBranch(prepared.root, recorded.previous, ports, prepared.moveId);
-      assertTrees(await inspectTrees(prepared.root, ports), recorded.previous, "workspace-abort-failed");
+      const headTree = text(await git(ports, prepared.root, ["rev-parse", "--verify", `${previous.head}^{tree}`]));
+      await verifyLfs([headTree, previous.indexTree, previous.workingTree], prepared.root, common, ports);
+      await applyTrees(prepared.root, recorded.snapshot, previous, ports, transition);
+      await restoreBranch(prepared.root, previous, ports, prepared.moveId);
+      assertTrees(await inspectTrees(prepared.root, ports), previous, "workspace-abort-failed");
     }
     ports.journal.record(prepared.moveId, "workspace-aborted", { root: prepared.root, retained: recorded.previous === null });
   });

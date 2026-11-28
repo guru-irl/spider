@@ -1,6 +1,6 @@
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
-import { icon } from "../icons.js";
+import { icon, type IconRole, type IconStyle } from "../icons.js";
 
 /** Active SGR at the end of a marker; closed attributes must not leak into its text. */
 function sgrCodes(marker: string): string {
@@ -29,29 +29,54 @@ function sgrCodes(marker: string): string {
   return [...active.values()].map((code) => `\x1b[${code}m`).join("");
 }
 
-// Both styles participate in wrapping; keep this list tied to the icon table. An icon can
-// be several code points (an emoji and its U+FE0F selector), so icons are matched as
-// alternatives, not as members of a character class. The bare ✗ and ⚠ stay recognised
-// for text written before those icons became emoji.
+// Both icon styles participate in wrapping. Match glyphs as alternatives, and keep the
+// bare ✗ and ⚠ for legacy output.
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\\-]/g, "\\$&");
-const markerGlyphs = (["gutter", "task", "result", "failure", "warning", "message"] as const)
+const markerGlyphs = (["spider", "task", "result", "failure", "warning", "success", "question", "running", "open", "paused", "active", "todoDone", "todoFailed", "todoPending", "content", "todo", "bullet", "message"] as const)
   .flatMap(role => [icon("text", role), icon("nerd", role).trimEnd()]).map(escapeRegExp).join("|");
 const messageChars = [icon("text", "message"), icon("nerd", "message")].join("").replace(/[\\\]\-^]/g, "\\$&");
 const resultPrefix = new RegExp(`^([ \\t]*(?:(?:\\d+\\.[ \\t]+)?(?:[│✓✗⚠●○■◆▪▣•·\\-*]|${markerGlyphs})(?:[ \\t]*[→◆▪▣${messageChars}])?[ \\t]+|\\[[^\\]\\n]+\\][ \\t]+|\\d+\\.[ \\t]+|[ \\t]+))`, "u");
 
+/** Detail rows start at the title text, after the logo and its separator. */
+export function cardDetailIndent(style: IconStyle | undefined): string {
+  return " ".repeat(visibleWidth(` ${icon(style, "spider")} `));
+}
+
+const LEAD = /^((?:\x1b\[[0-9;:]*m)*) /u;
+
+/** Drop the card's lead cell when the enclosing Pi box supplies the padding. */
+export function flushLeft(component: { render(width: number): string[]; invalidate?(): void }): Component {
+  let last: { input: string[]; output: string[] } | undefined;
+  return {
+    render: width => {
+      const input = component.render(width);
+      if (last?.input === input) return last.output;
+      const output = input.map(row => row.replace(LEAD, "$1"));
+      last = { input, output };
+      return output;
+    },
+    invalidate: () => { last = undefined; component.invalidate?.(); },
+  };
+}
+
 /** Fit result rows at the final render boundary, preserving ANSI state across wraps. */
-export function fitResultLines(lines: readonly string[], width: number, expanded: boolean): string[] {
+export function fitResultLines(lines: readonly string[], width: number, expanded: boolean, hangingIndent?: number): string[] {
   const w = Math.max(1, width);
   return lines.flatMap((line) => {
     if (!expanded) return [truncateToWidth(line, w, "…")];
+    if (hangingIndent !== undefined && !line.includes("\n") && visibleWidth(line) <= w) return [line];
     // Locate the visible marker first; ANSI spans inside its styling do not count as cells.
     const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
-    const prefix = resultPrefix.exec(plain)?.[1];
-    if (prefix && visibleWidth(prefix) < w) {
-      // Long bracketed labels are not useful as hanging indents at narrow widths.
-      if (/^[ \t]*\[[^\]\n]+\][ \t]+$/u.test(prefix) && w - visibleWidth(prefix) < 20) {
-        return wrapTextWithAnsi(line, w);
-      }
+    let prefix = resultPrefix.exec(plain)?.[1];
+    // A long bracketed label should not consume the width available for the text.
+    if (prefix && /^[ \t]*\[[^\]\n]+\][ \t]+$/u.test(prefix) && w - visibleWidth(prefix) < 20) {
+      prefix = hangingIndent === undefined ? undefined : /^[ \t]+/u.exec(plain)?.[0];
+    }
+    const prefixWidth = prefix ? visibleWidth(prefix) : 0;
+    const indentWidth = hangingIndent === undefined ? prefixWidth
+      : Math.max(hangingIndent, visibleWidth(/^[ \t]*/u.exec(plain)![0]));
+    const reserved = Math.max(prefix ? visibleWidth(prefix) : 0, indentWidth);
+    if (prefix && reserved < w) {
       let end = 0;
       let visible = 0;
       while (visible < prefix.length) {
@@ -64,13 +89,13 @@ export function fitResultLines(lines: readonly string[], width: number, expanded
         }
       }
       const marker = line.slice(0, end);
-      const indent = " ".repeat(visibleWidth(prefix));
+      const indent = " ".repeat(indentWidth);
       const state = sgrCodes(marker);
-      return wrapTextWithAnsi(state + line.slice(end), w - visibleWidth(prefix))
+      return wrapTextWithAnsi(state + line.slice(end), w - reserved)
         .map((row, i) => (i === 0 ? marker + row.slice(state.length) : indent + row));
     }
     return wrapTextWithAnsi(line, w);
-  });
+  }).map(line => truncateToWidth(line, w, ""));
 }
 /** Keep full expanded content; retain the caller's collapsed truncation suffix. */
 export function trimResultLine(line: string, width: number, expanded: boolean, suffix = ""): string {
@@ -163,12 +188,17 @@ export interface MemoryRecordView {
 }
 export interface MemoryCardDetails { mode: "remember" | "recall"; records: MemoryRecordView[]; staged: number; }
 export interface TodoItemView { id: number; text: string; done: boolean; }
-export interface TodoChecklistDetails { scope: string; items: TodoItemView[]; done: number; total: number; }
+export type TodoChecklistDetails =
+  | { kind: "item"; item: TodoItemView }
+  | { kind: "removed"; item: TodoItemView; sessionName?: string }
+  | { kind: "cleared"; removed: number; kept?: number }
+  | { kind: "list"; groups: { label?: string; current?: boolean; items: TodoItemView[] }[] }
+  | { kind: "sessions"; sessions: { label: string; done: number; total: number; current: boolean }[] };
 export interface RunView { runId: string; name: string; role?: string; status: string; model?: string; steps: number; tokens: number; phase?: string; }
 export interface RunResultDetails { runs: RunView[]; pipeline: { from: string; to: string; phase?: string }[]; }
 export interface MessageDetails {
   verb: "send" | "ask" | "reply" | "broadcast";
-  to?: string; from?: string; kind?: string; body: string; delivered: boolean;
+  to?: string; from?: string; targetName?: string; kind?: string; body: string; delivered: boolean;
   delivery?: "child-accepted" | "broker-accepted" | "queued" | "unavailable" | "delivered" | "accepted but not confirmed" | "no reply yet, delivery unknown" | "refused";
   transformed?: boolean;
   recipientAcknowledged?: boolean;
@@ -176,15 +206,15 @@ export interface MessageDetails {
 }
 
 type St = "ok" | "fail" | "warn" | "on" | "off" | "paused";
-const ICON: Record<St, { g: string; token: string }> = {
-  ok: { g: "✓", token: "success" }, fail: { g: icon("text", "failure"), token: "error" }, warn: { g: icon("text", "warning"), token: "warning" },
-  on: { g: "●", token: "accent" }, off: { g: "○", token: "muted" }, paused: { g: "■", token: "muted" },
+const ICON: Record<St, { role: IconRole; token: string }> = {
+  ok: { role: "success", token: "success" }, fail: { role: "failure", token: "error" }, warn: { role: "warning", token: "warning" },
+  on: { role: "running", token: "accent" }, off: { role: "open", token: "muted" }, paused: { role: "paused", token: "muted" },
 };
 
 /** Status glyph in its semantic color (glyph + color, never color-only). */
 export function statusIcon(theme: ThemeAdapter, status: St): string {
   const s = ICON[status];
-  return theme.fg(s.token, status === "warn" ? icon(theme.iconStyle, "warning") : status === "fail" ? icon(theme.iconStyle, "failure") : s.g);
+  return theme.fg(s.token, icon(theme.iconStyle, s.role));
 }
 
 /** `label value` on one line, width-guaranteed (value right-truncated). */
@@ -193,9 +223,8 @@ export function kv(theme: ThemeAdapter, label: string, value: string, width: num
   return truncateToWidth(`${theme.fg("muted", label)} ${theme.fg("text", value)}`, width, "");
 }
 
-/** A 🕸-ruled titled card. OVERLAY-ONLY: use this for standalone surfaces mounted via
- *  ctx.ui.custom (no outer tool shell). NEVER in a tool-result renderer — pi's tool shell
- *  already shows `🕸 spider · <action>`, so a second 🕸 header double-heads the output.
+/** A logo-ruled titled card for standalone overlays mounted via ctx.ui.custom.
+ *  Do not use in tool results: the call line already supplies a title.
  *  See docs/output-ui-guidelines.md. Every returned line is ≤ width visible cells. */
 export function card(theme: ThemeAdapter, title: string, lines: string[], width: number): string[] {
   const head = `${theme.fg("accent", icon(theme.iconStyle, "spider"))} ${theme.bold(theme.fg("accent", title))} `;
@@ -206,9 +235,8 @@ export function card(theme: ThemeAdapter, title: string, lines: string[], width:
   return out;
 }
 
-/** A glyph-free section rule for grouping lines INSIDE a tool-result body: `label ─────`
- *  (muted label + dim rule, no 🕸). This is the tool-result counterpart to card() — it adds
- *  structure without repeating the tool shell's header. See docs/output-ui-guidelines.md. */
+/** A glyph-free section rule for grouping lines inside a tool-result body: `label ─────`.
+ *  It adds structure without repeating the tool title. See docs/output-ui-guidelines.md. */
 export function sectionRule(theme: ThemeAdapter, label: string, width: number): string {
   const head = `${theme.fg("muted", label)} `;
   const fill = Math.max(0, width - visibleWidth(head));

@@ -33,6 +33,7 @@ describe("escalation notifier", () => {
       sessionId: "s1",
       agent: "worker",
       task: "blocked task",
+      name: "tia-3",
     }).id;
 
     const sendMessage = vi.fn();
@@ -46,8 +47,8 @@ describe("escalation notifier", () => {
     emitEscalation(db, {
       runId,
       sessionId: "s1",
-      severity: "blocked",
-      summary: "Need approval for destructive operation",
+      severity: "warning",
+      summary: "Check the manifest before another build.",
     });
 
     // Set up notifier AFTER emission to avoid counting the immediate bus.emit() 
@@ -64,8 +65,7 @@ describe("escalation notifier", () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
     const [msg] = sendMessage.mock.calls[0];
     expect(msg.customType).toBe("spider.escalation");
-    expect(msg.content).toContain("blocked");
-    expect(msg.content).toContain("Need approval for destructive operation");
+    expect(msg.content).toBe(`Escalation "tia-3" (run ${runId}) · *worker* · warning\n\nCheck the manifest before another build.`);
   });
 
   // Mutation: notify on every type → must fail

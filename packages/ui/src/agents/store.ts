@@ -30,9 +30,9 @@ export function projectRow(row: RunRow): AgentSnapshot {
 }
 
 export function applyEvent(snap: AgentSnapshot, e: RunEvent): AgentSnapshot {
-  const next = { ...snap, recentActivity: [...snap.recentActivity], recentActivityErrors: snap.recentActivity.map((_, i) => snap.recentActivityErrors?.[i] === true) };
+  const next = { ...snap, recentActivity: [...snap.recentActivity], recentActivityErrors: snap.recentActivity.map((_, i) => snap.recentActivityErrors?.[i]) };
   let feedLine: string | undefined;
-  const isError = e.type === "tool_result" && (e.payload as { isError?: unknown } | undefined)?.isError === true;
+  const isError = e.type === "tool_result" ? (e.payload as { isError?: unknown } | undefined)?.isError === true : undefined;
   if (e.type === "tool_intent") {
     next.activityTool = e.tool ?? next.activityTool;
     feedLine = e.summary ?? e.tool;

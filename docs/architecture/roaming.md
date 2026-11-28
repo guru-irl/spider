@@ -547,27 +547,29 @@ resets that backoff and becomes ready without restarting the hub. Shutdown
 cancels pending setup retries and waits for the current attempt to drain.
 
 
-Production hosting stays disabled until phase 4 acceptance succeeds. Provisioning
-installs only the supervisor service and leaves the running core and its terminals
-unchanged. It enables the service under `default.target` only when the box passes
-hosting readiness checks; otherwise it disables autostart, including an existing
-enablement. Provisioning never starts or stops the service. Readiness controls
-autostart even when the hub is disabled; the hub switch separately controls box
-participation. After peer preflight passes, `spider roam enable` attempts to
-restore supervisor autostart on each box with an installed unit, without starting
-the supervisor. A missing unit or a failed systemd command does not prevent
-participation. Doctor warns when an enabled box has disabled or runtime-only
-autostart and suggests `spider roam enable` on the hub. If the unit is missing
-or its autostart state cannot be verified, doctor warns to check the unit and
-systemd user service. The unit has `Restart=on-failure`, `RestartSec=10s`,
-`StartLimitIntervalSec=0`, and a private umask. Persistent startup failures
-therefore retry without a start-rate lockout.
-The unit has no `After=`, `Requires=`, or
-`PartOf=` dependency on the core unit.
+Provisioning installs and verifies the release on the box, including
+`supervisor.mjs`. It does not create, change, reload, or toggle the roaming
+supervisor. It leaves the running core and its terminals unchanged.
+Reprovisioning a box set up by an older release leaves its legacy unit running
+the previous release; `spider roam enable` run locally on the destination
+replaces it. With a disabled hub, provisioning keeps box participation disabled. `installed`,
+`hostingReady`, and the `enabled` participation flag do not report service
+status.
+
+Only `spider roam enable` run locally on the destination installs and starts
+`spider-roam-supervisor-v0.service`. If doctor reports disabled autostart, run
+enable on the box, not the hub. If doctor cannot verify autostart, check the
+unit and the systemd user service. Follow the [legacy upgrade procedure](../guide/roaming-upgrade.md)
+before replacing an old service.
+
+The v0 unit has `Restart=on-failure`, `RestartSec=10s`, `StartLimitIntervalSec=0`,
+and a private umask. Persistent startup failures retry without a start-rate
+lockout. The unit has no `After=`, `Requires=`, or `PartOf=` dependency on the
+core unit.
 
 Enrollment saves the peer's absolute `core` executable, core identity, socket,
 session namespace, and state and config directories in private `roam/core.json`.
-At startup, the supervisor uses that pin to run `hc server start --json`.
+At startup, the legacy supervisor uses that pin to run `hc server start --json`.
 This attaches to a running core or starts a stopped one, including at login.
 The supervisor never selects an `hc` from `PATH`. It refuses `core-pin-changed`
 if the core identity differs from enrollment. A missing pin refuses
@@ -576,26 +578,34 @@ Enrollment verifies the executable, socket, namespace, and XDG directories with
 `server status --json` before saving the pin. The core identity and PID must
 match the enrolled core. Terminal-specific hc variables are removed for this check.
 
-To replace a stale identity or change the pinned executable or socket:
+### Replace an enrolled core pin
 
-1. Move every session assigned to the box back to the hub with
-   `spider move <session> mac`.
-2. Run `spider roam disable` on the hub.
-3. Run `systemctl --user stop spider-roam-supervisor.service` on the box.
-4. Run `spider roam provision <machine> --replace-core-pin` on the hub with the
-   same authentication options you normally use for provisioning.
-5. After doctor reports no blocks, start the supervisor on the box with
-   `systemctl --user start spider-roam-supervisor.service` and run
-   `spider roam enable` on the hub.
+Do not enable roaming or start a relocate on the hub or the box while a core
+pin is being replaced.
 
-Replacement refuses with `core-pin-in-use` while the box hosts sessions, while
-roaming remains enabled, or while the supervisor is active. The hub checks its
-authoritative session homes. The box also checks its local homes and service
-state. Replacement journals the previous and replacement pins before the atomic
-write. The hub journal retains both core identities, but CLI output shows only
-their SHA-256 hashes. Repeat the same operation ID and options after a lost reply.
-Ordinary provisioning never replaces a conflicting pin. A changed identity is
+1. Finish or undo moves involving the box. Move every home off the box with
+   `spider roam relocate <session> mac` or relocate it to another ready box.
+2. Run `spider roam disable` on the hub and locally on the box.
+3. If an owned legacy supervisor remains active, follow the approved
+   [legacy stop procedure](../guide/roaming-upgrade.md#stop-an-owned-legacy-supervisor).
+4. On the hub, run `spider roam provision <machine> --replace-core-pin` with
+   the same authentication options as before.
+5. When the box is ready, run `spider roam enable` locally on the box to
+   start its v0 supervisor.
+
+Replacement refuses with `core-pin-in-use` if roaming is enabled, if a home
+still names the box or is moving to it, or if either supervisor cannot be
+verified as absent or stopped. The hub checks its authoritative homes. The
+box checks its local homes and both units through its systemd user manager.
+A missing unit file does not prove that the manager has stopped the service.
+
+Replacement records both pins before changing the file. The hub journal
+retains both core identities, but CLI output shows only their SHA-256 hashes.
+Repeat the same operation ID and options after a lost reply. Ordinary
+provisioning never replaces a conflicting pin. A changed identity is
 `core-pin-changed`; changed pin settings are `core-pin-conflict`.
+
+### Legacy supervisor behavior
 
 After `server start`, the supervisor takes its baseline PID from the first
 `server status` reply. Both commands use the pin's environment without inherited
@@ -607,11 +617,9 @@ with a diagnostic so systemd can restart the supervisor and ensure the core
 again. A successful check clears the failure count. A confirmed PID or core
 identity change stops hosting immediately.
 
-The supervisor restarts a stopped pinned core, so `hc server stop` does not stay
-stopped while hosting runs. First run
-`systemctl --user stop spider-roam-supervisor.service` on the box to stop
-hosting, then stop the core. The hub's enable switch controls hub scheduling,
-not the systemd supervisor's restart policy.
+The legacy supervisor restarts a stopped pinned core. Follow the approved
+[legacy stop procedure](../guide/roaming-upgrade.md#stop-an-owned-legacy-supervisor) before stopping that
+core. The hub's enable switch does not control the box's systemd service.
 
 Doctor blocks hosting for a missing, unsafe, unreadable, or changed pin. A
 missing pin requires reprovisioning. A changed identity requires the explicit
@@ -799,13 +807,13 @@ also wait for that sign-in. Supervisor recovery cannot power on a machine or
 sign in its host. Remote upgrade and uninstall orchestration are deferred; do not
 assume provisioning performs either.
 
-The headless acceptance stories use a packaged extension and supervisor on
-owned cores, with fixture service, boot, process and limit ports. R03 checks a
-core-only session, child status, and a supervisor unit installation against a
-live core without app configuration. R04 restarts the
-core and checks one exact-file owner and one restored trigger delivery. R05
-checks crash suspension and a durable stop. They do not prove actual systemd or
-real-box behavior; phase 4 owns those checks.
+The headless acceptance stories use a packaged extension and owned cores. R04
+installs the v0 supervisor unit through the packed CLI and runs its command
+against an owned core. It checks the exact owner, ID lock, file lease, core-only
+feed, child status, two launches, and one restored trigger across a core restart.
+R18 covers the outward and return move. R03 and R05 are retired. The default set
+is R18, R10, and R11; R12 remains selectable by ID. These stories do not prove
+actual systemd or real-box behavior; phase 4 owns those checks.
 
 ## Idle moves
 
